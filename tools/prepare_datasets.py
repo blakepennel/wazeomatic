@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
@@ -191,6 +192,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--check", choices=list(READERS), help="render labelled samples and exit")
     ap.add_argument("--clean", action="store_true", help="delete the output folder first")
+    ap.add_argument("--workers", type=int, default=8, help="parallel image conversions")
     args = ap.parse_args()
 
     if args.check:
@@ -210,7 +212,7 @@ def main() -> None:
             print(f"[skip] {source}: {root} not found")
             continue
         negatives = 0
-        n = 0
+        jobs = []
         for img, boxes, split_hint in READERS[source](root):
             positive = any(b[0] for b in boxes)
             if not positive:
@@ -219,14 +221,21 @@ def main() -> None:
                 negatives += 1
             split = split_hint or ("val" if rng.random() < args.val_frac else "train")
             stem = f"{source}_{img.stem}"
-            c = write_sample(img, boxes, out / "images" / split / f"{stem}.jpg",
-                             out / "labels" / split / f"{stem}.txt", classes, args.max_side)
-            totals[source].update(c)
-            per_split[split] += 1
-            n += 1
-            if n % 500 == 0:
-                print(f"  {source}: {n} images...")
-        print(f"[done] {source}: {n} images, boxes {dict(totals[source])}")
+            jobs.append((img, boxes, out / "images" / split / f"{stem}.jpg",
+                         out / "labels" / split / f"{stem}.txt", split))
+        for split in ("train", "val"):
+            (out / "images" / split).mkdir(parents=True, exist_ok=True)
+            (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+        n = 0
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futures = [ex.submit(write_sample, img, boxes, oi, ol, classes, args.max_side) for img, boxes, oi, ol, _ in jobs]
+            for (_, _, _, _, split), fut in zip(jobs, futures):
+                totals[source].update(fut.result())
+                per_split[split] += 1
+                n += 1
+                if n % 500 == 0:
+                    print(f"  {source}: {n}/{len(jobs)} images...", flush=True)
+        print(f"[done] {source}: {n} images, boxes {dict(totals[source])}", flush=True)
 
     data = {
         "path": str(out).replace("\\", "/"),

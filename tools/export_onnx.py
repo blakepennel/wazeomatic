@@ -35,6 +35,7 @@ def main() -> None:
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--out", help="output .onnx path (default models/<name>.onnx)")
     ap.add_argument("--half", action="store_true", help="fp16 weights (CPU EPs usually prefer fp32)")
+    ap.add_argument("--no-stable", action="store_true", help="do not refresh models/<name>.onnx (the copy the apps use)")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -60,12 +61,13 @@ def main() -> None:
     out = Path(args.out) if args.out else MODELS / f"{name}_{args.imgsz}.onnx"
     shutil.move(str(exported), str(out))
     (out.with_suffix(".labels.txt")).write_text("\n".join(labels) + "\n", encoding="utf-8")
-    # convenience copies with stable names that the Android app and configs refer to
-    stable = MODELS / f"{name}.onnx"
-    shutil.copyfile(out, stable)
-    shutil.copyfile(out.with_suffix(".labels.txt"), stable.with_suffix(".labels.txt"))
-    print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB) and {stable}")
-    print(f"labels: {len(labels)} -> {stable.with_suffix('.labels.txt')}")
+    print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB), {len(labels)} labels")
+    if not args.no_stable:
+        # convenience copies with stable names that the Android app and configs refer to
+        stable = MODELS / f"{name}.onnx"
+        shutil.copyfile(out, stable)
+        shutil.copyfile(out.with_suffix(".labels.txt"), stable.with_suffix(".labels.txt"))
+        print(f"refreshed {stable}")
 
 
 if __name__ == "__main__":
