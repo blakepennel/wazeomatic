@@ -97,20 +97,30 @@ Desktop numbers: AMD Ryzen 7 9800X3D, onnxruntime CPU provider, 4 intra-op threa
 
 ### Latency (ms per frame, inference only)
 
+Desktop: stock COCO YOLO11n exported at each size, onnxruntime 1.23 CPU provider, 4 intra-op threads, 60 runs after warm-up (`tools/bench_onnx.py`). The fine-tuned hazard model has the same backbone and a 4-class head, so its cost is the same within noise.
+
 | Setup | 320 fp32 | 320 int8 | 416 fp32 | 416 int8 | 640 fp32 | 640 int8 |
 |-------|----------|----------|----------|----------|----------|----------|
-| Desktop, ORT CPU | TBD | TBD | TBD | TBD | TBD | TBD |
-| Emulator (x86_64, ORT CPU) | TBD | TBD | TBD | TBD | TBD | TBD |
+| Desktop, ORT CPU (Ryzen 7 9800X3D, 4 threads), mean | 6.1 | 14.7 | 8.4 | 16.4 | 16.3 | 33.2 |
+| Desktop, p90 | 8.3 | 16.5 | 13.4 | 18.7 | 20.3 | 35.7 |
+| Emulator (x86_64, ORT XNNPACK), detector app readout | | | 12–40 (COCO model, 9–11 FPS end to end) | | | |
 | Pixel 9 Pro (ORT XNNPACK) | TBD | TBD | TBD | TBD | TBD | TBD |
 | Raspberry Pi (if available) | TBD | TBD | TBD | TBD | TBD | TBD |
+
+Take-aways so far:
+
+- At 416 px the whole two-model pipeline (hazard + COCO) costs about 17 ms per frame on the desktop, far below the 100 ms budget at 10 inferences/s.
+- **Dynamic int8 is slower than fp32 on this x86 CPU** (the quantised convolutions fall back to slower kernels), even though the file shrinks from 10.6 MB to 2.9 MB. Int8 is therefore a size optimisation on desktop; whether it helps on the phone's ARM cores must be measured there before shipping the int8 file.
+- 640 px fp32 is still only 16 ms on the desktop; the phone decides whether 416 or 640 is affordable.
 
 ### Model size
 
 | File | Size |
 |------|------|
-| hazard_yolo11n_416.onnx | TBD |
+| coco_yolo11n_{320,416,640}.onnx (fp32) | 10.6 / 10.6 / 10.7 MB |
+| coco_yolo11n_{320,416,640}.int8.onnx | 2.9 / 2.9 / 3.0 MB |
+| hazard_yolo11n_416.onnx (fp32) | TBD |
 | hazard_yolo11n_416.int8.onnx | TBD |
-| coco_yolo11n_416.onnx | TBD |
 
 ### Accuracy (validation split, 416 px)
 

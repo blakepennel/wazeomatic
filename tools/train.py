@@ -28,6 +28,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--patience", type=int, default=20)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--cache", default="ram", help="ultralytics cache: ram, disk or false (ram avoids slow disks)")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -45,6 +46,7 @@ def main() -> None:
         exist_ok=True,
         patience=args.patience,
         resume=args.resume,
+        cache=False if str(args.cache).lower() == "false" else args.cache,
         # dashcam-friendly augmentation: no vertical flips (potholes do not hang from the sky),
         # mild colour jitter for exposure differences, mosaic off for the last epochs
         fliplr=0.5, flipud=0.0, degrees=2.0, translate=0.1, scale=0.4, shear=1.0,
