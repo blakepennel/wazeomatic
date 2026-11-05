@@ -19,11 +19,11 @@ data class HazardType(
 
 object Schema {
     val HAZARD_TYPES: Map<String, HazardType> = listOf(
-        HazardType("HAZARD_ON_ROAD_POTHOLE", "Hazard", "On road > Pothole", "Pothole / road damage"),
-        HazardType("HAZARD_ON_ROAD_CONSTRUCTION", "Hazard", "On road > Construction", "Cones, barrels, work-zone signs"),
-        HazardType("HAZARD_ON_ROAD_OBJECT", "Hazard", "On road > Object", "Debris or object on the road"),
-        HazardType("HAZARD_SHOULDER_CAR_STOPPED", "Hazard", "Shoulder > Car stopped", "Vehicle stopped on the shoulder"),
-        HazardType("HAZARD_SHOULDER_ANIMALS", "Hazard", "Shoulder > Animals", "Animal on or near the road"),
+        HazardType("HAZARD_ON_ROAD_POTHOLE", "Hazard", "Pothole", "Pothole / road damage"),
+        HazardType("HAZARD_ON_ROAD_CONSTRUCTION", "Hazard", "Construction", "Cones, work-zone signs, delineators"),
+        HazardType("HAZARD_ON_ROAD_OBJECT", "Hazard", "Object", "Debris or object on the road"),
+        HazardType("HAZARD_SHOULDER_CAR_STOPPED", "Hazard", "Car on shoulder", "Vehicle stopped on the shoulder"),
+        HazardType("HAZARD_SHOULDER_ANIMALS", "Hazard", "", "Animal on or near the road (plain Hazard; Waze removed the Animals subtype)"),
         HazardType("POLICE", "Police", "", "Police vehicle visible"),
         HazardType("CRASH", "Crash", "", "Crash / collision"),
     ).associateBy { it.key }

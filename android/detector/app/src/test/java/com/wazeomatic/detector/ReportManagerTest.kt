@@ -119,7 +119,7 @@ class ReportManagerTest {
         assertTrue(json.startsWith("{\"hazard_type\":\"HAZARD_ON_ROAD_POTHOLE\",\"confidence\":0.873,\"source\":\"phone\",\"ts\":1762345678.25,"))
         val o = JSONObject(json)
         assertEquals("Hazard", o.getString("waze_category"))
-        assertEquals("On road > Pothole", o.getString("waze_subcategory"))
+        assertEquals("Pothole", o.getString("waze_subcategory"))
         assertTrue(o.isNull("lat"))
         assertEquals(1, o.getInt("schema"))
         val back = HazardEvent.fromJson(json)
