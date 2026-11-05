@@ -1,0 +1,85 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.wazeomatic.detector"
+    compileSdk = 35
+    buildToolsVersion = "35.0.0"
+
+    defaultConfig {
+        applicationId = "com.wazeomatic.detector"
+        minSdk = 29
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1"
+        ndk {
+            // phones + the x86_64 emulator; keeps onnxruntime from bloating the apk
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    androidResources {
+        // onnx files are already dense, compressing them only slows down loading
+        noCompress += listOf("onnx")
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // android.jar only ships stubs of org.json, the real one is needed on the JVM
+    testImplementation("org.json:json:20240303")
+}
+
+// Copies exported models from <repo>/models into the app assets.
+// Override the source file names with e.g. -PcocoModel=coco_yolo11n.int8.onnx
+val repoModels = rootProject.file("../../models")
+val hazardModel = (findProperty("hazardModel") as String?) ?: "hazard_yolo11n.onnx"
+val cocoModel = (findProperty("cocoModel") as String?) ?: "coco_yolo11n.onnx"
+
+val syncModels by tasks.registering(Copy::class) {
+    description = "Copy models/*.onnx and label files into app/src/main/assets"
+    from(repoModels) {
+        include(hazardModel)
+        rename { "hazard.onnx" }
+    }
+    from(repoModels) {
+        include(cocoModel)
+        rename { "coco.onnx" }
+    }
+    // export_onnx.py writes <model>.labels.txt next to each model
+    from(repoModels) {
+        include(hazardModel.removeSuffix(".onnx") + ".labels.txt")
+        rename { "hazard_labels.txt" }
+    }
+    from(repoModels) {
+        include(cocoModel.removeSuffix(".onnx") + ".labels.txt")
+        rename { "coco_labels.txt" }
+    }
+    into(layout.projectDirectory.dir("src/main/assets"))
+}
+
+tasks.named("preBuild") { dependsOn(syncModels) }
