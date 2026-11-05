@@ -1,0 +1,79 @@
+package com.wazeomatic.mockwaze
+
+import android.content.Context
+import android.util.Log
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * reports.jsonl      - one line per report that reached the confirm sheet (send or cancel)
+ * macro_events.jsonl - one line per HAZARD_DETECTED broadcast and what the auto macro did with it
+ * Both live in /sdcard/Android/data/com.wazeomatic.mockwaze/files/ so adb pull can read them.
+ */
+object ReportLog {
+    const val TAG = "MockWazeReport"
+    const val MACRO_TAG = "MockWazeMacro"
+
+    fun reportsFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "reports.jsonl")
+    fun macroFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "macro_events.jsonl")
+
+    private val lock = Any()
+
+    private fun append(file: File, obj: JSONObject) {
+        synchronized(lock) {
+            try {
+                file.parentFile?.mkdirs()
+                file.appendText(obj.toString() + "\n")
+            } catch (e: Exception) {
+                Log.e(TAG, "could not write ${file.path}", e)
+            }
+        }
+    }
+
+    fun now(): Double = System.currentTimeMillis() / 1000.0
+
+    /** action is "send" (dry_run=false) or "cancel" (dry_run=true, nothing was reported). */
+    fun report(ctx: Context, path: MenuPath, action: String, via: String, job: MacroJob?) {
+        val obj = JSONObject()
+            .put("category", path.category)
+            .put("subcategory", path.subcategory)
+            .put("ts", now())
+            .put("dry_run", action != "send")
+            .put("via", via)
+            .put("action", action)
+        if (job != null) {
+            obj.put("hazard_type", job.hazardType)
+                .put("confidence", job.confidence)
+                .put("source", job.source)
+                .put("event_ts", job.eventTs)
+        }
+        append(reportsFile(ctx), obj)
+        Log.i(TAG, obj.toString())
+    }
+
+    fun macro(ctx: Context, outcome: String, job: MacroJob?, rawHazardType: String? = null, detail: String = "") {
+        val obj = JSONObject()
+            .put("ts", now())
+            .put("outcome", outcome)
+            .put("hazard_type", job?.hazardType ?: rawHazardType ?: "")
+        if (job != null) {
+            obj.put("category", job.path.category)
+                .put("subcategory", job.path.subcategory)
+                .put("dry_run", job.dryRun)
+                .put("confidence", job.confidence)
+                .put("source", job.source)
+                .put("event_ts", job.eventTs)
+        }
+        if (detail.isNotEmpty()) obj.put("detail", detail)
+        append(macroFile(ctx), obj)
+        Log.i(MACRO_TAG, obj.toString())
+    }
+
+    fun clear(ctx: Context) {
+        synchronized(lock) {
+            reportsFile(ctx).delete()
+            macroFile(ctx).delete()
+        }
+        Log.i(TAG, "reports cleared")
+    }
+}
