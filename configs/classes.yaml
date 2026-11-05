@@ -1,0 +1,12 @@
+# Class schema for the custom hazard detector. Index order is the model's output order.
+# Each class maps to a hazard key in wazeomatic/schema.py (HAZARD_TYPES).
+names:
+  0: pothole
+  1: cone
+  2: construction_sign
+  3: delineator
+hazard_map:
+  pothole: HAZARD_ON_ROAD_POTHOLE
+  cone: HAZARD_ON_ROAD_CONSTRUCTION
+  construction_sign: HAZARD_ON_ROAD_CONSTRUCTION
+  delineator: HAZARD_ON_ROAD_CONSTRUCTION

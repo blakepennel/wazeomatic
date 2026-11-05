@@ -1,0 +1,53 @@
+flowchart LR
+    subgraph Capture["Frame sources"]
+        direction TB
+        Cam["«component»<br/>Phone camera (CameraX)"]
+        Vid["«component»<br/>Test video / emulator webcam"]
+        PiCam["«component»<br/>Pi camera (later)"]
+    end
+
+    subgraph Pipeline["Detection pipeline (phone app, desktop sim or Pi)"]
+        direction TB
+        Prep["«component»<br/>Letterbox preprocessor<br/>416x416 RGB float"]
+        Hazard["«component»<br/>Hazard model<br/>YOLO11n ONNX"]
+        Coco["«component»<br/>COCO model<br/>YOLO11n ONNX"]
+        RM["«component»<br/>Report Manager<br/>persistence, cooldown, heuristics"]
+        Prep --> Hazard
+        Prep --> Coco
+        Hazard --> RM
+        Coco --> RM
+    end
+
+    subgraph Delivery["Event delivery"]
+        direction TB
+        Bcast["Broadcast Intent<br/>com.wazeomatic.HAZARD_DETECTED"]
+        Tcp["Pi to phone<br/>NDJSON over TCP :8765"]
+        Hook["Fallback:<br/>MacroDroid webhook"]
+    end
+
+    subgraph Phone["Phone"]
+        direction TB
+        Macro["«component»<br/>MacroDroid macro<br/>hazard_type, DRY_RUN"]
+    end
+
+    Waze["«external app»<br/>Waze"]
+    Mock["«test app»<br/>Mock Waze"]
+
+    Cam --> Prep
+    Vid --> Prep
+    PiCam -. Pi variant .-> Prep
+    RM -->|HazardEvent| Bcast
+    RM -. Pi variant .-> Tcp
+    Tcp -->|forwarded by phone app| Bcast
+    RM -. fallback .-> Hook
+    Bcast -->|Intent Received trigger| Macro
+    Hook -.-> Macro
+    Macro -.->|taps report menu| Waze
+    Macro -.->|emulator tests| Mock
+
+    classDef component fill:#edf4fc,stroke:#35577d,color:#142a42,stroke-width:1.5px;
+    classDef transport fill:#f5f0e6,stroke:#92754f,color:#453623;
+    classDef external fill:#e9f5ef,stroke:#36755b,color:#173e2c;
+    class Cam,Vid,PiCam,Prep,Hazard,Coco,RM,Macro component;
+    class Bcast,Tcp,Hook transport;
+    class Waze,Mock external;

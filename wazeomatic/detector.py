@@ -1,0 +1,180 @@
+"""ONNX Runtime wrapper for Ultralytics-style YOLO detection models.
+
+Works with any model exported by ``tools/export_onnx.py`` (output shape
+``[1, 4 + num_classes, num_anchors]``, boxes in letterboxed pixel xywh). The same
+pre/post-processing is mirrored in Kotlin in the Android app, so keep them in sync.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+import numpy as np
+
+from .schema import Detection
+
+try:  # onnxruntime is optional at import time so tests can run without a model
+    import onnxruntime as ort
+except ImportError:  # pragma: no cover
+    ort = None
+
+
+@dataclass
+class Letterbox:
+    scale: float
+    pad_x: float
+    pad_y: float
+    in_w: int
+    in_h: int
+    src_w: int
+    src_h: int
+
+
+def letterbox(img: np.ndarray, size: int, fill: int = 114) -> tuple[np.ndarray, Letterbox]:
+    """Resize keeping aspect ratio and pad to ``size`` x ``size`` (BGR uint8 in/out)."""
+    h, w = img.shape[:2]
+    scale = min(size / h, size / w)
+    nw, nh = int(round(w * scale)), int(round(h * scale))
+    import cv2
+
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    out = np.full((size, size, 3), fill, dtype=np.uint8)
+    px, py = (size - nw) // 2, (size - nh) // 2
+    out[py : py + nh, px : px + nw] = resized
+    return out, Letterbox(scale, px, py, size, size, w, h)
+
+
+def to_input_tensor(img_bgr: np.ndarray) -> np.ndarray:
+    """HWC BGR uint8 -> NCHW RGB float32 in [0, 1]."""
+    x = img_bgr[:, :, ::-1].astype(np.float32) / 255.0
+    return np.ascontiguousarray(x.transpose(2, 0, 1)[None])
+
+
+def nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> list[int]:
+    """Plain greedy NMS. boxes: [N,4] xyxy, scores: [N]. Returns kept indices."""
+    if len(boxes_xyxy) == 0:
+        return []
+    x1, y1, x2, y2 = boxes_xyxy.T
+    areas = (x2 - x1).clip(0) * (y2 - y1).clip(0)
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size:
+        i = order[0]
+        keep.append(int(i))
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = (xx2 - xx1).clip(0) * (yy2 - yy1).clip(0)
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
+        order = rest[iou <= iou_thres]
+    return keep
+
+
+def decode_yolo_output(
+    raw: np.ndarray,
+    lb: Letterbox,
+    labels: Sequence[str],
+    conf_thres: float,
+    iou_thres: float,
+    model_name: str = "hazard",
+    class_agnostic: bool = False,
+) -> list[Detection]:
+    """Turn a ``[1, 4+nc, N]`` (or ``[1, N, 4+nc]``) tensor into Detections.
+
+    Returned bboxes are normalized center-xywh in the *source* image frame.
+    """
+    out = raw[0]
+    if out.shape[0] == 4 + len(labels):  # channel-first export [4+nc, N] -> [N, 4+nc]
+        out = out.T  # -> [N, 4+nc]
+    boxes = out[:, :4]
+    cls_scores = out[:, 4:]
+    cls_id = cls_scores.argmax(1)
+    conf = cls_scores[np.arange(len(cls_id)), cls_id]
+    m = conf >= conf_thres
+    boxes, cls_id, conf = boxes[m], cls_id[m], conf[m]
+    if len(boxes) == 0:
+        return []
+    # xywh (letterboxed px) -> xyxy
+    xyxy = np.empty_like(boxes)
+    xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
+    xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
+    xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
+    xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
+    # per-class NMS via coordinate offset trick
+    offs = np.zeros_like(cls_id, dtype=np.float32) if class_agnostic else cls_id.astype(np.float32) * 4096.0
+    keep = nms(xyxy + offs[:, None], conf, iou_thres)
+    dets: list[Detection] = []
+    for i in keep:
+        bx1 = (xyxy[i, 0] - lb.pad_x) / lb.scale
+        by1 = (xyxy[i, 1] - lb.pad_y) / lb.scale
+        bx2 = (xyxy[i, 2] - lb.pad_x) / lb.scale
+        by2 = (xyxy[i, 3] - lb.pad_y) / lb.scale
+        bx1, bx2 = np.clip([bx1, bx2], 0, lb.src_w)
+        by1, by2 = np.clip([by1, by2], 0, lb.src_h)
+        w, h = bx2 - bx1, by2 - by1
+        if w <= 1 or h <= 1:
+            continue
+        dets.append(
+            Detection(
+                label=labels[int(cls_id[i])],
+                confidence=float(conf[i]),
+                bbox=(
+                    float((bx1 + w / 2) / lb.src_w),
+                    float((by1 + h / 2) / lb.src_h),
+                    float(w / lb.src_w),
+                    float(h / lb.src_h),
+                ),
+                model=model_name,
+            )
+        )
+    return dets
+
+
+class OnnxDetector:
+    """Loads a YOLO ONNX file and runs it on BGR frames."""
+
+    def __init__(
+        self,
+        model_path: str | Path,
+        labels: Sequence[str],
+        name: str = "hazard",
+        conf_thres: float = 0.35,
+        iou_thres: float = 0.5,
+        providers: Sequence[str] | None = None,
+        threads: int | None = None,
+    ):
+        if ort is None:
+            raise RuntimeError("onnxruntime is not installed")
+        so = ort.SessionOptions()
+        if threads:
+            so.intra_op_num_threads = threads
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.session = ort.InferenceSession(
+            str(model_path), sess_options=so, providers=list(providers or ["CPUExecutionProvider"])
+        )
+        inp = self.session.get_inputs()[0]
+        self.input_name = inp.name
+        shape = inp.shape
+        self.size = int(shape[2]) if isinstance(shape[2], int) else 640
+        self.labels = list(labels)
+        self.name = name
+        self.conf_thres = conf_thres
+        self.iou_thres = iou_thres
+        self.last_ms = 0.0
+        nc = self.session.get_outputs()[0].shape[1]
+        if isinstance(nc, int) and nc - 4 != len(self.labels):
+            raise ValueError(f"{model_path}: model has {nc - 4} classes but {len(self.labels)} labels given")
+
+    def __call__(self, frame_bgr: np.ndarray) -> list[Detection]:
+        padded, lb = letterbox(frame_bgr, self.size)
+        x = to_input_tensor(padded)
+        t0 = time.perf_counter()
+        raw = self.session.run(None, {self.input_name: x})[0]
+        self.last_ms = (time.perf_counter() - t0) * 1000.0
+        return decode_yolo_output(raw, lb, self.labels, self.conf_thres, self.iou_thres, self.name)

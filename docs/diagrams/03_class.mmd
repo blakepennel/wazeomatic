@@ -1,0 +1,75 @@
+classDiagram
+    direction TB
+
+    class FrameSource {
+        <<interface>>
+        +nextFrame() Frame
+    }
+    class CameraSource
+    class VideoFileSource
+    class OnnxDetector {
+        +labels: List~String~
+        +conf_thres: Float
+        +iou_thres: Float
+        +last_ms: Float
+        +detect(frame) List~Detection~
+    }
+    class Detection {
+        +label: String
+        +confidence: Float
+        +bbox: xywh normalized
+        +model: String
+    }
+    class ReportConfig {
+        +window = 10
+        +min_hits = 3
+        +min_confidence = 0.45
+        +cooldown_s = 60
+        +global_cooldown_s = 5
+        +stopped_vehicle_enabled = false
+    }
+    class ReportManager {
+        +update(detections, frame_index) List~HazardEvent~
+    }
+    class HazardType {
+        +key: String
+        +waze_category: String
+        +waze_subcategory: String
+    }
+    class HazardEvent {
+        +hazard_type: String
+        +confidence: Float
+        +source: String
+        +ts: Float
+        +schema: Int
+        +to_json() String
+        +intent_extras() Map
+    }
+    class EventSink {
+        <<interface>>
+        +emit(event) void
+    }
+    class BroadcastSink
+    class TcpSink
+    class StdoutSink
+    class AdbSink
+    class MacroDroidMacro {
+        <<external>>
+        +hazard_type: String
+        +DRY_RUN: Boolean
+    }
+
+    CameraSource ..|> FrameSource
+    VideoFileSource ..|> FrameSource
+    OnnxDetector --> FrameSource : reads
+    OnnxDetector ..> Detection : creates
+    ReportManager --> ReportConfig
+    ReportManager --> Detection : consumes
+    ReportManager ..> HazardEvent : creates
+    HazardEvent --> HazardType : maps to
+    BroadcastSink ..|> EventSink
+    TcpSink ..|> EventSink
+    StdoutSink ..|> EventSink
+    AdbSink ..|> EventSink
+    ReportManager --> EventSink : emits
+    BroadcastSink ..> MacroDroidMacro : Intent

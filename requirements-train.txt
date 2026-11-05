@@ -1,0 +1,4 @@
+# Training / export extras (needs a CUDA torch install first, see requirements.txt)
+ultralytics>=8.3
+onnxsim>=0.4
+onnxruntime-tools>=1.7
