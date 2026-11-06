@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 import numpy as np
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running from the repo without installing
 
@@ -567,6 +568,13 @@ def main(argv=None) -> int:
     if detector is None:
         raise SystemExit(f"hazard model not found: {model_path}")
     labels = list(detector.labels)
+    # ground-truth class ids follow the dataset, which may have more classes than an older model
+    gt_labels = labels
+    data_yaml = Path(args.data) / "data.yaml"
+    if data_yaml.exists():
+        names = (yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}).get("names") or {}
+        if names:
+            gt_labels = [names[i] for i in sorted(names)] if isinstance(names, dict) else list(names)
     imgsz = detector.size
     print(f"[info] detector stack: {spec.describe()}", file=sys.stderr)
     hazard_types = sorted({class_to_hazard[lb] for lb in labels if lb in class_to_hazard})
@@ -601,7 +609,7 @@ def main(argv=None) -> int:
                 continue
             h, w = img.shape[:2]
             gt_by_image[vi.stem] = [
-                GTBox(labels[c] if c < len(labels) else str(c), xywhn_to_xyxy(b),
+                GTBox(gt_labels[c] if c < len(gt_labels) else str(c), xywhn_to_xyxy(b),
                       size_bucket(letterbox_side_px(b[2], b[3], w, h, imgsz)))
                 for c, *b in vi.boxes
             ]
@@ -625,13 +633,13 @@ def main(argv=None) -> int:
             results["infer_ms_mean"] = round(float(np.mean(infer_ms)), 2)
 
         if not args.skip_boxes:
-            bm = box_metrics(gt_by_image, pred_by_image, labels)
+            bm = box_metrics(gt_by_image, pred_by_image, list(dict.fromkeys(gt_labels + labels)))
             results["boxes"] = bm
             md += ["## 1. Box metrics by size", "", box_metrics_markdown(bm, args.conf), ""]
 
         if not args.skip_events:
             cfg = ReportConfig(**base_cfg)
-            cases = [EventCase(vi.stem, vi.source, hazard_types_for((labels[c] for c, *_ in vi.boxes), class_to_hazard),
+            cases = [EventCase(vi.stem, vi.source, hazard_types_for((gt_labels[c] for c, *_ in vi.boxes), class_to_hazard),
                                set(replay_events(fd, cfg))) for vi, fd in cached]
             summary = summarize_events(cases, hazard_types)
             by_source = summarize_by_source(cases, hazard_types)
