@@ -7,6 +7,8 @@ data class ReportConfig(
     val window: Int = 10,
     val minHits: Int = 3,
     val minConfidence: Float = 0.45f,
+    // ignore boxes whose bottom edge is in the lowest 10 % of the frame: the car's own bonnet reflection
+    val hoodFrac: Float = 0.10f,
     val cooldownS: Double = 60.0,
     val globalCooldownS: Double = 5.0,
     val classToHazard: Map<String, String> = Schema.DEFAULT_CLASS_TO_HAZARD,
@@ -47,6 +49,7 @@ class ReportManager(
         for (d in detections) {
             val hazard = hazardFor(d) ?: continue
             if (d.confidence < cfg.minConfidence) continue
+            if (inHoodZone(d)) continue
             val prev = best[hazard]
             if (prev == null || d.confidence > prev.confidence) best[hazard] = d
         }
@@ -92,6 +95,9 @@ class ReportManager(
         }
         return null
     }
+
+    private fun inHoodZone(d: Detection): Boolean =
+        cfg.hoodFrac > 0f && (d.bbox.cy + d.bbox.h / 2f) > (1f - cfg.hoodFrac)
 
     private fun inShoulder(d: Detection): Boolean {
         val b = d.bbox

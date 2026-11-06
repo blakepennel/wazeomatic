@@ -148,4 +148,14 @@ class ReportManagerTest {
     fun rejectsUnknownHazard() {
         HazardEvent.fromJson("{\"hazard_type\":\"NOPE\",\"confidence\":0.5}")
     }
+
+    @Test
+    fun hoodZoneIgnored() {
+        val m = rm(ReportConfig(minHits = 1))
+        // bottom edge at 0.93: inside the lowest 10 % of the frame (bonnet reflection)
+        assertTrue(m.update(listOf(det("pothole", 0.9f, BBox(0.49f, 0.88f, 0.15f, 0.10f)))).isEmpty())
+        assertEquals(1, m.update(listOf(det("pothole", 0.9f, BBox(0.49f, 0.80f, 0.15f, 0.10f)))).size)
+        val off = rm(ReportConfig(minHits = 1, hoodFrac = 0f))
+        assertEquals(1, off.update(listOf(det("pothole", 0.9f, BBox(0.49f, 0.88f, 0.15f, 0.10f)))).size)
+    }
 }

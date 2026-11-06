@@ -38,6 +38,8 @@ Update the status column at the sprint review.
 - Apply the Intent Received trigger and `DRY_RUN` to the macro; re-check tap targets against the current Waze menu labels (Construction, Car on shoulder, Pothole, Object directly under Hazard).
 - Run the full emulator suite with Mock Waze on both test clips and record false/missed events.
 - Real-phone dry-run for every sprint 1 hazard type; note the Waze version.
+- Improve cone/delineator recall: train at 640 px or tile the 2880 px StarLine images (sprint 1 mAP50: pothole 0.56, construction sign 0.69, cone 0.16, delineator 0.21).
+- Measure latency on the Pixel 9 Pro and decide fp32 vs int8 (int8 is slower than fp32 on the desktop CPU; the phone's ARM cores may differ).
 - Tune the stopped-vehicle heuristic on footage with parked cars before enabling it.
 - Record team dashcam footage with real potholes and work zones.
 - Pi variant: run the Python pipeline on a Pi 4/5 and connect it to the phone over TCP 8765.

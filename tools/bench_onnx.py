@@ -10,10 +10,13 @@ from __future__ import annotations
 import argparse
 import glob
 import statistics
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running from the repo without installing
 
 
 def bench(path: Path, threads: int, runs: int, warmup: int = 10) -> dict:

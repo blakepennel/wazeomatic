@@ -133,6 +133,7 @@ For the Pi variant the phone app runs a TCP server on port **8765**. The Pi conn
 | Rule | Where | Why |
 |------|-------|-----|
 | 3 hits in 10 frames, conf >= 0.45 | Pipeline | Ignore single-frame flicker |
+| Boxes touching the bottom 10 % of the frame ignored | Pipeline | The car's own bonnet reflection is not a pothole |
 | Same hazard type at most once per 60 s | Pipeline | Do not report one pothole repeatedly |
 | Any events at least 5 s apart | Pipeline | Give the macro time to finish a tap sequence |
 | One report per minute, Waze in foreground | Macro | Avoid Waze rate limits; never tap in another app |

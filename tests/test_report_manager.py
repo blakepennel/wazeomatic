@@ -101,3 +101,13 @@ def test_event_json_and_intent_extras():
     assert extras["hazard_type"] == "HAZARD_ON_ROAD_CONSTRUCTION"
     assert extras["confidence"] == "0.770"
     assert all(isinstance(v, str) for v in extras.values())
+
+
+def test_hood_zone_ignored():
+    rm, _ = make(window=10, min_hits=1)
+    # bottom edge at 0.93 -> inside the lowest 10 % of the frame: the bonnet reflection
+    assert rm.update([det("pothole", 0.9, (0.49, 0.88, 0.15, 0.10))]) == []
+    # same box a little higher is a real road detection
+    assert len(rm.update([det("pothole", 0.9, (0.49, 0.80, 0.15, 0.10))])) == 1
+    rm2, _ = make(window=10, min_hits=1, hood_frac=0.0)
+    assert len(rm2.update([det("pothole", 0.9, (0.49, 0.88, 0.15, 0.10))])) == 1

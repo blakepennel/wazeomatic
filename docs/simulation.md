@@ -46,6 +46,8 @@ The test clips come from real dashcams, but a phone behind a windscreen produces
 
 Run each clip clean and degraded. If event counts change a lot, the thresholds in `ReportConfig` are too tight.
 
+First replay result (both CC0 clips, hazard + COCO models, every 3rd frame): one false pothole event per clip, both caused by the reflection on the car's own bonnet at the bottom of the frame. The Report Manager now has a hood exclusion zone (`hood_frac`, default 10 % of the frame height) and both clips replay with zero events, clean and degraded. Details in [model-research.md](model-research.md#video-replay).
+
 ## Emulator suite
 
 Details and scripts: [tools/emulator/README.md](../tools/emulator/README.md).

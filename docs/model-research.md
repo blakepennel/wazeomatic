@@ -103,6 +103,8 @@ Desktop: stock COCO YOLO11n exported at each size, onnxruntime 1.23 CPU provider
 |-------|----------|----------|----------|----------|----------|----------|
 | Desktop, ORT CPU (Ryzen 7 9800X3D, 4 threads), mean | 6.1 | 14.7 | 8.4 | 16.4 | 16.3 | 33.2 |
 | Desktop, p90 | 8.3 | 16.5 | 13.4 | 18.7 | 20.3 | 35.7 |
+| Desktop, hazard model (4 classes), mean | 3.3 | 9.3 | 5.3 | 12.8 | | |
+| Desktop, both models in `run_video` on a 720p clip, mean | | | 13.1 (p90 16.2) | | | |
 | Emulator (x86_64, ORT XNNPACK), detector app readout | | | 12–40 (COCO model, 9–11 FPS end to end) | | | |
 | Pixel 9 Pro (ORT XNNPACK) | TBD | TBD | TBD | TBD | TBD | TBD |
 | Raspberry Pi (if available) | TBD | TBD | TBD | TBD | TBD | TBD |
@@ -119,22 +121,32 @@ Take-aways so far:
 |------|------|
 | coco_yolo11n_{320,416,640}.onnx (fp32) | 10.6 / 10.6 / 10.7 MB |
 | coco_yolo11n_{320,416,640}.int8.onnx | 2.9 / 2.9 / 3.0 MB |
-| hazard_yolo11n_416.onnx (fp32) | TBD |
-| hazard_yolo11n_416.int8.onnx | TBD |
+| hazard_yolo11n_{320,416}.onnx (fp32) | 10.5 / 10.6 MB |
+| hazard_yolo11n_{320,416}.int8.onnx | 2.9 / 2.9 MB |
 
 ### Accuracy (validation split, 416 px)
 
-| Class | mAP50 fp32 | mAP50 int8 |
-|-------|------------|------------|
-| pothole | TBD | TBD |
-| cone | TBD | TBD |
-| construction_sign | TBD | TBD |
-| delineator | TBD | TBD |
-| all | TBD | TBD |
+YOLO11n fine-tuned at 416 px, 43 epochs (early stop, best epoch kept), batch 32, RTX 5070 Ti, 18 min. Validation split = 2,259 images (StarLine session-based test split plus a random 15 % of the other sources).
+
+| Class | Val images | Boxes | Precision | Recall | mAP50 | mAP50-95 |
+|-------|-----------|-------|-----------|--------|-------|----------|
+| pothole | 226 | 665 | 0.60 | 0.52 | **0.56** | 0.27 |
+| cone | 314 | 2,713 | 0.40 | 0.17 | 0.16 | 0.08 |
+| construction_sign | 1,193 | 1,252 | 0.81 | 0.66 | **0.69** | 0.34 |
+| delineator | 302 | 2,127 | 0.52 | 0.19 | 0.21 | 0.09 |
+| all | 2,259 | 6,757 | 0.58 | 0.38 | 0.40 | 0.19 |
+
+Int8 copy: on 60 frames of the urban clip the int8 model produced the identical label set to fp32 on every frame (`bench_onnx.py --compare`), so quantisation does not change behaviour at our thresholds.
+
+Reading the numbers: pothole already meets the sprint 2 target (mAP50 >= 0.5). Cone and delineator look poor because the StarLine validation images are 2880 px wide and most cones are distant, a few pixels tall after resizing to 416; the model finds the near ones (which are the ones that matter for a report) and misses the far ones. Training at 640 px or cropping the StarLine images into tiles is the obvious next step. Plots: [training curves](images/hazard_training_results.png), [confusion matrix](images/hazard_confusion_matrix.png), [validation predictions](images/hazard_val_predictions.jpg).
 
 ### Video replay
 
-| Clip | Events emitted | Correct | False | Missed |
-|------|----------------|---------|-------|--------|
-| Dashcam Recording (urban) | TBD | TBD | TBD | TBD |
-| Panorama II BlackBox daylight | TBD | TBD | TBD | TBD |
+Both models, every 3rd frame (10 inferences/s), default Report Manager thresholds. Neither clip contains a visible pothole or work zone, so the correct number of events is zero.
+
+| Clip | Events (no hood mask) | Events (hood mask, default) | Correct | False | Missed |
+|------|----------------|----------------|---------|-------|--------|
+| Dashcam Recording (urban), 120 s | 1 (pothole, conf 0.50) | 0 | 0 | 0 | 0 |
+| Panorama II BlackBox daylight, 120 s | 1 (pothole, conf 0.49) | 0 | 0 | 0 | 0 |
+
+The single event in each clip was the same false positive: the reflection on the car's own bonnet at the very bottom of the frame, persisting for 3 frames just above the 0.45 threshold. The Report Manager now ignores boxes whose bottom edge lies in the lowest 10 % of the frame (`hood_frac`), which removes it without touching anything on the road. With `--camera-sim` degradation the urban clip also produced no events.

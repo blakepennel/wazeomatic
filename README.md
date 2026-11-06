@@ -2,7 +2,7 @@
 
 Wazeomatic reports road hazards to Waze automatically. A phone mounted like a dashcam runs a small YOLO object detector with ONNX Runtime. When a hazard (pothole, cones, construction, animal) has been seen in enough frames, the detector app sends an Android broadcast. A MacroDroid macro picks it up and taps through the Waze report menu. A Raspberry Pi can later replace the phone camera and send detections to the phone over the local network.
 
-Status: sprint 1 (model research, desktop pipeline, simulation, documentation). See [docs/sprint1.md](docs/sprint1.md).
+Status: end of sprint 1. Working pieces: desktop pipeline and simulator, fine-tuned hazard model (pothole, cone, construction sign, delineator) exported to ONNX, Android detector app, mock Waze app with an automated Pixel 9 Pro emulator test. See [docs/sprint1.md](docs/sprint1.md).
 
 ## Architecture at a glance
 

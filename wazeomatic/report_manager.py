@@ -7,8 +7,9 @@ Three layers, in order:
 2. **Cooldown / de-duplication** - after a hazard type is emitted it is muted for
    ``cooldown_s`` seconds. This mirrors the macro's own one-report-per-minute guard and
    stops the same pothole being reported ten times while we drive over it.
-3. **Heuristics** - things no single-frame detector can label, currently the
-   stopped-vehicle-on-shoulder check (experimental, off by default).
+3. **Heuristics** - a hood exclusion zone (boxes touching the bottom edge of the frame are
+   the car's own bonnet reflection, not road), and the stopped-vehicle-on-shoulder check
+   (experimental, off by default).
 
 Everything here is pure Python so it can be unit tested without a model, and the
 Kotlin ``ReportManager`` in the Android app implements the same rules.
@@ -27,6 +28,8 @@ class ReportConfig:
     window: int = 10                 # inference frames considered
     min_hits: int = 3                # hits required inside the window
     min_confidence: float = 0.45     # per-detection confidence to count as a hit
+    hood_frac: float = 0.10          # ignore boxes whose bottom edge is in the lowest 10 % of the frame
+                                     # (the car's own hood / dashboard reflection looks like a pothole)
     cooldown_s: float = 60.0         # per hazard type
     global_cooldown_s: float = 5.0   # between any two events
     class_to_hazard: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_CLASS_TO_HAZARD))
@@ -68,6 +71,8 @@ class ReportManager:
             hazard = self._hazard_for(d)
             if hazard is None or d.confidence < self.cfg.min_confidence:
                 continue
+            if self._in_hood_zone(d):
+                continue
             if hazard not in best or d.confidence > best[hazard].confidence:
                 best[hazard] = d
         # record hits (one per hazard per frame) and trim the window
@@ -103,6 +108,10 @@ class ReportManager:
         if self.cfg.stopped_vehicle_enabled and d.label in self.cfg.vehicle_labels and self._in_shoulder(d):
             return "HAZARD_SHOULDER_CAR_STOPPED"
         return None
+
+    def _in_hood_zone(self, d: Detection) -> bool:
+        cy, h = d.bbox[1], d.bbox[3]
+        return self.cfg.hood_frac > 0 and (cy + h / 2) > (1.0 - self.cfg.hood_frac)
 
     def _in_shoulder(self, d: Detection) -> bool:
         cx, cy, w, h = d.bbox
