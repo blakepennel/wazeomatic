@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     # report manager
     ap.add_argument("--min-hits", type=int, default=3)
     ap.add_argument("--window", type=int, default=10)
-    ap.add_argument("--report-conf", type=float, default=0.45)
+    ap.add_argument("--report-conf", type=float, default=0.40)
     ap.add_argument("--cooldown", type=float, default=60.0)
     ap.add_argument("--global-cooldown", type=float, default=5.0)
     ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")

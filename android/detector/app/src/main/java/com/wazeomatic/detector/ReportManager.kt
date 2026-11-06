@@ -11,8 +11,8 @@ import kotlin.math.sqrt
 data class ReportConfig(
     val window: Int = 10,
     val minHits: Int = 3,
-    val minConfidence: Float = 0.45f,
-    /** Per-label overrides of [minConfidence]; potholes ship at 0.55 (see DEFAULT_LABEL_FLOORS). */
+    val minConfidence: Float = 0.40f,
+    /** Per-label overrides of [minConfidence]; potholes ship at 0.45 (see DEFAULT_LABEL_FLOORS). */
     val minConfidenceByLabel: Map<String, Float> = DEFAULT_LABEL_FLOORS,
     /**
      * > 0: the hits behind a report must come from boxes that overlap frame to frame (grown by
@@ -34,7 +34,7 @@ data class ReportConfig(
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
-val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.55f)
+val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f)
 
 class ReportManager(
     val cfg: ReportConfig = ReportConfig(),

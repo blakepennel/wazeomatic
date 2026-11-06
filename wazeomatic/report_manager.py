@@ -27,17 +27,17 @@ from typing import Callable, Iterable, Optional
 from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 
-DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.55}
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45}
 
 
 @dataclass
 class ReportConfig:
     window: int = 10                 # inference frames considered
     min_hits: int = 3                # hits required inside the window
-    min_confidence: float = 0.45     # per-detection confidence to count as a hit
+    min_confidence: float = 0.40     # per-detection confidence to count as a hit
     # per-label floors on top of min_confidence (the higher of the two applies). Potholes need
-    # more: the 640c model emits one false pothole event per two hazard-free clip runs at 0.45
-    # and none at 0.55 (docs/model-research.md)
+    # more: the v3 model is clean on 12 minutes of hazard-free footage at 0.45 (the older 640c
+    # needed 0.55; docs/model-research.md)
     min_confidence_by_label: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_LABEL_FLOORS))
     track_iou: float = 0.0           # > 0: hits must chain through boxes with at least this IoU
                                      # (frame to frame, boxes grown by track_grow), or whose centres

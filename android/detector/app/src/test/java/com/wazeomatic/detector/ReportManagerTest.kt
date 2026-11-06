@@ -42,7 +42,7 @@ class ReportManagerTest {
     @Test
     fun lowConfidenceAndUnmappedLabelsIgnored() {
         val m = rm()
-        repeat(10) { assertTrue(m.update(listOf(det("dog", 0.44f), det("person", 0.99f), det("car", 0.99f))).isEmpty()) }
+        repeat(10) { assertTrue(m.update(listOf(det("dog", 0.39f), det("person", 0.99f), det("car", 0.99f))).isEmpty()) }
     }
 
     @Test
@@ -211,12 +211,12 @@ class ReportManagerTest {
     }
 
     @Test
-    fun defaultPotholeFloorIs055() {
-        assertEquals(mapOf("pothole" to 0.55f), ReportConfig().minConfidenceByLabel)
+    fun defaultPotholeFloorIs045() {
+        assertEquals(mapOf("pothole" to 0.45f), ReportConfig().minConfidenceByLabel)
         val m = rm(ReportConfig(globalCooldownS = 0.0))
-        for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.50f)), frameIndex = i).isEmpty())
+        for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.42f)), frameIndex = i).isEmpty())
         var ev: List<HazardEvent> = emptyList()
-        for (i in 3 until 6) ev = m.update(listOf(det("pothole", 0.56f)), frameIndex = i)
+        for (i in 3 until 6) ev = m.update(listOf(det("pothole", 0.46f)), frameIndex = i)
         assertEquals(1, ev.size)
     }
 }

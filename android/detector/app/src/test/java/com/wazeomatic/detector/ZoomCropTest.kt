@@ -81,7 +81,8 @@ class ZoomCropTest {
 
     @Test
     fun settingsExposeParsedCrop() {
-        assertNull(Settings().zoomCropOrNull)
+        assertEquals(ZoomCrop.DEFAULT, Settings().zoomCropOrNull)   // the zoom pass ships on
+        assertNull(Settings(zoomCrop = "").zoomCropOrNull)
         assertEquals(ZoomCrop.DEFAULT, Settings(zoomCrop = "true").zoomCropOrNull)
         assertNotNull(Settings(zoomCrop = "0.2,0.3,0.8,0.7").zoomCropOrNull)
         assertNull(Settings(zoomCrop = "garbage").zoomCropOrNull)

@@ -14,7 +14,7 @@ data class Settings(
     val frameStep: Int = 5,                 // video: run inference on every Nth decoded frame
     val loop: Boolean = true,               // video: restart at the end
     val maxFps: Float = 6f,                 // camera: inference rate cap
-    val confThreshold: Float = 0.45f,       // ReportManager min_confidence
+    val confThreshold: Float = 0.40f,       // ReportManager min_confidence
     val detConf: Float = 0.30f,             // detector box threshold (boxes drawn in the preview)
     val iou: Float = 0.5f,
     val cooldownS: Float = 60f,
@@ -32,7 +32,7 @@ data class Settings(
     val fusion: String = "wbf",             // wbf | nms
     val ensembleWeights: String = "",       // "2,1" = weight per hazard model (default equal)
     val classConf: String = "",             // per-label floors after fusion, "pothole=0.5,cone=0.4"
-    val reportClassConf: String = "pothole=0.55", // per-label hit floors in the ReportManager (same default as Python)
+    val reportClassConf: String = "pothole=0.45", // per-label hit floors in the ReportManager (same default as Python)
     val trackIou: Float = 0f,               // > 0 = spatial tracking in the ReportManager
     val trackGrow: Float = 1.5f,
     val hoodFrac: Float = 0.10f,            // minimum hood / dashboard zone (fraction of the frame height)

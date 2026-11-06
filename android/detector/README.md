@@ -63,7 +63,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `video` | test.mp4 | file in the app external files dir (or absolute path) |
 | `frame_step` / `loop` | 5 / true | video: infer every Nth frame, restart at end |
 | `max_fps` | 6 | camera: inference rate cap (extra frames are dropped) |
-| `conf` | 0.45 | report min confidence (detector box threshold is min(0.30, conf)) |
+| `conf` | 0.40 | report min confidence (detector box threshold is min(0.30, conf)) |
 | `cooldown` / `global_cooldown` | 60 / 5 | seconds |
 | `min_hits` / `window` | 3 / 10 | persistence rule |
 | `stopped_vehicle` | false | experimental parked-car heuristic |
@@ -73,7 +73,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
-| `report_class_conf` | pothole=0.55 | per-label hit floors inside the Report Manager (overrides `conf` for those labels); the pothole floor is the shipped default on both the phone and the desktop pipeline |
+| `report_class_conf` | pothole=0.45 | per-label hit floors inside the Report Manager (overrides `conf` for those labels); the pothole floor is the shipped default on both the phone and the desktop pipeline |
 | `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored |
 | `auto_hood` | true | grow the hood zone from the picture itself (`HoodEstimator.kt`): the dashboard keeps sharp edges in a running average of the frames while the road blurs away; on the test clips this finds a 22 % dashboard that the fixed 10 % missed (an air vent was reported as a pothole) |
 | `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |

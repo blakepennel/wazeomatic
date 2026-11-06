@@ -263,3 +263,76 @@ What the clips taught us:
 - The two Commons clips are the same recording at two resolutions and encodings (identical dashboard, identical cone at 5.5 s), so the "4 x 120 s" above is really one two-minute drive, clean and degraded, twice. More and different footage is the most valuable thing the team can add before the real-phone drive.
 
 **Shipped operating point (2026-11-06):** 640c (`models/hazard_yolo11n.onnx`), zoom pass on, learnt hood zone on, detector threshold 0.35, report floor 0.45 with pothole 0.55, 3 hits in 10 frames, 60 s per-type and 5 s global cooldown, tracking off. On the desktop that is 29 ms of model time per frame. The phone app additionally fuses 640b (`hazard2.onnx`, WBF max) because the two run in parallel threads and the fused stack has the higher recall at the same false-event count; disable it with the `ensemble` setting on a phone where latency matters more than the extra recall. Spatial tracking stays available (`--track-iou`) but is off: it changed nothing on these clips because every false event came from one persistent object, which is exactly what tracking cannot reject.
+
+### Data expansion and the v3 models (2026-11-06, afternoon)
+
+The pipeline pass left two problems that were data problems: potholes hallucinated on real roads, and the whole
+"construction" family trained on one source (StarLine, one country, four cameras). The afternoon went into
+finding more real road footage with labels and retraining. Datasets 5 to 7 above (ROADWork, Argoverse 2, a
+small Roboflow pothole set) and the UK dashcam and Argoverse clips are the result; the merged set
+`wazeomatic_hazards_v3` has 45,855 training and 14,597 validation files (StarLine tiles, ROADWork and
+Argoverse as both 1024/1080/1280 px tiles and a downscaled full frame, RDD2022 and the pothole sets as
+before) and two new classes, **barricade** (ROADWork Barricade + Barrier) and **worker**, both mapped to
+Hazard > Construction.
+
+Training: YOLO11n from the 640c weights (40 epochs, lr0 0.005, batch 32, cosine, mosaic off for the last 8)
+and YOLO11s from COCO weights (same schedule, batch 24), 640 px, on the NVMe copy of the set (from the 14 TB
+HDD the dataloader starved the GPU to 2 % and an epoch took 45 minutes; from the SSD 2.5 minutes). Per-epoch
+validation uses a fixed 3,000-image subset of the val split (`val_subset.txt`); the tables below use the
+event harness on a 1,201-image seed-1 subset of the full val split (`--limit 120 --frames 8 --seed 1`,
+zoom pass on), so the shipped model and the new ones are measured on identical images.
+
+Box AP50 on the v3 val subset (`runs/eval/v3val_*`):
+
+| class | 640c (shipped this morning) | v3 nano |
+|---|---|---|
+| pothole | 0.323 | 0.394 |
+| cone | 0.279 | 0.513 |
+| construction_sign | 0.250 | 0.577 |
+| delineator | 0.039 | 0.334 |
+| barricade | - | 0.296 |
+| worker | - | 0.360 |
+| all, small (< 24 px on the 640 input) | 0.035 | 0.246 |
+| all, medium | 0.194 | 0.497 |
+| all, large | 0.374 | 0.542 |
+| **all** | **0.159** | **0.392** |
+
+Event-level (synthetic clips, 3 hits in 10, zoom on; precision / recall / F1):
+
+| Stack | Report floor | Overall | Construction | Pothole |
+|---|---|---|---|---|
+| 640c | 0.45, pothole 0.55 | 0.960 / 0.508 / 0.664 | 0.952 / 0.546 / 0.694 | 0.968 / 0.471 / 0.634 |
+| v3 nano | 0.45, pothole 0.55 | 0.950 / 0.633 / 0.760 | 0.935 / 0.820 / 0.873 | 0.978 / 0.456 / 0.622 |
+| v3 nano, threshold sweep | 0.45 / 3 | 0.953 / 0.704 / 0.809 | | |
+| v3 nano, threshold sweep | 0.35 / 3 | 0.933 / 0.757 / 0.836 | | |
+| v3 nano, threshold sweep | 0.35 / 2 | 0.924 / 0.779 / 0.846 | | |
+
+(The sweep rows apply one floor to every label, which is why their overall numbers differ from the first
+v3 row.) Construction recall went from 0.55 to 0.82 at the same precision; the delineator class, which
+640c had effectively never seen in ROADWork's drum / tubular-marker / vertical-panel form, is now found a
+third of the time even when small. Potholes did not move: the new pothole data is small and the pothole
+subset of the val split (IVCNZ close-ups and RDD street views) is the same as before.
+
+Real footage, v3 nano, learnt hood zone, every 6th frame, clean and camera-degraded (`runs/eval/clips_*`):
+
+| Report floor | 5 clips, 12 min, 10 runs | Raw pothole detections above 0.25 on the two UK clips |
+|---|---|---|
+| 0.45, pothole 0.55 (640c, for reference) | 0 false events | 497 / 565 |
+| 0.45, pothole 0.55 | 0 | 275 / 185 |
+| 0.45, pothole 0.45 | 0 | |
+| 0.35, pothole 0.45 | 0 | |
+
+The UK clips (`uk_dashcam_002/006`, overcast suburban and rural England, dashboard in the bottom 15 % of the
+frame, wiper in view) are the first footage from a different car and country; the learnt hood zone settles
+at about 25 % on them and nothing is reported. On the Argoverse work-zone clip
+(`assets/videos/labelled/argo_2ff4f798_workzone.mp4`, a Miami lane closure with a "Right lane closed ahead"
+sign, a barrel line and cones) the live pipeline emits exactly one Construction event and draws the sign, the
+barrels and the distant markers (`runs/clips/argo_workzone_v3n.mp4`); the 60 s per-type cooldown absorbs the
+rest of the zone.
+
+**Operating point after this pass:** v3 nano (`models/hazard_yolo11n.onnx` = `hazard_yolo11n_v3.onnx`,
+six classes), zoom on, learnt hood zone, detector threshold 0.35, report floor **0.40** with pothole
+**0.45**, 3 hits in 10 frames, cooldowns 60 / 5 s. 0.35 was clean on the clips too, but twelve minutes of
+footage is a thin basis for the lowest setting; 0.40 keeps a margin and still lifts synthetic F1 above the
+0.45 point. The pothole floor comes down from 0.55 because the v3 model emits half as many weak pothole
+boxes on real roads and none of them survive three hits at 0.45.
