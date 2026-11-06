@@ -1,4 +1,4 @@
-from wazeomatic.report_manager import ReportConfig, ReportManager
+from wazeomatic.report_manager import DEFAULT_LABEL_FLOORS, ReportConfig, ReportManager
 from wazeomatic.schema import Detection
 
 
@@ -31,7 +31,7 @@ def test_single_frame_does_not_report():
 
 def test_persistence_then_report_once():
     rm, _ = make(window=10, min_hits=3)
-    assert rm.update([det(conf=0.5)]) == []
+    assert rm.update([det(conf=0.6)]) == []     # above the 0.55 pothole floor, one hit
     assert rm.update([det(conf=0.7)]) == []
     events = rm.update([det(conf=0.9)])
     assert len(events) == 1
@@ -111,3 +111,24 @@ def test_hood_zone_ignored():
     assert len(rm.update([det("pothole", 0.9, (0.49, 0.80, 0.15, 0.10))])) == 1
     rm2, _ = make(window=10, min_hits=1, hood_frac=0.0)
     assert len(rm2.update([det("pothole", 0.9, (0.49, 0.88, 0.15, 0.10))])) == 1
+
+
+def test_default_pothole_floor_is_055():
+    from wazeomatic.report_manager import ReportConfig, ReportManager
+    from wazeomatic.schema import Detection
+
+    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.55}
+    cfg = ReportConfig(global_cooldown_s=0)
+    assert cfg.min_confidence_by_label == {"pothole": 0.55}
+    rm = ReportManager(cfg, clock=lambda: 1000.0)
+    weak = Detection("pothole", 0.50, (0.5, 0.5, 0.1, 0.1))
+    for i in range(3):
+        assert rm.update([weak], frame_index=i) == []
+    strong = Detection("pothole", 0.56, (0.5, 0.5, 0.1, 0.1))
+    events = []
+    for i in range(3, 6):
+        events += rm.update([strong], frame_index=i)
+    assert len(events) == 1
+    # the default dict is copied per config, not shared
+    cfg.min_confidence_by_label["cone"] = 0.9
+    assert "cone" not in ReportConfig().min_confidence_by_label

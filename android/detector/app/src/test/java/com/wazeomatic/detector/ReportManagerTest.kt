@@ -209,4 +209,14 @@ class ReportManagerTest {
         for (i in 3 until 6) ev = m.update(listOf(det("construction_sign", 0.5f)), frameIndex = i)
         assertEquals(1, ev.size)
     }
+
+    @Test
+    fun defaultPotholeFloorIs055() {
+        assertEquals(mapOf("pothole" to 0.55f), ReportConfig().minConfidenceByLabel)
+        val m = rm(ReportConfig(globalCooldownS = 0.0))
+        for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.50f)), frameIndex = i).isEmpty())
+        var ev: List<HazardEvent> = emptyList()
+        for (i in 3 until 6) ev = m.update(listOf(det("pothole", 0.56f)), frameIndex = i)
+        assertEquals(1, ev.size)
+    }
 }

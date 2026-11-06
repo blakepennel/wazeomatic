@@ -27,12 +27,18 @@ from typing import Callable, Iterable, Optional
 from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.55}
+
+
 @dataclass
 class ReportConfig:
     window: int = 10                 # inference frames considered
     min_hits: int = 3                # hits required inside the window
     min_confidence: float = 0.45     # per-detection confidence to count as a hit
-    min_confidence_by_label: dict[str, float] = field(default_factory=dict)  # overrides per label
+    # per-label floors on top of min_confidence (the higher of the two applies). Potholes need
+    # more: the 640c model emits one false pothole event per two hazard-free clip runs at 0.45
+    # and none at 0.55 (docs/model-research.md)
+    min_confidence_by_label: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_LABEL_FLOORS))
     track_iou: float = 0.0           # > 0: hits must chain through boxes with at least this IoU
                                      # (frame to frame, boxes grown by track_grow), or whose centres
                                      # lie within track_grow box sizes of each other
@@ -145,7 +151,8 @@ class ReportManager:
 
     # ------------------------------------------------------------ spatial tracking
     def _min_conf(self, label: str) -> float:
-        return self.cfg.min_confidence_by_label.get(label, self.cfg.min_confidence)
+        """A label floor only ever raises the bar: the higher of min_confidence and the label value."""
+        return max(self.cfg.min_confidence, self.cfg.min_confidence_by_label.get(label, 0.0))
 
     def _update_tracklets(self, accepted: dict[str, list[Detection]]) -> None:
         """Greedy IoU association of this frame's accepted boxes to per-hazard tracklets."""

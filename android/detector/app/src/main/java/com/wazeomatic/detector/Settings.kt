@@ -32,7 +32,7 @@ data class Settings(
     val fusion: String = "wbf",             // wbf | nms
     val ensembleWeights: String = "",       // "2,1" = weight per hazard model (default equal)
     val classConf: String = "",             // per-label floors after fusion, "pothole=0.5,cone=0.4"
-    val reportClassConf: String = "",       // per-label hit floors in the ReportManager
+    val reportClassConf: String = "pothole=0.55", // per-label hit floors in the ReportManager (same default as Python)
     val trackIou: Float = 0f,               // > 0 = spatial tracking in the ReportManager
     val trackGrow: Float = 1.5f,
 ) {
