@@ -58,6 +58,9 @@ TIMING = {
     "sheet_ms": 300,
     "page_ms": 200,
     "toast_ms": 1500,
+    # Waze sends by itself after a few seconds (mock default 5000). The manual rehearsal in
+    # Stage A is slowed down by uiautomator dumps, so give it more room here.
+    "auto_send_ms": 10000,
     "macro_start_delay_ms": 500,
     "macro_wait_ms": 1000,
     "dry_run_hold_ms": 1500,
@@ -244,6 +247,9 @@ class Runner:
     def stage_a(self) -> None:
         self.log("=== Stage A: mock Waze auto macro ===")
         self.sh(f"am force-stop {MOCK_PKG}")
+        # a detector left running by an earlier run would keep broadcasting its own events
+        # into this stage and the mock would report "skipped_busy" for ours
+        self.sh(f"am force-stop {DET_PKG}")
         self.sh("input keyevent 82")  # make sure the lock screen is gone
         self.sh("svc power stayon true")
         self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=False,
@@ -253,9 +259,9 @@ class Runner:
         self.screenshot("A0_map")
 
         # --- A1: manual rehearsal with input taps, the way the MacroDroid macro taps ------
-        self.log("A1: manual rehearsal with adb input tap (Report > Hazard > Pothole > Cancel)")
+        self.log("A1: manual rehearsal with adb input tap (Report button > Hazard > Pothole > Cancel)")
         t0 = self.device_time()
-        ok = self.tap_label("Report") is not None
+        ok = self.tap_label("Report button") is not None
         time.sleep(0.8)
         self.screenshot("A1_report_grid")
         ok = ok and self.tap_label("Hazard") is not None
@@ -273,10 +279,10 @@ class Runner:
                    f"{len(rows)} touch row(s): {rows}")
 
         # also screenshot a one-step category and the Thanks! toast via a manual Police send
-        self.tap_label("Report"); time.sleep(0.8)
+        self.tap_label("Report button"); time.sleep(0.8)
         self.tap_label("Police"); time.sleep(0.8)
         self.screenshot("A1_police_confirm")
-        self.tap_label("Send"); time.sleep(0.4)
+        self.tap_label("Report"); time.sleep(0.4)
         self.screenshot("A1_thanks_toast")
         time.sleep(1.5)
 

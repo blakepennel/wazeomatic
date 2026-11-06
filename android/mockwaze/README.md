@@ -17,29 +17,46 @@ create it with `sdk.dir=F\:/dev/android-sdk` or set `ANDROID_HOME`).
 
 ## What it looks like
 
-* Main screen: fake map, "Where to?" bottom bar, orange round **Report** button bottom-right.
-* Report -> bottom sheet slides up (`sheet_ms`, default 300 ms) with 12 tiles: Traffic, Police,
-  Crash, Hazard, Closure, Blocked lane, Bad weather, Gas prices, Map chat, Map issue, Place,
-  Roadside help. The order of the last row may differ from the real app (see `WazeMenu.kt`).
-* Hazard -> confirm sheet with Hazard preselected and a flat list of subtypes: Construction,
-  Car on shoulder, Broken traffic light, Pothole, Object (tap one to select it, tap again to go
-  back to plain Hazard). Every other tile -> one-step confirm sheet.
-* Confirm sheet: **Send** and **Cancel**. Send shows a "Thanks!" toast (`toast_ms`) and closes.
-* Every tap target has its label as text and content description, so MacroDroid "UI interaction"
-  by text and plain coordinate taps both work.
+Laid out after the Android Waze app of 2024 (the "What do you see?" redesign), from the
+Waze help pages and press screenshots. Waze's own icon assets are not redistributable, so the
+tiles use hand-drawn look-alikes with the same motifs and colours.
+
+* Main screen: near-white map with soft grey roads, white menu square top-left (opens the
+  mock's settings), pink music button top-right, dark round speedometer bottom-left,
+  "Where to?" bar at the bottom and the round white **Report button** (yellow "+" triangle)
+  above it on the right. A small dark "MOCK WAZE" badge sits at the top so the two apps are
+  never confused.
+* Report button -> the sheet slides up (`sheet_ms`, default 300 ms): **What do you see?**
+  with 12 round tiles in 3 columns: Traffic, Police, Crash / Hazard, Bad weather, Blocked lane /
+  Map issue, Closure, Gas prices / Roadside help, Map chat, Place. The fourth row differs between
+  Waze versions and regions (see `WazeMenu.kt`).
+* Hazard -> **Report a hazard**: six tiles with Hazard preselected (blue ring and check badge):
+  Hazard, Construction, Car on shoulder, Broken traffic light, Pothole, Object. Tapping a tile
+  selects it. Traffic, Police, Crash, Bad weather and Blocked lane have their own second-step
+  tiles too; the rest go straight to a one-tile confirm sheet.
+* Confirm sheet buttons: **Cancel** (grey) and **Report** (blue). Like Waze, the sheet sends by
+  itself when the dark-blue fill reaches the end of the Report button (`auto_send_ms`, default
+  5 s); Cancel, the X or the back key before that logs a rehearsal instead. Report shows the
+  "Thanks! You helped nearby Wazers" card (`toast_ms`) and closes the sheet.
+* Every tap target has its label as text or content description (`Report button`, `Hazard`,
+  `Pothole`, `Report`, `Cancel`, `Close`), so MacroDroid "UI interaction" by text and plain
+  coordinate taps both work.
 
 ## Logs
 
-Each Send or Cancel on the confirm sheet appends one JSON line to
+Each Report, auto send or Cancel on the confirm sheet appends one JSON line to
 `/sdcard/Android/data/com.wazeomatic.mockwaze/files/reports.jsonl` and logs it to logcat tag
 `MockWazeReport`:
 
 ```json
-{"category":"Hazard","subcategory":"Pothole","ts":1762360000.12,"dry_run":false,"via":"auto_macro","action":"send","hazard_type":"HAZARD_ON_ROAD_POTHOLE","confidence":"0.87","source":"e2e","event_ts":"1762359999.8"}
+{"category":"Hazard","subcategory":"Pothole","ts":1762360000.12,"dry_run":false,"via":"auto_macro","action":"send","trigger":"button","hazard_type":"HAZARD_ON_ROAD_POTHOLE","confidence":"0.87","source":"e2e","event_ts":"1762359999.8"}
 ```
 
 `action=cancel` rows are rehearsals and always have `dry_run=true`. `via` is `touch` for real
-taps (you or MacroDroid) and `auto_macro` for the built-in macro. What the auto macro did with
+taps (you or MacroDroid) and `auto_macro` for the built-in macro. `trigger` is `button` (Report or
+Cancel tapped), `timeout` (the sheet sent by itself after `auto_send_ms`) or `close` (X, back key
+or tap outside). A `timeout` send during a macro run means the macro was too slow: the mock then
+logs the macro outcome as `failed`. What the auto macro did with
 every broadcast (accepted / sent / suppressed_rate_limit / skipped_not_foreground / ...) goes to
 `macro_events.jsonl` and logcat tag `MockWazeMacro`.
 
@@ -60,8 +77,8 @@ receivers. MacroDroid works around this the same way.) For each event it:
    the `waze_category`/`waze_subcategory` extras),
 2. drops it if a real report was made less than `rate_limit_ms` (60 s) ago,
 3. drops it if mock Waze is not in the foreground (like the macro's foreground check),
-4. taps Report, waits `macro_wait_ms`, taps the category, waits, taps the subtype, waits,
-   taps Send. Taps are real touch events at the view centre, so tapping while the sheet is
+4. taps the Report button, waits `macro_wait_ms`, taps the category, waits, taps the tile, waits,
+   taps Report. Taps are real touch events at the view centre, so tapping while the sheet is
    still animating misses, exactly like a too-short wait in MacroDroid would,
 5. with `dry_run=true` it stops on the confirm sheet for `dry_run_hold_ms`, taps Cancel and
    logs `dry_run=true`. Dry runs do not use up the one-per-minute slot.
@@ -78,7 +95,8 @@ Settings button (top-left) or launch extras or a broadcast, all with the same ke
 |---|---|---|
 | `sheet_ms` | 300 | sheet slide up/down |
 | `page_ms` | 200 | fade between sheet pages |
-| `toast_ms` | 1500 | "Thanks!" toast |
+| `toast_ms` | 2500 | "Thanks!" card |
+| `auto_send_ms` | 5000 | confirm sheet sends by itself after this (0 = never) |
 | `macro_start_delay_ms` | 500 | event -> first tap |
 | `macro_wait_ms` | 1000 | wait after each tap |
 | `dry_run_hold_ms` | 1500 | time on the confirm sheet before Cancel |

@@ -1,48 +1,85 @@
 package com.wazeomatic.mockwaze
 
-/** One tile in the top-level report sheet. */
-data class Category(val label: String, val color: Int, val glyph: String) {
-    val hasSubmenu: Boolean get() = label == "Hazard"
+/** One round tile: label under an icon. */
+data class Option(val label: String, val icon: Int)
+
+/**
+ * One top-level tile of the "What do you see?" sheet. options[0] is the category itself and is
+ * preselected when its sheet opens (that is what Waze does: tap Hazard, then Report sends a plain
+ * Hazard unless you pick a more specific tile).
+ */
+data class Category(val label: String, val icon: Int, val sheetTitle: String, val options: List<Option>) {
+    val hasSubmenu: Boolean get() = options.size > 1
+    val subLabels: List<String> get() = options.drop(1).map { it.label }
 }
 
 /**
- * A full path through the report menu. item is the Hazard subtype ("" = plain Hazard, or a
- * one-step category like Police / Crash). Same strings as waze_subcategory in schema.py.
+ * A full path through the report menu. item is the specific tile ("" = the category itself).
+ * Same strings as waze_subcategory in schema.py.
  */
 data class MenuPath(val category: String, val item: String = "") {
     val subcategory: String get() = item
 }
 
 object WazeMenu {
-    // Tile order of the Android report sheet after the 2024 redesign. Checked against Waze
-    // help pages and press screenshots (9to5google / piunikaweb, Feb 2024): the first row
-    // Traffic, Police, Crash is certain, and Hazard / Closure / Blocked lane / Bad weather
-    // follow. The order of the last tiles (Gas prices, Map chat, Map issue, Place, Roadside
-    // help) moves around between app versions and regions, so the macro should tap by text
-    // where possible and the coordinates must be re-checked on the real phone.
-    // Real Waze also has a second step for Police (Visible / Hidden / Other side) and Crash
-    // (Minor / Major / Other side); schema.py reports those with no subcategory, so the mock
-    // keeps them as a one-step confirm.
-    val categories = listOf(
-        Category("Traffic", 0xFFE5484D.toInt(), "T"),
-        Category("Police", 0xFF3B82F6.toInt(), "P"),
-        Category("Crash", 0xFFD9466F.toInt(), "C"),
-        Category("Hazard", 0xFFF59E0B.toInt(), "!"),
-        Category("Closure", 0xFFB91C1C.toInt(), "X"),
-        Category("Blocked lane", 0xFFEA580C.toInt(), "L"),
-        Category("Bad weather", 0xFF0EA5E9.toInt(), "W"),
-        Category("Gas prices", 0xFF16A34A.toInt(), "G"),
-        Category("Map chat", 0xFF2563EB.toInt(), "M"),
-        Category("Map issue", 0xFF6B7280.toInt(), "?"),
-        Category("Place", 0xFF7C3AED.toInt(), "+"),
-        Category("Roadside help", 0xFF0284C7.toInt(), "H"),
+    private fun o(label: String, icon: Int) = Option(label, icon)
+
+    // Tile order of the Android report sheet after the February 2024 redesign ("What do you
+    // see?"), from the Waze help pages and press screenshots: Traffic, Police, Crash / Hazard,
+    // Bad weather, Blocked lane / Map issue, Closure, Gas prices / and a fourth row. The fourth
+    // row moves around between versions and regions; re-check it on the real phone before
+    // relying on coordinates. Each category opens a second sheet with the category itself
+    // preselected plus its specific tiles. The hazard tiles are the ones documented on
+    // support.google.com/waze/answer/13739290; the other sub-tiles follow press screenshots
+    // (traffic, police, crash, blocked lane) or are approximations (bad weather).
+    val categories: List<Category> = listOf(
+        Category("Traffic", R.drawable.ic_cat_traffic, "Report traffic", listOf(
+            o("Traffic", R.drawable.ic_cat_traffic),
+            o("Heavy", R.drawable.ic_sub_traffic_heavy),
+            o("Standstill", R.drawable.ic_sub_traffic_standstill))),
+        Category("Police", R.drawable.ic_cat_police, "Report police", listOf(
+            o("Police", R.drawable.ic_cat_police),
+            o("Hidden", R.drawable.ic_sub_police_hidden),
+            o("Other side", R.drawable.ic_sub_police_other_side))),
+        Category("Crash", R.drawable.ic_cat_crash, "Report a crash", listOf(
+            o("Crash", R.drawable.ic_cat_crash),
+            o("Pile-up", R.drawable.ic_sub_crash_pileup),
+            o("Other side", R.drawable.ic_sub_crash_other_side))),
+        Category("Hazard", R.drawable.ic_cat_hazard, "Report a hazard", listOf(
+            o("Hazard", R.drawable.ic_sub_hazard),
+            o("Construction", R.drawable.ic_sub_construction),
+            o("Car on shoulder", R.drawable.ic_sub_car_shoulder),
+            o("Broken traffic light", R.drawable.ic_sub_traffic_light),
+            o("Pothole", R.drawable.ic_sub_pothole),
+            o("Object", R.drawable.ic_sub_object))),
+        Category("Bad weather", R.drawable.ic_cat_weather, "Report bad weather", listOf(
+            o("Bad weather", R.drawable.ic_cat_weather),
+            o("Fog", R.drawable.ic_sub_weather_fog),
+            o("Hail", R.drawable.ic_sub_weather_hail),
+            o("Flood", R.drawable.ic_sub_weather_flood),
+            o("Ice", R.drawable.ic_sub_weather_ice),
+            o("Snow", R.drawable.ic_sub_weather_snow))),
+        Category("Blocked lane", R.drawable.ic_cat_blocked_lane, "Report blocked lane", listOf(
+            o("Blocked lane", R.drawable.ic_cat_blocked_lane),
+            o("Left lane", R.drawable.ic_sub_lane_left),
+            o("Right lane", R.drawable.ic_sub_lane_right),
+            o("Center lane", R.drawable.ic_sub_lane_center))),
+        Category("Map issue", R.drawable.ic_cat_map_issue, "Report a map issue", listOf(
+            o("Map issue", R.drawable.ic_cat_map_issue))),
+        Category("Closure", R.drawable.ic_cat_closure, "Report a closure", listOf(
+            o("Closure", R.drawable.ic_cat_closure))),
+        Category("Gas prices", R.drawable.ic_cat_gas, "Report gas prices", listOf(
+            o("Gas prices", R.drawable.ic_cat_gas))),
+        Category("Roadside help", R.drawable.ic_cat_roadside, "Roadside help", listOf(
+            o("Roadside help", R.drawable.ic_cat_roadside))),
+        Category("Map chat", R.drawable.ic_cat_map_chat, "Map chat", listOf(
+            o("Map chat", R.drawable.ic_cat_map_chat))),
+        Category("Place", R.drawable.ic_cat_place, "Add a place", listOf(
+            o("Place", R.drawable.ic_cat_place))),
     )
 
-    // Hazard subtypes, a flat list in the order of the Waze help page "Report hazards"
-    // (support.google.com/waze/answer/13739290). The older grouped menu (On road / Shoulder /
-    // Weather, with Animals and Roadkill) is gone. Hazard is preselected when the sheet opens,
-    // so Send without picking a subtype reports a plain "Hazard" (schema.py uses that for animals).
-    val hazardSubtypes = listOf("Construction", "Car on shoulder", "Broken traffic light", "Pothole", "Object")
+    /** The specific hazard tiles (everything under Hazard except Hazard itself). */
+    val hazardSubtypes: List<String> get() = category("Hazard")!!.subLabels
 
     /** hazard_type (contract key from schema.py) -> menu path. */
     val hazardTypes: Map<String, MenuPath> = mapOf(
@@ -64,11 +101,10 @@ object WazeMenu {
     fun pathFor(hazardType: String?, wazeCategory: String?, wazeSub: String?): MenuPath? {
         hazardTypes[hazardType ?: ""]?.let { return it }
         val cat = category(wazeCategory ?: "") ?: return null
-        if (!cat.hasSubmenu) return MenuPath(cat.label)
         val sub = (wazeSub ?: "").trim()
         return when {
-            sub.isEmpty() -> MenuPath(cat.label)
-            sub in hazardSubtypes -> MenuPath(cat.label, sub)
+            sub.isEmpty() || sub == cat.label -> MenuPath(cat.label)
+            sub in cat.subLabels -> MenuPath(cat.label, sub)
             else -> null
         }
     }

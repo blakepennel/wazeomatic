@@ -63,7 +63,7 @@ Emulator latency is not representative of the phone; only use it for function.
 
 ## Mock Waze app
 
-`android/mockwaze` copies the parts of Waze the macro touches: a map screen with a Report button, the category grid, the hazard sub-menu and the send button, using the same labels and approximate positions. It records each completed report and shows it on screen and in logcat. Because it is our app, the macro can run with `DRY_RUN` off against it and tests can check that the right item was chosen.
+`android/mockwaze` copies the parts of Waze the macro touches, styled after the 2024 Android app: the idle map (menu square, speedometer, "Where to?" bar, round report button), the "What do you see?" tile grid, the "Report a hazard" sheet with Hazard preselected and the Cancel / Report buttons, with the same labels, order and approximate positions. Like Waze it sends by itself a few seconds after the confirm sheet opens (`auto_send_ms`, default 5 s), so a macro that is too slow to tap Cancel on a dry run gets caught here instead of in the real app. Waze's icon artwork is not redistributable, so the tiles use hand-drawn look-alikes. It records each completed report and shows it on screen and in logcat. Because it is our app, the macro can run with `DRY_RUN` off against it and tests can check that the right item was chosen.
 
 When Waze changes its menu, update the mock app first, then the macro, then check on a real phone in dry-run.
 

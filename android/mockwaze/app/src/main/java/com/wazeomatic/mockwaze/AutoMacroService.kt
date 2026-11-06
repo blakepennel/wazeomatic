@@ -46,7 +46,7 @@ class AutoMacroService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_report)
+            .setSmallIcon(R.drawable.ic_report_fab)
             .setContentTitle("Mock Waze auto macro is on")
             .setContentText("Listening for ${MacroEngine.ACTION_HAZARD}")
             .setContentIntent(open)

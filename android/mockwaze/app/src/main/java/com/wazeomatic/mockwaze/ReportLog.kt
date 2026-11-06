@@ -32,8 +32,12 @@ object ReportLog {
 
     fun now(): Double = System.currentTimeMillis() / 1000.0
 
-    /** action is "send" (dry_run=false) or "cancel" (dry_run=true, nothing was reported). */
-    fun report(ctx: Context, path: MenuPath, action: String, via: String, job: MacroJob?) {
+    /**
+     * action is "send" (dry_run=false) or "cancel" (dry_run=true, nothing was reported).
+     * trigger says what ended the confirm sheet: "button" (Report/Cancel tapped), "timeout"
+     * (Waze-style auto send after auto_send_ms) or "close" (X / back / scrim).
+     */
+    fun report(ctx: Context, path: MenuPath, action: String, via: String, job: MacroJob?, trigger: String = "button") {
         val obj = JSONObject()
             .put("category", path.category)
             .put("subcategory", path.subcategory)
@@ -41,6 +45,7 @@ object ReportLog {
             .put("dry_run", action != "send")
             .put("via", via)
             .put("action", action)
+            .put("trigger", trigger)
         if (job != null) {
             obj.put("hazard_type", job.hazardType)
                 .put("confidence", job.confidence)

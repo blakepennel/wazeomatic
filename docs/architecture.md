@@ -54,7 +54,7 @@ Files: [01_component.mmd](diagrams/01_component.mmd), [02_sequence.mmd](diagrams
 | Hazard schema | `wazeomatic/schema.py` | Hazard keys, Waze menu mapping, model-class mapping, event JSON and Intent extras. Single source of truth. |
 | Sinks | detector app, `run_video --sink` | Broadcast Intent (phone), TCP (Pi to phone), stdout and adb (desktop testing). |
 | MacroDroid macro | phone, see [macro guide](../android_setup/macro_setup_guide.md) | Receives the event, checks Waze is in the foreground and the one-per-minute guard, taps the report menu. |
-| Mock Waze | `android/mockwaze` | Same menu labels and layout as Waze, logs which report was "sent". Used for automated runs. |
+| Mock Waze | `android/mockwaze` | Look-alike of the 2024 Waze report flow (same labels, tile order, layout and auto-send timing), logs which report was "sent". Used for automated runs. |
 
 ### Class view
 

@@ -17,7 +17,8 @@ object Config {
     val INT_DEFAULTS = linkedMapOf(
         "sheet_ms" to 300,             // bottom sheet slide up/down
         "page_ms" to 200,              // fade between sheet pages (grid -> hazard -> confirm)
-        "toast_ms" to 1500,            // how long "Thanks!" stays up
+        "toast_ms" to 2500,            // how long "Thanks!" stays up
+        "auto_send_ms" to 5000,        // confirm sheet sends by itself after this (0 = never), like Waze
         "macro_start_delay_ms" to 500, // auto macro: delay between event and first tap
         "macro_wait_ms" to 1000,       // auto macro: wait after every tap (macro "Wait" action)
         "dry_run_hold_ms" to 1500,     // auto macro: how long the confirm sheet stays before Cancel

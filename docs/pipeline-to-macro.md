@@ -99,8 +99,9 @@ These steps add the trigger and dry-run handling to the existing macro. The Macr
 2. **Variables:** in the macro's local variables, keep `hazard_type` (string) and add `dry_run_extra` (string). Add a global boolean `DRY_RUN`, default `true`, so it can be flipped from the MacroDroid home screen without editing the macro.
 3. **Constraints:** add the application-in-foreground constraint for Waze (the guide already checks foreground focus; keeping it as a macro constraint means the macro does nothing when Waze is not open). Keep the existing one-report-per-minute guard.
 4. **Actions:** the existing If/Else on `hazard_type` selects the tap sequence. Before the final send tap, add:
-   - If `DRY_RUN` = true **or** `dry_run_extra` = `true`: Take Screenshot, wait 1 s, press Back until the report sheet is closed, stop.
-   - Else: tap send (or let Waze's auto-send countdown finish).
+   - If `DRY_RUN` = true **or** `dry_run_extra` = `true`: Take Screenshot, then tap **Cancel** (or press Back until the sheet is closed), stop.
+   - Else: tap **Report** (or let Waze's auto-send countdown finish).
+   - Mind the countdown: Waze sends the report by itself a few seconds after the confirm sheet opens, so the dry-run branch has to cancel before that. Keep the waits between the category tap, the subtype tap and Cancel short (about 1 s each). The mock app reproduces this with `auto_send_ms` (default 5 s) and logs a `trigger=timeout` send when a macro is too slow, so test the timing there first.
 5. **Permissions:** grant MacroDroid its accessibility service (needed for UI interaction taps), and set MacroDroid's battery usage to *Unrestricted*.
 6. **Test:** with Waze open and `DRY_RUN` on, run the `adb shell am broadcast` command above. The macro should walk to the pothole screen, screenshot, and back out.
 

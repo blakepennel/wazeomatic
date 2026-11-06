@@ -1,5 +1,6 @@
 package com.wazeomatic.mockwaze
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -19,16 +20,19 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 
 /**
- * Main screen of the mock: fake map, bottom bar and the orange report button.
- * The report flow lives in a bottom sheet with two pages: GRID -> CONFIRM. For Hazard the
- * confirm sheet also holds the subtype tiles (flat list, Hazard itself preselected).
+ * Main screen of the mock: Waze-style idle map, menu button, speedometer, "Where to?" bar and
+ * the round report button. The report flow is a bottom sheet with two pages, laid out like the
+ * 2024 Waze app:
+ *   GRID    "What do you see?"  3 x 4 round tiles
+ *   CONFIRM "Report a hazard"   the category's tiles (category itself preselected), Cancel / Report
+ * The confirm page sends by itself after auto_send_ms, like Waze does, unless Cancel is tapped.
  * Every view is built in code so the tap targets are easy to find by text/description
  * (MacroDroid "UI interaction" or uiautomator) and by coordinates.
  */
@@ -39,25 +43,27 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: FrameLayout
     private lateinit var reportButton: ImageView
-    private lateinit var settingsButton: TextView
+    private lateinit var menuButton: ImageView
+    private lateinit var musicButton: ImageView
     private lateinit var bottomBar: LinearLayout
     private lateinit var scrim: View
     private lateinit var sheet: LinearLayout
     private lateinit var sheetContent: FrameLayout
-    private lateinit var toastView: TextView
-    private lateinit var speed: TextView
+    private lateinit var toastView: LinearLayout
+    private lateinit var speed: SpeedometerView
     private lateinit var badge: TextView
 
     var page = Page.NONE
         private set
     private var confirmPath: MenuPath? = null
-    /** Tap targets on the current sheet page, by name (tile:Hazard, sub:Pothole, confirm:send ...). */
+    /** Tap targets on the current sheet page, by name (tile:Hazard, sub:Pothole, confirm:report ...). */
     private val targets = HashMap<String, View>()
     /** Input is ignored while the sheet is still moving, like a real app mid-animation. */
     private var animEndAt = 0L
     private var macroJob: MacroJob? = null
     private var bottomInset = 0
     private var topInset = 0
+    private var countdown: ValueAnimator? = null
     private val hideToast = Runnable { toastView.visibility = View.GONE }
 
     private val controlReceiver = object : BroadcastReceiver() {
@@ -112,7 +118,7 @@ class MainActivity : Activity() {
         when (page) {
             Page.NONE -> @Suppress("DEPRECATION") super.onBackPressed()
             Page.GRID -> closeSheet()
-            Page.CONFIRM -> showGrid()
+            Page.CONFIRM -> dismissConfirm("close")
         }
     }
 
@@ -136,81 +142,87 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         root.addView(FakeMapView(this), FrameLayout.LayoutParams(-1, -1))
 
-        settingsButton = TextView(this).apply {
-            text = "Settings"
-            contentDescription = "Settings"
-            setTextColor(0xFF1F2937.toInt())
-            textSize = 14f
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = roundRect(Color.WHITE, dpf(18f))
+        // top-left: white rounded square with the hamburger menu (opens the mock's settings)
+        menuButton = ImageView(this).apply {
+            setImageResource(R.drawable.ic_menu)
+            contentDescription = "Menu"
+            background = roundRect(Color.WHITE, dpf(16f))
             elevation = dpf(4f)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
         }
-        root.addView(settingsButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        root.addView(menuButton, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.START))
+
+        // top-right: pink music button (decoration only)
+        musicButton = ImageView(this).apply {
+            setImageResource(R.drawable.ic_music)
+            contentDescription = "Music"
+            background = oval(Palette.PINK)
+            elevation = dpf(4f)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+        root.addView(musicButton, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END))
 
         badge = TextView(this).apply {
-            text = "MOCK WAZE - test build, nothing is sent"
+            text = "MOCK WAZE · nothing is sent"
             setTextColor(Color.WHITE)
-            textSize = 11f
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            background = roundRect(0xCC111827.toInt(), dpf(10f))
+            textSize = 10f
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            background = roundRect(0xB3202124.toInt(), dpf(8f))
         }
         root.addView(badge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
 
-        // bottom bar: "Where to?" search pill like the Waze home screen
+        // bottom: white card with the "Where to?" search field
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 setColor(Color.WHITE)
-                cornerRadii = floatArrayOf(dpf(20f), dpf(20f), dpf(20f), dpf(20f), 0f, 0f, 0f, 0f)
+                cornerRadii = floatArrayOf(dpf(24f), dpf(24f), dpf(24f), dpf(24f), 0f, 0f, 0f, 0f)
             }
-            elevation = dpf(8f)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            elevation = dpf(10f)
         }
-        val search = TextView(this).apply {
+        val search = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(16), 0)
+            background = roundRect(0xFFF1F2F4.toInt(), dpf(26f))
+        }
+        search.addView(ImageView(this).apply { setImageResource(R.drawable.ic_search) }, LinearLayout.LayoutParams(dp(22), dp(22)))
+        search.addView(TextView(this).apply {
             text = "Where to?"
             textSize = 17f
-            setTextColor(0xFF4B5563.toInt())
-            setPadding(dp(16), 0, dp(16), 0)
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundRect(0xFFF1F3F5.toInt(), dpf(24f))
-        }
-        bottomBar.addView(search, LinearLayout.LayoutParams(0, dp(48), 1f))
-        val myWaze = TextView(this).apply {
-            text = "My Waze"
-            textSize = 13f
-            setTextColor(0xFF2F80ED.toInt())
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(14), 0, 0, 0)
-        }
-        bottomBar.addView(myWaze, LinearLayout.LayoutParams(-2, -2))
+            setTextColor(0xFF5F6368.toInt())
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottomBar.addView(search, LinearLayout.LayoutParams(0, dp(52), 1f))
         root.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
-        speed = TextView(this).apply {
-            text = "0\nkm/h"
-            gravity = Gravity.CENTER
-            textSize = 12f
-            setTextColor(0xFF111827.toInt())
-            background = oval(Color.WHITE)
-            elevation = dpf(6f)
-        }
-        root.addView(speed, FrameLayout.LayoutParams(dp(58), dp(58), Gravity.BOTTOM or Gravity.START))
+        speed = SpeedometerView(this)
+        root.addView(speed, FrameLayout.LayoutParams(dp(68), dp(68), Gravity.BOTTOM or Gravity.START))
 
+        // round white report button with the yellow "+" triangle
         reportButton = ImageView(this).apply {
-            setImageResource(R.drawable.ic_report)
-            contentDescription = "Report"
-            background = oval(0xFFFF9500.toInt())
+            setImageResource(R.drawable.ic_report_fab)
+            contentDescription = "Report button"
+            background = oval(Color.WHITE)
             elevation = dpf(8f)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { if (!animating()) openSheet() }
         }
-        root.addView(reportButton, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.BOTTOM or Gravity.END))
+        root.addView(reportButton, FrameLayout.LayoutParams(dp(68), dp(68), Gravity.BOTTOM or Gravity.END))
 
         scrim = View(this).apply {
-            setBackgroundColor(0x66000000)
+            setBackgroundColor(0x33000000)
             visibility = View.GONE
-            setOnClickListener { if (!animating() && page != Page.NONE) closeSheet() }
+            setOnClickListener {
+                if (animating()) return@setOnClickListener
+                when (page) {
+                    Page.GRID -> closeSheet()
+                    Page.CONFIRM -> dismissConfirm("close")
+                    Page.NONE -> {}
+                }
+            }
         }
         root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
 
@@ -219,31 +231,44 @@ class MainActivity : Activity() {
             isClickable = true // swallow taps so they do not reach the scrim
             background = GradientDrawable().apply {
                 setColor(Color.WHITE)
-                cornerRadii = floatArrayOf(dpf(22f), dpf(22f), dpf(22f), dpf(22f), 0f, 0f, 0f, 0f)
+                cornerRadii = floatArrayOf(dpf(24f), dpf(24f), dpf(24f), dpf(24f), 0f, 0f, 0f, 0f)
             }
             elevation = dpf(16f)
             visibility = View.INVISIBLE
         }
-        val handle = View(this).apply { background = roundRect(0xFFD1D5DB.toInt(), dpf(2f)) }
-        sheet.addView(handle, LinearLayout.LayoutParams(dp(40), dp(4)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10); bottomMargin = dp(4)
+        val handle = View(this).apply { background = roundRect(0xFFB8BCC2.toInt(), dpf(2.5f)) }
+        sheet.addView(handle, LinearLayout.LayoutParams(dp(44), dp(5)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10); bottomMargin = dp(2)
         })
         sheetContent = FrameLayout(this)
         sheet.addView(sheetContent, LinearLayout.LayoutParams(-1, -2))
         root.addView(sheet, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
-        toastView = TextView(this).apply {
-            text = "Thanks!"
+        // "Thanks! You helped nearby Wazers" card
+        toastView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             contentDescription = "Thanks!"
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(22), dp(12), dp(22), dp(12))
-            background = roundRect(0xEE111827.toInt(), dpf(24f))
+            setPadding(dp(14), dp(12), dp(20), dp(12))
+            background = roundRect(Color.WHITE, dpf(16f))
             elevation = dpf(20f)
             visibility = View.GONE
         }
-        root.addView(toastView, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+        toastView.addView(ImageView(this).apply { setImageResource(R.drawable.ic_check_green) }, LinearLayout.LayoutParams(dp(28), dp(28)))
+        val toastText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+        toastText.addView(TextView(this).apply {
+            text = "Thanks!"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Palette.INK)
+        })
+        toastText.addView(TextView(this).apply {
+            text = "You helped nearby Wazers"
+            textSize = 14f
+            setTextColor(0xFF3C4043.toInt())
+        })
+        toastView.addView(toastText)
+        root.addView(toastView, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
 
         root.setOnApplyWindowInsetsListener { _, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -264,18 +289,23 @@ class MainActivity : Activity() {
     private fun applyInsets() {
         bottomBar.setPadding(dp(16), dp(12), dp(16), dp(12) + bottomInset)
         sheet.setPadding(0, 0, 0, bottomInset)
-        val barH = dp(72) + bottomInset
+        val barH = dp(76) + bottomInset
         (reportButton.layoutParams as FrameLayout.LayoutParams).apply {
-            marginEnd = dp(16); bottomMargin = barH + dp(16)
+            marginEnd = dp(14); bottomMargin = barH + dp(14)
         }
         (speed.layoutParams as FrameLayout.LayoutParams).apply {
-            marginStart = dp(16); bottomMargin = barH + dp(18)
+            marginStart = dp(12); bottomMargin = barH + dp(14)
         }
-        (settingsButton.layoutParams as FrameLayout.LayoutParams).apply {
-            marginStart = dp(16); topMargin = topInset + dp(12)
+        (menuButton.layoutParams as FrameLayout.LayoutParams).apply {
+            marginStart = dp(16); topMargin = topInset + dp(14)
         }
-        (badge.layoutParams as FrameLayout.LayoutParams).topMargin = topInset + dp(60)
-        (toastView.layoutParams as FrameLayout.LayoutParams).bottomMargin = barH + dp(100)
+        (musicButton.layoutParams as FrameLayout.LayoutParams).apply {
+            marginEnd = dp(12); topMargin = topInset + dp(20)
+        }
+        (badge.layoutParams as FrameLayout.LayoutParams).topMargin = topInset + dp(22)
+        (toastView.layoutParams as FrameLayout.LayoutParams).apply {
+            marginStart = dp(16); bottomMargin = barH + dp(12)
+        }
         root.requestLayout()
     }
 
@@ -302,6 +332,7 @@ class MainActivity : Activity() {
 
     private fun closeSheet() {
         if (page == Page.NONE) return
+        stopCountdown()
         val ms = Config.int(this, "sheet_ms").toLong()
         page = Page.NONE
         confirmPath = null
@@ -317,6 +348,7 @@ class MainActivity : Activity() {
     }
 
     private fun setPage(p: Page, content: View, newTargets: Map<String, View>, fade: Boolean = true) {
+        stopCountdown()
         sheetContent.removeAllViews()
         sheetContent.addView(content, FrameLayout.LayoutParams(-1, -2))
         targets.clear()
@@ -330,55 +362,58 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun title(text: String, size: Float = 20f) = TextView(this).apply {
-        this.text = text
-        textSize = size
-        typeface = Typeface.DEFAULT_BOLD
-        setTextColor(0xFF111827.toInt())
+    private fun header(text: String, t: HashMap<String, View>, onClose: () -> Unit): View {
+        val h = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(6), dp(8), dp(10))
+        }
+        h.addView(TextView(this).apply {
+            this.text = text
+            textSize = 26f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Palette.INK)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        val close = ImageView(this).apply {
+            setImageResource(R.drawable.ic_close)
+            contentDescription = "Close"
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setOnClickListener { if (!animating()) onClose() }
+        }
+        t["close"] = close
+        h.addView(close, LinearLayout.LayoutParams(dp(48), dp(48)))
+        return h
+    }
+
+    private fun grid(options: List<Option>, keyPrefix: String, t: HashMap<String, View>, onTap: (Option, Tile) -> Unit): LinearLayout {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (row in options.chunked(3)) {
+            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (opt in row) {
+                val tile = Tile(this, opt.label, opt.icon)
+                tile.setOnClickListener { if (!animating()) onTap(opt, tile) }
+                t["$keyPrefix${opt.label}"] = tile
+                r.addView(tile, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            repeat(3 - row.size) { r.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f)) }
+            col.addView(r, LinearLayout.LayoutParams(-1, -2))
+        }
+        return col
     }
 
     private fun showGrid(fade: Boolean = true) {
         val t = HashMap<String, View>()
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(4), dp(12), dp(12))
+            setPadding(0, 0, 0, dp(10))
         }
-        col.addView(title("Report").apply { setPadding(dp(8), dp(4), 0, dp(8)) })
-        for (row in WazeMenu.categories.chunked(3)) {
-            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (cat in row) {
-                val tile = makeTile(this, cat.label, cat.color, cat.glyph)
-                tile.setOnClickListener { if (!animating()) onCategory(cat) }
-                t["tile:${cat.label}"] = tile
-                r.addView(tile, LinearLayout.LayoutParams(0, -2, 1f))
-            }
-            col.addView(r)
+        col.addView(header("What do you see?", t) { closeSheet() }, LinearLayout.LayoutParams(-1, -2))
+        val tiles = grid(WazeMenu.categories.map { Option(it.label, it.icon) }, "tile:", t) { opt, _ ->
+            WazeMenu.category(opt.label)?.let { showConfirm(MenuPath(it.label)) }
         }
+        tiles.setPadding(dp(8), 0, dp(8), 0)
+        col.addView(tiles, LinearLayout.LayoutParams(-1, -2))
         setPage(Page.GRID, col, t, fade)
-    }
-
-    private fun onCategory(cat: Category) {
-        showConfirm(MenuPath(cat.label))
-    }
-
-    private fun header(text: String, t: HashMap<String, View>, onBack: () -> Unit): View {
-        val h = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), 0, dp(8), dp(4))
-        }
-        val back = TextView(this).apply {
-            this.text = "‹"
-            contentDescription = "Back"
-            textSize = 30f
-            setTextColor(0xFF374151.toInt())
-            gravity = Gravity.CENTER
-            setOnClickListener { if (!animating()) onBack() }
-        }
-        t["back"] = back
-        h.addView(back, LinearLayout.LayoutParams(dp(48), dp(48)))
-        h.addView(title(text))
-        return h
     }
 
     private fun showConfirm(path: MenuPath) {
@@ -387,102 +422,103 @@ class MainActivity : Activity() {
         val cat = WazeMenu.category(path.category)!!
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(16), 0, dp(16), dp(16))
+            setPadding(0, 0, 0, dp(12))
         }
-        val hdr = header(cat.label, t) { showGrid() }
-        col.addView(hdr, LinearLayout.LayoutParams(-1, -2))
-        val icon = TextView(this).apply {
-            text = cat.glyph
-            textSize = 34f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            background = oval(cat.color)
+        col.addView(header(cat.sheetTitle, t) { dismissConfirm("close") }, LinearLayout.LayoutParams(-1, -2))
+
+        lateinit var refresh: () -> Unit
+        val tiles = grid(cat.options, "sub:", t) { opt, _ ->
+            val cur = confirmPath ?: return@grid
+            confirmPath = MenuPath(cur.category, if (opt.label == cat.label) "" else opt.label)
+            refresh()
         }
-        col.addView(icon, LinearLayout.LayoutParams(dp(80), dp(80)).apply { topMargin = dp(4) })
-        val selected = TextView(this).apply {
-            textSize = 18f
-            setTextColor(0xFF111827.toInt())
-            gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, dp(10))
-        }
-        fun refreshSelected() {
-            val p = confirmPath ?: return
-            selected.text = if (p.item.isNotEmpty()) p.item else cat.label
-            for (sub in WazeMenu.hazardSubtypes) {
-                t["sub:$sub"]?.isSelected = sub == p.item
-                (t["sub:$sub"] as? LinearLayout)?.getChildAt(0)?.alpha = if (p.item.isEmpty() || sub == p.item) 1f else 0.4f
+        refresh = {
+            val p = confirmPath
+            for (opt in cat.options) {
+                val chosen = p != null && (if (opt.label == cat.label) p.item.isEmpty() else p.item == opt.label)
+                (t["sub:${opt.label}"] as? Tile)?.setChosen(chosen)
             }
         }
-        col.addView(selected, LinearLayout.LayoutParams(-1, -2))
-        if (cat.hasSubmenu) {
-            // Flat subtype list; tapping one selects it (tap again to go back to plain Hazard).
-            for (row in WazeMenu.hazardSubtypes.chunked(3)) {
-                val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                for (sub in row) {
-                    val tile = makeTile(this, sub, cat.color, sub.take(1), iconDp = 50)
-                    tile.setOnClickListener {
-                        if (!animating()) {
-                            val cur = confirmPath ?: return@setOnClickListener
-                            confirmPath = MenuPath(cur.category, if (cur.item == sub) "" else sub)
-                            refreshSelected()
-                        }
-                    }
-                    t["sub:$sub"] = tile
-                    r.addView(tile, LinearLayout.LayoutParams(0, -2, 1f))
-                }
-                repeat(3 - row.size) { r.addView(android.view.View(this), LinearLayout.LayoutParams(0, 1, 1f)) }
-                col.addView(r, LinearLayout.LayoutParams(-1, -2))
-            }
+        refresh()
+        tiles.setPadding(dp(8), 0, dp(8), 0)
+        col.addView(tiles, LinearLayout.LayoutParams(-1, -2))
+
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(14), dp(16), 0)
         }
-        refreshSelected()
-        col.addView(android.view.View(this), LinearLayout.LayoutParams(1, dp(14)))
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val cancel = TextView(this).apply {
             text = "Cancel"
             contentDescription = "Cancel"
             textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF374151.toInt())
-            background = roundRect(0xFFE5E7EB.toInt(), dpf(26f))
-            setOnClickListener { if (!animating()) onCancel() }
-        }
-        val send = TextView(this).apply {
-            text = "Send"
-            contentDescription = "Send"
-            textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            background = roundRect(0xFF2F80ED.toInt(), dpf(26f))
-            setOnClickListener { if (!animating()) onSend() }
+            setTextColor(Palette.BLUE)
+            background = roundRect(Palette.CANCEL_BG, dpf(28f))
+            setOnClickListener { if (!animating()) onCancel("button") }
         }
-        buttons.addView(cancel, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(8) })
-        buttons.addView(send, LinearLayout.LayoutParams(0, dp(52), 1.4f).apply { marginStart = dp(8) })
+        val report = ReportButton(this).apply {
+            setOnClickListener { if (!animating()) onSend("button") }
+        }
+        buttons.addView(cancel, LinearLayout.LayoutParams(0, dp(56), 1f).apply { marginEnd = dp(8) })
+        buttons.addView(report, LinearLayout.LayoutParams(0, dp(56), 1f).apply { marginStart = dp(8) })
         col.addView(buttons, LinearLayout.LayoutParams(-1, -2))
-        t["confirm:send"] = send
+        t["confirm:report"] = report
         t["confirm:cancel"] = cancel
         setPage(Page.CONFIRM, col, t)
+        startCountdown(report)
+    }
+
+    /** Waze sends the report by itself a few seconds after the confirm sheet opens. */
+    private fun startCountdown(button: ReportButton) {
+        val ms = Config.int(this, "auto_send_ms").toLong()
+        if (ms <= 0) return
+        countdown = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = ms
+            interpolator = LinearInterpolator()
+            addUpdateListener { button.progress = it.animatedValue as Float }
+            doOnEndOnce { if (page == Page.CONFIRM) onSend("timeout") }
+            start()
+        }
+    }
+
+    private fun ValueAnimator.doOnEndOnce(block: () -> Unit) {
+        addListener(object : android.animation.AnimatorListenerAdapter() {
+            private var cancelled = false
+            override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+            override fun onAnimationEnd(animation: android.animation.Animator) { if (!cancelled) block() }
+        })
+    }
+
+    private fun stopCountdown() {
+        countdown?.cancel()
+        countdown = null
     }
 
     private fun via() = if (macroJob != null) "auto_macro" else "touch"
 
-    private fun onSend() {
+    private fun onSend(trigger: String) {
         val p = confirmPath ?: return
-        ReportLog.report(this, p, "send", via(), macroJob)
+        stopCountdown()
+        ReportLog.report(this, p, "send", via(), macroJob, trigger)
         closeSheet()
         toastView.visibility = View.VISIBLE
         handler.removeCallbacks(hideToast)
         handler.postDelayed(hideToast, Config.int(this, "toast_ms").toLong())
+        // a report that went out by itself while the macro was still on the sheet is a macro bug
+        macroJob?.takeIf { trigger == "timeout" }?.let { failMacro(it, "auto send fired after auto_send_ms before the macro tapped") }
     }
 
-    private fun onCancel() {
+    private fun onCancel(trigger: String) {
         val p = confirmPath ?: return
+        stopCountdown()
         // Reaching the confirm sheet and backing out = dry-run rehearsal, nothing is reported.
-        ReportLog.report(this, p, "cancel", via(), macroJob)
+        ReportLog.report(this, p, "cancel", via(), macroJob, trigger)
         closeSheet()
     }
+
+    /** X, back or scrim on the confirm sheet: same as Cancel, logged with its own trigger. */
+    private fun dismissConfirm(trigger: String) = onCancel(trigger)
 
     // ---------------------------------------------------------------- auto macro
 
@@ -503,13 +539,14 @@ class MainActivity : Activity() {
         steps += "report_button" to Page.GRID
         steps += "tile:${cat.label}" to Page.CONFIRM
         if (job.path.item.isNotEmpty()) steps += "sub:${job.path.item}" to Page.CONFIRM
-        steps += (if (job.dryRun) "confirm:cancel" else "confirm:send") to Page.NONE
+        steps += (if (job.dryRun) "confirm:cancel" else "confirm:report") to Page.NONE
         if (page != Page.NONE) closeSheet() // macro starts from the map screen
         handler.postDelayed({ step(job, steps, 0) }, Config.int(this, "macro_start_delay_ms").toLong())
     }
 
     private fun step(job: MacroJob, steps: List<Pair<String, Page>>, i: Int) {
         if (isFinishing || isDestroyed) { endMacro(job, "failed", "activity closed"); return }
+        if (macroJob !== job) return // already ended (for example by an auto send)
         if (i >= steps.size) {
             endMacro(job, if (job.dryRun) "dry_run_cancelled" else "sent")
             return
@@ -518,6 +555,7 @@ class MainActivity : Activity() {
         val wait = Config.int(this, "macro_wait_ms").toLong()
         val before = if (key == "confirm:cancel") Config.int(this, "dry_run_hold_ms").toLong() else 0L
         handler.postDelayed({
+            if (macroJob !== job) return@postDelayed
             val v = if (key == "report_button") reportButton else targets[key]
             if (v == null || !v.isShown) {
                 failMacro(job, "'$key' not on screen (page=$page)")
@@ -525,9 +563,10 @@ class MainActivity : Activity() {
             }
             tap(v)
             handler.postDelayed({
+                if (macroJob !== job) return@postDelayed
                 if (page != expect) failMacro(job, "after tapping '$key' expected $expect but page=$page")
                 else if (key.startsWith("sub:") && confirmPath?.item != key.removePrefix("sub:"))
-                    failMacro(job, "tapped '$key' but selected subtype is '${confirmPath?.item}'")
+                    failMacro(job, "tapped '$key' but selected tile is '${confirmPath?.item}'")
                 else step(job, steps, i + 1)
             }, wait)
         }, before)
