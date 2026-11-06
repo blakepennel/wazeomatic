@@ -28,12 +28,16 @@ python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --sink stdo
 | `--conf`, `--report-conf`, `--min-hits`, `--window`, `--cooldown`, `--global-cooldown` | Detector and Report Manager thresholds (defaults match the phone app) |
 | `--stopped-vehicle` | Enable the experimental car-on-shoulder heuristic |
 | `--camera-sim [--sim-res 1280x720]` | Camera-style degradation, see below |
-| `--zoom-crop [x1,y1,x2,y2]` | Two-pass inference: each model also runs on a zoomed crop of the road ahead (default middle 50 % x 35-75 % of the frame) and the passes are merged; finds small distant hazards for one extra inference per model |
+| `--zoom-crop [x1,y1,x2,y2]` | Two-pass inference: the hazard model(s) also run on a zoomed crop of the road ahead (default middle 50 % x 35-75 % of the frame) and the passes are merged; finds small distant hazards for one extra inference per model (`--zoom-coco` extends it to the COCO model) |
+| `--ensemble-model <onnx>` (repeatable) | Fuse more hazard models with `--hazard-model`: all members run in parallel threads and their boxes are merged by Weighted Boxes Fusion (`--fusion wbf`, default) or NMS (`--fusion nms`); `--ensemble-weights 2,1`, `--conf-type avg|max|box_avg`, `--fusion-iou 0.55` |
+| `--class-conf pothole=0.5,cone=0.4` | Per-label confidence floor applied after fusion (detector side); `--report-class-conf` does the same for the Report Manager's hit threshold |
+| `--track-iou 0.3 [--track-grow 1.5]` | Spatial tracking in the Report Manager: the hits behind a report must come from boxes that overlap (or sit within 1.5 box sizes) frame to frame, so three unrelated flickers in three corners no longer add up to a report |
+| `--prefetch 2`, `--no-parallel` | Frame decoding (and CameraSim) on a background thread, two frames ahead; hazard and COCO models run side by side unless `--no-parallel` |
 | `0 --camera` | Live webcam / capture device instead of a file (`--max-frames` ends the run); see "Live camera without a webcam" |
 | `--show`, `--record <mp4>`, `--stats-json <file>` | Live window, annotated video, latency/FPS summary |
 | `--no-coco`, `--no-hazard`, `--threads 4` | Pick models; ORT thread count (4 approximates a phone's big cores) |
 
-`run_video.py` runs the hazard and COCO models on each sampled frame, feeds the Report Manager, and prints a `[stats]` line with mean/p50/p90 inference latency and pipeline FPS so results can go into [model-research.md](model-research.md#measured-results).
+`run_video.py` runs the hazard stack and the COCO model on each sampled frame, feeds the Report Manager, and prints a `[stats]` line with mean/p50/p90 inference time (all models added up, the compute cost), the wall-clock latency of one frame (what the parallel run actually takes) and pipeline FPS, so results can go into [model-research.md](model-research.md#measured-results). The same detector flags are understood by `tools/eval_events.py`, so a configuration can be scored and then run unchanged (`wazeomatic/build.py` builds the stack for both).
 
 ### Camera-style degradation
 

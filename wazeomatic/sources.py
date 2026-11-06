@@ -151,3 +151,56 @@ class CameraSource:
 
     def release(self) -> None:
         self.cap.release()
+
+
+class Prefetch:
+    """Decodes (and degrades, with CameraSim) frames on a background thread so the inference
+    thread never waits on disk or the camera. ``depth`` frames are buffered; for a live camera
+    keep it at 1-2 so the pipeline does not fall behind real time.
+    """
+
+    def __init__(self, source, depth: int = 2):
+        import queue
+        import threading
+
+        self.source = source
+        self.depth = max(1, depth)
+        self._q: "queue.Queue" = queue.Queue(maxsize=self.depth)
+        self._stop = threading.Event()
+        self._done = object()
+        self._thread = threading.Thread(target=self._run, name="prefetch", daemon=True)
+        self._started = False
+
+    def __getattr__(self, name):  # width, height, fps, effective_fps, frame_count ...
+        return getattr(self.source, name)
+
+    def _run(self) -> None:
+        try:
+            for fr in self.source:
+                if self._stop.is_set():
+                    break
+                self._q.put(fr)
+        finally:
+            self._q.put(self._done)
+
+    def __iter__(self) -> Iterator[Frame]:
+        if not self._started:
+            self._started = True
+            self._thread.start()
+        while True:
+            item = self._q.get()
+            if item is self._done:
+                return
+            yield item
+
+    def release(self) -> None:
+        self._stop.set()
+        # unblock the producer if it is waiting on a full queue
+        try:
+            while True:
+                self._q.get_nowait()
+        except Exception:
+            pass
+        if self._started:
+            self._thread.join(timeout=2.0)
+        self.source.release()

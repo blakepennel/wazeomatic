@@ -10,6 +10,10 @@ Three layers, in order:
 3. **Heuristics** - a hood exclusion zone (boxes touching the bottom edge of the frame are
    the car's own bonnet reflection, not road), and the stopped-vehicle-on-shoulder check
    (experimental, off by default).
+4. **Spatial consistency** (``track_iou`` > 0) - the hits that make up a report must come from
+   boxes that overlap frame to frame, i.e. from one object the car is approaching, not from a
+   flicker here and a flicker there. Per-label confidence floors (``min_confidence_by_label``)
+   let a noisy class such as cone demand more than a clean one such as construction sign.
 
 Everything here is pure Python so it can be unit tested without a model, and the
 Kotlin ``ReportManager`` in the Android app implements the same rules.
@@ -28,6 +32,11 @@ class ReportConfig:
     window: int = 10                 # inference frames considered
     min_hits: int = 3                # hits required inside the window
     min_confidence: float = 0.45     # per-detection confidence to count as a hit
+    min_confidence_by_label: dict[str, float] = field(default_factory=dict)  # overrides per label
+    track_iou: float = 0.0           # > 0: hits must chain through boxes with at least this IoU
+                                     # (frame to frame, boxes grown by track_grow), or whose centres
+                                     # lie within track_grow box sizes of each other
+    track_grow: float = 1.5          # box growth for the IoU test / centre-distance tolerance
     hood_frac: float = 0.10          # ignore boxes whose bottom edge is in the lowest 10 % of the frame
                                      # (the car's own hood / dashboard reflection looks like a pothole)
     cooldown_s: float = 60.0         # per hazard type
@@ -44,8 +53,35 @@ class ReportConfig:
 
 @dataclass
 class _Track:
-    hits: deque = field(default_factory=deque)        # (frame_idx, confidence, bbox)
+    hits: deque = field(default_factory=deque)        # (frame_idx, confidence, bbox, label)
     last_emitted_ts: float = -1e9
+    tracklets: list = field(default_factory=list)     # spatial mode: [_Tracklet]
+
+
+@dataclass
+class _Tracklet:
+    bbox: tuple
+    hits: deque = field(default_factory=deque)        # (frame_idx, confidence, bbox, label)
+
+
+def _grown_iou(a: tuple, b: tuple, grow: float) -> float:
+    ax1, ay1 = a[0] - a[2] * grow / 2, a[1] - a[3] * grow / 2
+    ax2, ay2 = a[0] + a[2] * grow / 2, a[1] + a[3] * grow / 2
+    bx1, by1 = b[0] - b[2] * grow / 2, b[1] - b[3] * grow / 2
+    bx2, by2 = b[0] + b[2] * grow / 2, b[1] + b[3] * grow / 2
+    iw, ih = max(0.0, min(ax2, bx2) - max(ax1, bx1)), max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = iw * ih
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _associated(a: tuple, b: tuple, iou_thr: float, grow: float) -> bool:
+    """Same object across two frames: grown boxes overlap enough, or the centres are within
+    ``grow`` box sizes of each other (an object close to the car moves a lot per frame)."""
+    if _grown_iou(a, b, grow) >= iou_thr:
+        return True
+    dist = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+    return dist <= grow * max(a[2], a[3], b[2], b[3])
 
 
 class ReportManager:
@@ -67,12 +103,14 @@ class ReportManager:
         self._frame = self._frame + 1 if frame_index is None else frame_index
         now = self.clock()
         best: dict[str, Detection] = {}
+        accepted: dict[str, list[Detection]] = defaultdict(list)
         for d in detections:
             hazard = self._hazard_for(d)
-            if hazard is None or d.confidence < self.cfg.min_confidence:
+            if hazard is None or d.confidence < self._min_conf(d.label):
                 continue
             if self._in_hood_zone(d):
                 continue
+            accepted[hazard].append(d)
             if hazard not in best or d.confidence > best[hazard].confidence:
                 best[hazard] = d
         # record hits (one per hazard per frame) and trim the window
@@ -81,10 +119,13 @@ class ReportManager:
         for hazard, tr in self._tracks.items():
             while tr.hits and tr.hits[0][0] <= self._frame - self.cfg.window:
                 tr.hits.popleft()
+        if self.cfg.track_iou > 0:
+            self._update_tracklets(accepted)
 
         events: list[HazardEvent] = []
         for hazard, tr in self._tracks.items():
-            if len(tr.hits) < self.cfg.min_hits:
+            hits = self._qualifying_hits(tr)
+            if hits is None:
                 continue
             if now - tr.last_emitted_ts < self.cfg.cooldown_s:
                 continue
@@ -92,14 +133,57 @@ class ReportManager:
                 continue
             if hazard == "HAZARD_SHOULDER_CAR_STOPPED" and not self._stopped_vehicle_confirmed(tr):
                 continue
-            _, conf, bbox, label = max(tr.hits, key=lambda h: h[1])
+            _, conf, bbox, label = max(hits, key=lambda h: h[1])
             ev = HazardEvent(hazard_type=hazard, confidence=conf, source=self.source, ts=now,
                              frame_index=self._frame, bbox=bbox, label=label, lat=lat, lon=lon)
             events.append(ev)
             tr.last_emitted_ts = now
             self._last_global_ts = now
             tr.hits.clear()
+            tr.tracklets.clear()
         return events
+
+    # ------------------------------------------------------------ spatial tracking
+    def _min_conf(self, label: str) -> float:
+        return self.cfg.min_confidence_by_label.get(label, self.cfg.min_confidence)
+
+    def _update_tracklets(self, accepted: dict[str, list[Detection]]) -> None:
+        """Greedy IoU association of this frame's accepted boxes to per-hazard tracklets."""
+        for hazard, dets in accepted.items():
+            tr = self._tracks[hazard]
+            used: set[int] = set()
+            for d in sorted(dets, key=lambda x: -x.confidence):
+                best_i, best_iou = -1, -1.0
+                for i, tl in enumerate(tr.tracklets):
+                    if i in used or not _associated(tl.bbox, d.bbox, self.cfg.track_iou, self.cfg.track_grow):
+                        continue
+                    iou = _grown_iou(tl.bbox, d.bbox, self.cfg.track_grow)
+                    if iou > best_iou:
+                        best_i, best_iou = i, iou
+                hit = (self._frame, d.confidence, d.bbox, d.label)
+                if best_i < 0:
+                    tr.tracklets.append(_Tracklet(bbox=d.bbox, hits=deque([hit])))
+                    used.add(len(tr.tracklets) - 1)
+                else:
+                    tl = tr.tracklets[best_i]
+                    tl.bbox = d.bbox
+                    tl.hits.append(hit)
+                    used.add(best_i)
+        # trim windows and drop stale tracklets (for every hazard, not only those seen now)
+        for tr in self._tracks.values():
+            for tl in tr.tracklets:
+                while tl.hits and tl.hits[0][0] <= self._frame - self.cfg.window:
+                    tl.hits.popleft()
+            tr.tracklets = [tl for tl in tr.tracklets if tl.hits]
+
+    def _qualifying_hits(self, tr: _Track):
+        """The hits that justify a report now, or None."""
+        if self.cfg.track_iou <= 0:
+            return tr.hits if len(tr.hits) >= self.cfg.min_hits else None
+        ready = [tl for tl in tr.tracklets if len(tl.hits) >= self.cfg.min_hits]
+        if not ready:
+            return None
+        return max(ready, key=lambda tl: max(h[1] for h in tl.hits)).hits
 
     # ----------------------------------------------------------------- helpers
     def _hazard_for(self, d: Detection) -> Optional[str]:

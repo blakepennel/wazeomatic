@@ -22,6 +22,7 @@ Examples
     python tools/eval_events.py --sweep --limit 40 --camera-sim
     python tools/eval_events.py --model models/hazard_yolo11n_320.int8.onnx --data F:/dev/datasets/wazeomatic_hazards_640
     python tools/eval_events.py --skip-videos --skip-boxes       # events only
+    python tools/eval_events.py --ensemble-model models/hazard_yolo11n_416.onnx --zoom-crop --track-iou 0.3
 
 Writes ``results.json`` and ``results.md`` to ``--out`` (default ``runs/eval/<timestamp>/``).
 """
@@ -41,6 +42,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running from the repo without installing
 
+from wazeomatic.build import DetectorSpec, add_detector_args, build_detectors, build_hazard_detector  # noqa: E402
+from wazeomatic.fusion import parse_class_thresholds  # noqa: E402
 from wazeomatic.report_manager import ReportConfig, ReportManager  # noqa: E402
 from wazeomatic.schema import DEFAULT_CLASS_TO_HAZARD, Detection  # noqa: E402
 
@@ -487,15 +490,12 @@ def list_val_images(data: Path, split: str, limit: int | None, seed: int) -> tup
 # ---------------------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default=str(ROOT / "models" / "hazard_yolo11n.onnx"), help="hazard ONNX model")
-    ap.add_argument("--coco-model", default=str(ROOT / "models" / "coco_yolo11n.onnx"),
-                    help="stock COCO model, used only for the video false-positive runs")
+    ap.add_argument("--model", dest="hazard_model_alias", help="alias of --hazard-model")
+    add_detector_args(ap)
     ap.add_argument("--data", default=str(DEFAULT_DATA), help="YOLO dataset root with images/<split>, labels/<split>")
     ap.add_argument("--split", default="val")
     ap.add_argument("--classes", default=str(ROOT / "configs" / "classes.yaml"))
-    ap.add_argument("--conf", type=float, default=0.25, help="detector confidence threshold for metrics")
-    ap.add_argument("--iou", type=float, default=0.5, help="detector NMS IoU threshold")
-    ap.add_argument("--threads", type=int, default=4)
+    ap.set_defaults(conf=0.25)  # metrics want the low detector threshold; the pipeline default is 0.35
     ap.add_argument("--frames", type=int, default=12, help="synthetic frames per image")
     ap.add_argument("--limit", type=int, help="cap images per source (positives and negatives separately)")
     ap.add_argument("--seed", type=int, default=0)
@@ -514,6 +514,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--report-conf", type=float, default=0.45)
     ap.add_argument("--cooldown", type=float, default=60.0)
     ap.add_argument("--global-cooldown", type=float, default=5.0)
+    ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")
+    ap.add_argument("--track-iou", type=float, default=0.0, help="> 0: spatial tracking in the report manager")
+    ap.add_argument("--track-grow", type=float, default=1.5)
     return ap
 
 
@@ -533,29 +536,39 @@ def main(argv=None) -> int:
     from wazeomatic.detector import OnnxDetector
 
     args = build_parser().parse_args(argv)
+    if args.hazard_model_alias:
+        args.hazard_model = args.hazard_model_alias
     t_start = time.perf_counter()
     out_dir = Path(args.out) if args.out else ROOT / "runs" / "eval" / datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     class_to_hazard = load_class_to_hazard(Path(args.classes))
     base_cfg = dict(window=args.window, min_hits=args.min_hits, min_confidence=args.report_conf,
+                    min_confidence_by_label=parse_class_thresholds(args.report_class_conf),
+                    track_iou=args.track_iou, track_grow=args.track_grow,
                     cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown, class_to_hazard=class_to_hazard)
-    model_path = Path(args.model)
-    labels = load_labels(model_path)
-    detector = OnnxDetector(model_path, labels, "hazard", args.conf, args.iou, threads=args.threads)
+    spec = DetectorSpec.from_args(args)
+    spec.coco_model = None  # the hazard stack alone for boxes/events; videos add COCO below
+    model_path = Path(args.hazard_model)
+    detector = build_hazard_detector(spec)
+    if detector is None:
+        raise SystemExit(f"hazard model not found: {model_path}")
+    labels = list(detector.labels)
     imgsz = detector.size
+    print(f"[info] detector stack: {spec.describe()}", file=sys.stderr)
     hazard_types = sorted({class_to_hazard[lb] for lb in labels if lb in class_to_hazard})
     data = Path(args.data)
     images, counts = list_val_images(data, args.split, args.limit, args.seed)
 
     results: dict = {
-        "model": str(model_path), "imgsz": imgsz, "labels": labels, "data": str(data), "split": args.split,
-        "detector_conf": args.conf, "detector_iou": args.iou, "threads": args.threads,
+        "model": str(model_path), "stack": spec.describe(), "imgsz": imgsz, "labels": labels, "data": str(data),
+        "split": args.split, "detector_conf": args.conf, "detector_iou": args.iou, "threads": args.threads,
         "report_config": {k: v for k, v in base_cfg.items() if k != "class_to_hazard"},
         "hazard_types": hazard_types, "dataset": counts, "frames_per_clip": args.frames,
         "camera_sim": args.camera_sim, "seed": args.seed, "timings_s": {},
     }
     md: list[str] = [f"# Event-level evaluation: {model_path.name} (input {imgsz}) on {data.name}/{args.split}", "",
+                     f"Detector stack: {spec.describe()}", "",
                      f"{counts['used']} of {counts['total']} images used ({counts['used_per_source']}); "
                      f"detector conf {args.conf}, ReportConfig {results['report_config']}", ""]
     print(md[0], file=sys.stderr)
@@ -643,7 +656,7 @@ def main(argv=None) -> int:
         t0 = time.perf_counter()
         detectors = [detector]
         coco = Path(args.coco_model)
-        if coco.exists():
+        if coco.exists() and not args.no_coco:
             detectors.append(OnnxDetector(coco, load_labels(coco), "coco", args.conf, args.iou, threads=args.threads))
         else:
             print(f"[warn] COCO model not found at {coco}; videos use the hazard model only", file=sys.stderr)

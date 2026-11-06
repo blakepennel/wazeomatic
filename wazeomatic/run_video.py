@@ -6,6 +6,8 @@ Examples
     python -m wazeomatic.run_video clip.mp4 --sink tcp:192.168.1.20:8765        # to the phone app
     python -m wazeomatic.run_video clip.mp4 --sink adb --adb-dry-run            # straight to emulator
     python -m wazeomatic.run_video 0 --camera                                    # webcam / Pi camera
+    python -m wazeomatic.run_video clip.mp4 --ensemble-model models/hazard_yolo11n_416.onnx --zoom-crop \
+        --track-iou 0.3 --class-conf cone=0.5                                    # fused + tracked
 """
 from __future__ import annotations
 
@@ -16,42 +18,24 @@ from pathlib import Path
 
 import yaml
 
-from .detector import OnnxDetector, ZoomDetector
+from .build import DetectorSpec, add_detector_args, build_detectors
+from .fusion import parse_class_thresholds
 from .pipeline import Pipeline
 from .report_manager import ReportConfig, ReportManager
 from .schema import DEFAULT_CLASS_TO_HAZARD
 from .sinks import build_sinks
-from .sources import CameraSim, CameraSource, VideoSource
+from .sources import CameraSim, CameraSource, Prefetch, VideoSource
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _labels_for(model_path: Path, explicit: str | None) -> list[str]:
-    if explicit:
-        return [ln.strip() for ln in Path(explicit).read_text(encoding="utf-8").splitlines() if ln.strip()]
-    cand = model_path.with_suffix(".labels.txt")
-    if cand.exists():
-        return [ln.strip() for ln in cand.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    raise SystemExit(f"no labels file for {model_path} (expected {cand})")
 
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", help="video path, or camera index with --camera")
     ap.add_argument("--camera", action="store_true")
-    ap.add_argument("--hazard-model", default=str(ROOT / "models" / "hazard_yolo11n.onnx"))
-    ap.add_argument("--hazard-labels")
-    ap.add_argument("--coco-model", default=str(ROOT / "models" / "coco_yolo11n.onnx"))
-    ap.add_argument("--coco-labels")
-    ap.add_argument("--no-coco", action="store_true", help="skip the stock COCO detector")
-    ap.add_argument("--no-hazard", action="store_true", help="skip the custom hazard detector")
+    add_detector_args(ap)
     ap.add_argument("--classes", default=str(ROOT / "configs" / "classes.yaml"))
-    ap.add_argument("--conf", type=float, default=0.35, help="detector confidence threshold")
-    ap.add_argument("--iou", type=float, default=0.5)
-    ap.add_argument("--threads", type=int, default=4, help="ORT intra-op threads (phone-like: 4)")
-    ap.add_argument("--zoom-crop", nargs="?", const="0.25,0.35,0.75,0.75", default=None,
-                    help="also run each model on a zoomed crop of the road ahead (x1,y1,x2,y2 fractions); "
-                         "doubles inference cost, finds small distant hazards")
+    ap.add_argument("--prefetch", type=int, default=2, help="frames decoded ahead on a background thread (0 = off)")
     ap.add_argument("--step", type=int, default=3, help="use every Nth frame (30 fps / 3 = 10 inferences/s)")
     ap.add_argument("--start", type=float, default=0.0, help="start offset in seconds")
     ap.add_argument("--max-frames", type=int)
@@ -64,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--report-conf", type=float, default=0.45)
     ap.add_argument("--cooldown", type=float, default=60.0)
     ap.add_argument("--global-cooldown", type=float, default=5.0)
+    ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")
+    ap.add_argument("--track-iou", type=float, default=0.0,
+                    help="> 0: hits must come from boxes overlapping frame to frame (spatial tracking)")
+    ap.add_argument("--track-grow", type=float, default=1.5, help="box growth factor for the tracking IoU test")
     ap.add_argument("--stopped-vehicle", action="store_true", help="enable experimental shoulder heuristic")
     ap.add_argument("--event-source", default="sim", choices=["sim", "pi", "phone"])
     # sinks
@@ -87,29 +75,15 @@ def main(argv=None) -> int:
     class_to_hazard = dict(DEFAULT_CLASS_TO_HAZARD)
     class_to_hazard.update((cls_cfg or {}).get("hazard_map", {}))
 
-    detectors = []
-    hz = Path(args.hazard_model)
-    if not args.no_hazard and hz.exists():
-        detectors.append(OnnxDetector(hz, _labels_for(hz, args.hazard_labels), "hazard", args.conf, args.iou,
-                                      threads=args.threads))
-    elif not args.no_hazard:
-        print(f"[warn] hazard model not found at {hz}; running without it", file=sys.stderr)
-    cc = Path(args.coco_model)
-    if not args.no_coco and cc.exists():
-        detectors.append(OnnxDetector(cc, _labels_for(cc, args.coco_labels), "coco", args.conf, args.iou,
-                                      threads=args.threads))
-    elif not args.no_coco:
-        print(f"[warn] coco model not found at {cc}; running without it", file=sys.stderr)
+    spec = DetectorSpec.from_args(args)
+    detectors = build_detectors(spec)
     if not detectors:
         raise SystemExit("no models available; run tools/export_onnx.py first")
-    if args.zoom_crop:
-        # second pass on the road ahead at full resolution (see ZoomDetector)
-        crop = tuple(float(v) for v in args.zoom_crop.split(","))
-        if len(crop) != 4:
-            raise SystemExit("--zoom-crop wants x1,y1,x2,y2 as fractions, e.g. 0.25,0.35,0.75,0.75")
-        detectors = [ZoomDetector(d, crop, args.iou) for d in detectors]
+    print(f"[info] detectors: {spec.describe()}", file=sys.stderr)
 
     cfg = ReportConfig(window=args.window, min_hits=args.min_hits, min_confidence=args.report_conf,
+                       min_confidence_by_label=parse_class_thresholds(args.report_class_conf),
+                       track_iou=args.track_iou, track_grow=args.track_grow,
                        cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown,
                        class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
     manager = ReportManager(cfg, source=args.event_source)
@@ -129,9 +103,11 @@ def main(argv=None) -> int:
               file=sys.stderr)
     for d in detectors:
         print(f"[info] model {d.name}: input {d.size}, {len(d.labels)} classes", file=sys.stderr)
+    if args.prefetch > 0:
+        source = Prefetch(source, depth=args.prefetch)
 
     pipe = Pipeline(detectors, manager, sinks, show=args.show, record_path=args.record,
-                    record_fps=source.effective_fps)
+                    record_fps=source.effective_fps, parallel=not args.no_parallel)
     stats = pipe.run(source)
     source.release()
     summary = stats.summary()

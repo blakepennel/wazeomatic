@@ -53,14 +53,16 @@ class PipelineStats:
     frames: int = 0
     detections: int = 0
     events: int = 0
-    infer_ms: list = field(default_factory=list)
+    infer_ms: list = field(default_factory=list)      # summed model time per frame (compute)
+    latency_ms: list = field(default_factory=list)    # wall time of one process() call
     started: float = field(default_factory=time.time)
 
     def summary(self) -> dict:
         ms = sorted(self.infer_ms)
+        lat = sorted(self.latency_ms)
 
-        def pct(p: float) -> float:
-            return ms[min(len(ms) - 1, int(p * len(ms)))] if ms else 0.0
+        def pct(arr: list, p: float) -> float:
+            return arr[min(len(arr) - 1, int(p * len(arr)))] if arr else 0.0
 
         wall = time.time() - self.started
         return {
@@ -68,8 +70,10 @@ class PipelineStats:
             "detections": self.detections,
             "events": self.events,
             "infer_ms_mean": round(sum(ms) / len(ms), 2) if ms else 0.0,
-            "infer_ms_p50": round(pct(0.5), 2),
-            "infer_ms_p90": round(pct(0.9), 2),
+            "infer_ms_p50": round(pct(ms, 0.5), 2),
+            "infer_ms_p90": round(pct(ms, 0.9), 2),
+            "latency_ms_mean": round(sum(lat) / len(lat), 2) if lat else 0.0,
+            "latency_ms_p90": round(pct(lat, 0.9), 2),
             "wall_s": round(wall, 1),
             "pipeline_fps": round(self.frames / wall, 2) if wall else 0.0,
         }
@@ -78,8 +82,14 @@ class PipelineStats:
 class Pipeline:
     def __init__(self, detectors: Sequence[OnnxDetector], manager: ReportManager, sinks: Sequence,
                  show: bool = False, record_path: Optional[str | Path] = None, record_fps: float = 10.0,
-                 on_frame=None):
+                 on_frame=None, parallel: bool = True):
         self.detectors = list(detectors)
+        # independent models (hazard, COCO) run side by side; ONNX Runtime releases the GIL
+        self._pool = None
+        if parallel and len(self.detectors) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._pool = ThreadPoolExecutor(max_workers=len(self.detectors), thread_name_prefix="detect")
         self.manager = manager
         self.sinks = list(sinks)
         self.show = show
@@ -91,12 +101,17 @@ class Pipeline:
         self.recent_events: list[tuple[float, HazardEvent]] = []
 
     def process(self, frame: Frame) -> tuple[list[Detection], list[HazardEvent]]:
+        t0 = time.perf_counter()
         dets: list[Detection] = []
-        ms = 0.0
-        for det in self.detectors:
-            dets.extend(det(frame.image))
-            ms += det.last_ms
+        if self._pool is not None:
+            for part in self._pool.map(lambda d: d(frame.image), self.detectors):
+                dets.extend(part)
+        else:
+            for det in self.detectors:
+                dets.extend(det(frame.image))
+        ms = float(sum(det.last_ms for det in self.detectors))
         events = self.manager.update(dets, frame_index=frame.index)
+        self.stats.latency_ms.append((time.perf_counter() - t0) * 1000.0)
         for ev in events:
             for s in self.sinks:
                 s.send(ev)
@@ -136,6 +151,12 @@ class Pipeline:
         return self.stats
 
     def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+        for d in self.detectors:
+            if hasattr(d, "close"):
+                d.close()
         if self._writer is not None:
             self._writer.release()
             self._writer = None

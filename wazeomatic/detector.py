@@ -239,3 +239,90 @@ def merge_detections(dets: list[Detection], iou_thres: float = 0.5) -> list[Dete
     offs = np.array([labels.index(d.label) * 4.0 for d in dets], dtype=np.float32)
     keep = nms(xyxy + offs[:, None], conf, iou_thres)
     return [dets[i] for i in sorted(keep, key=lambda i: -conf[i])]
+
+
+class EnsembleDetector:
+    """Runs several detectors on the same frame (in parallel threads; ONNX Runtime releases the
+    GIL) and fuses their boxes, by default with Weighted Boxes Fusion (see ``fusion.py``).
+
+    Typical members: the 640 px hazard model plus the 416 px one, or a model plus its
+    ``ZoomDetector`` wrapper. Members may have different label sets; fusion is per label, so a
+    label only one member knows simply gets that member's votes against the full weight sum.
+    ``class_conf`` applies a per-label confidence floor after fusion (``{"pothole": 0.5}``).
+    """
+
+    def __init__(self, members: Sequence, weights: Sequence[float] | None = None, fusion: str = "wbf",
+                 iou_thres: float = 0.55, conf_type: str = "avg", parallel: bool = True,
+                 class_conf: dict[str, float] | None = None, name: str = "ensemble"):
+        if not members:
+            raise ValueError("EnsembleDetector needs at least one member")
+        self.members = list(members)
+        self.weights = list(weights) if weights is not None else [1.0] * len(self.members)
+        if len(self.weights) != len(self.members):
+            raise ValueError("one weight per member expected")
+        if fusion not in ("wbf", "nms"):
+            raise ValueError("fusion must be 'wbf' or 'nms'")
+        self.fusion = fusion
+        self.iou_thres = iou_thres
+        self.conf_type = conf_type
+        self.parallel = parallel and len(self.members) > 1
+        self.class_conf = dict(class_conf or {})
+        self.name = name
+        seen: list[str] = []
+        for m in self.members:
+            for lb in m.labels:
+                if lb not in seen:
+                    seen.append(lb)
+        self.labels = seen
+        self.size = max(m.size for m in self.members)
+        self.conf_thres = min(m.conf_thres for m in self.members)
+        self.last_ms = 0.0          # summed member inference time (compute cost)
+        self.last_wall_ms = 0.0     # wall time of the parallel run (latency)
+        self._pool = None
+        if self.parallel:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._pool = ThreadPoolExecutor(max_workers=len(self.members), thread_name_prefix="ensemble")
+
+    def __call__(self, frame_bgr: np.ndarray) -> list[Detection]:
+        from .fusion import apply_class_thresholds, fuse_nms, fuse_wbf
+
+        t0 = time.perf_counter()
+        if self._pool is not None:
+            results = list(self._pool.map(lambda m: m(frame_bgr), self.members))
+        else:
+            results = [m(frame_bgr) for m in self.members]
+        self.last_ms = float(sum(m.last_ms for m in self.members))
+        self.last_wall_ms = (time.perf_counter() - t0) * 1000.0
+        if self.fusion == "nms":
+            fused = fuse_nms(results, self.iou_thres)
+        else:
+            fused = fuse_wbf(results, self.weights, self.iou_thres, conf_type=self.conf_type, model_name=self.name)
+        return apply_class_thresholds(fused, self.class_conf)
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+
+
+class ClassFilter:
+    """Wraps any detector and applies per-label confidence floors to its output."""
+
+    def __init__(self, base, class_conf: dict[str, float], default: float = 0.0):
+        self.base = base
+        self.class_conf = dict(class_conf)
+        self.default = default
+        self.labels = base.labels
+        self.name = base.name
+        self.size = base.size
+        self.conf_thres = base.conf_thres
+
+    @property
+    def last_ms(self) -> float:
+        return self.base.last_ms
+
+    def __call__(self, frame_bgr: np.ndarray) -> list[Detection]:
+        from .fusion import apply_class_thresholds
+
+        return apply_class_thresholds(self.base(frame_bgr), self.class_conf, self.default)
