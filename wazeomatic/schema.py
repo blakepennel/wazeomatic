@@ -50,6 +50,8 @@ DEFAULT_CLASS_TO_HAZARD: dict[str, str] = {
     "cone": "HAZARD_ON_ROAD_CONSTRUCTION",
     "construction_sign": "HAZARD_ON_ROAD_CONSTRUCTION",
     "delineator": "HAZARD_ON_ROAD_CONSTRUCTION",
+    "barricade": "HAZARD_ON_ROAD_CONSTRUCTION",
+    "worker": "HAZARD_ON_ROAD_CONSTRUCTION",
     "police_vehicle": "POLICE",
     # COCO classes used from the stock detector
     "dog": "HAZARD_SHOULDER_ANIMALS",

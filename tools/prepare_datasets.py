@@ -10,6 +10,12 @@ Sources (download locations are the ones used on the team machine; override with
                   vertical_pannel from vehicle-mounted cameras (2880x1860)
   rdd2022_full    dronefreak/RDD2022 mirror, pothole images only (CC BY-SA)  YOLO txt; 3 = pothole,
                   (tools/fetch_rdd2022_potholes.py)                         0-2 cracks dropped
+  roadwork        ROADWork (CMU, ODC-By 1.0), HF mirror anuragxel/roadwork-dataset  COCO json; 1920x1080
+                  dashcam frames from 18 US cities: Cone, Drum, Tubular Marker, Vertical Panel,
+                  Barricade, Barrier, TTC signs, Arrow Board, Worker ...
+  argoverse       Argoverse 2 sensor logs (CC BY-NC-SA 4.0) front camera, cuboids projected to 2D
+                  by tools/argoverse_to_yolo.py: cone, barrel (-> delineator)
+  pothole_ryukijano Roboflow "Potholes Detection" export on HF (CC BY 4.0)   YOLO txt, class 0 = pothole
 
 Output: <out>/images/{train,val}, <out>/labels/{train,val}, <out>/data.yaml using the class
 order from configs/classes.yaml. Large images are downscaled to --max-side to speed training.
@@ -44,6 +50,9 @@ SRC = {
     "cone_voc": DATASETS / "cones" / "cone_dataset" / "cone_dataset",
     "starline": DATASETS / "starline_roadwork" / "roadwork_cones_dataset",
     "rdd2022_full": DATASETS / "rdd2022_full" / "data",
+    "roadwork": DATASETS / "roadwork",
+    "argoverse": DATASETS / "argoverse2" / "yolo",
+    "pothole_ryukijano": DATASETS / "pothole_ryukijano",
 }
 
 # source label -> our class name (None = keep image, drop the box: hard negative)
@@ -53,6 +62,18 @@ LABEL_MAP = {
     "cone_voc": {"trafficcone": "cone", "person": None},
     "starline": {"cone": "cone", "roadworks": "construction_sign", "vertical_pannel": "delineator"},
     "rdd2022_full": {"3": "pothole", "0": None, "1": None, "2": None},
+    # ROADWork category names; every "Temporary Traffic Control Sign: ..." subtype is a construction_sign
+    "roadwork": {
+        "Cone": "cone", "Drum": "delineator", "Tubular Marker": "delineator", "Vertical Panel": "delineator",
+        "Barricade": "barricade", "Barrier": "barricade",
+        "Temporary Traffic Control Sign": "construction_sign", "Arrow Board": "construction_sign",
+        "Temporary Traffic Control Message Board": "construction_sign",
+        "Worker": "worker",
+        "Police Officer": None, "Police Vehicle": None, "Fence": None, "Work Vehicle": None,
+        "Bike Lane": None, "Work Equipment": None, "Other Roadwork Objects": None,
+    },
+    "argoverse": {"1": "cone", "3": "delineator"},   # written with configs/classes.yaml ids already
+    "pothole_ryukijano": {"0": "pothole"},
 }
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".JPG", ".PNG"}
@@ -128,6 +149,72 @@ def read_starline(root: Path):
             yield img, boxes, ("val" if rel.startswith("test/") else "train")
 
 
+def _read_yolo(img_dir: Path, lbl_dir: Path, label_map: dict, split: str | None):
+    """Generic YOLO-txt reader (normalised cx cy w h); images without a label file are skipped."""
+    for img in sorted(p for p in img_dir.iterdir() if p.suffix in IMG_EXT):
+        lbl = lbl_dir / img.with_suffix(".txt").name
+        if not lbl.exists():
+            continue
+        im = cv2.imread(str(img))
+        if im is None:
+            continue
+        h, w = im.shape[:2]
+        boxes = []
+        for line in lbl.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            c, cx, cy, bw, bh = parts
+            cx, cy, bw, bh = (float(v) for v in (cx, cy, bw, bh))
+            boxes.append((label_map.get(c), (cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h))
+        yield img, boxes, split
+
+
+def read_roadwork(root: Path):
+    """COCO json from the ROADWork release; the GPS-based train/val split (with sign subtypes) is kept."""
+    import json
+
+    index: dict[str, Path] | None = None
+    for name, split in (("instances_train_gps_split_with_signs.json", "train"),
+                        ("instances_val_gps_split_with_signs.json", "val")):
+        data = json.loads((root / "annotations" / name).read_text(encoding="utf-8"))
+        cats = {c["id"]: c["name"] for c in data["categories"]}
+        by_img: dict[int, list] = defaultdict(list)
+        for a in data["annotations"]:
+            cname = cats[a["category_id"]]
+            if cname.startswith("Temporary Traffic Control Sign"):
+                cname = "Temporary Traffic Control Sign"
+            x, y, w, h = a["bbox"]
+            by_img[a["image_id"]].append((LABEL_MAP["roadwork"].get(cname), x, y, x + w, y + h))
+        for im in data["images"]:
+            img = root / "images" / im["file_name"]
+            if not img.exists():
+                if index is None:
+                    index = {p.name: p for p in (root / "images").rglob("*") if p.suffix in IMG_EXT}
+                img = index.get(Path(im["file_name"]).name)
+                if img is None:
+                    continue
+            yield img, by_img.get(im["id"], []), split
+
+
+ARGOVERSE_STRIDE = 2   # fetched frames are 200 ms apart and near-duplicates; keep every other one
+
+
+def read_argoverse(root: Path):
+    for split in ("train", "val"):
+        if (root / "images" / split).exists():
+            for i, item in enumerate(_read_yolo(root / "images" / split, root / "labels" / split,
+                                                LABEL_MAP["argoverse"], split)):
+                if i % ARGOVERSE_STRIDE == 0:
+                    yield item
+
+
+def read_pothole_ryukijano(root: Path):
+    for sub, split in (("train", "train"), ("valid", "val"), ("test", "val")):
+        if (root / sub / "images").exists():
+            yield from _read_yolo(root / sub / "images", root / sub / "labels", LABEL_MAP["pothole_ryukijano"], split)
+
+
 def read_rdd2022_full(root: Path):
     """YOLO-format mirror; only images that were fetched (potholes) exist on disk. The mirror's
     own train/valid/test split is kept (valid + test -> our val)."""
@@ -159,6 +246,9 @@ READERS = {
     "cone_voc": read_cone_voc,
     "starline": read_starline,
     "rdd2022_full": read_rdd2022_full,
+    "roadwork": read_roadwork,
+    "argoverse": read_argoverse,
+    "pothole_ryukijano": read_pothole_ryukijano,
 }
 
 
@@ -288,7 +378,14 @@ def main() -> None:
     ap.add_argument("--check", choices=list(READERS), help="render labelled samples and exit")
     ap.add_argument("--clean", action="store_true", help="delete the output folder first")
     ap.add_argument("--workers", type=int, default=8, help="parallel image conversions")
-    ap.add_argument("--tile", type=int, default=0, help="tile size for the starline source (0 = downscale instead)")
+    ap.add_argument("--tile", type=int, default=0, help="tile size for the --tile-sources (0 = downscale instead)")
+    ap.add_argument("--tile-sources", nargs="+", default=["starline"],
+                    help="high-resolution sources that are cut into tiles instead of downscaled")
+    ap.add_argument("--tile-size", action="append", default=[], metavar="SOURCE=N",
+                    help="tile size override per source, e.g. roadwork=1080 (1080p frames: two side-by-side tiles)")
+    ap.add_argument("--full-sources", nargs="+", default=["roadwork", "argoverse"],
+                    help="tiled sources that also keep the downscaled full frame (main pass + zoom pass)")
+    ap.add_argument("--argoverse-stride", type=int, default=2, help="keep every Nth fetched Argoverse frame")
     ap.add_argument("--tile-stride", type=int, default=0, help="tile stride (default: tile - 128)")
     ap.add_argument("--tile-empty-frac", type=float, default=0.08, help="share of empty tiles kept as negatives")
     args = ap.parse_args()
@@ -297,6 +394,9 @@ def main() -> None:
         check(args.check)
         return
 
+    global ARGOVERSE_STRIDE
+    ARGOVERSE_STRIDE = max(1, args.argoverse_stride)
+    tile_sizes = {kv.split("=")[0]: int(kv.split("=")[1]) for kv in args.tile_size}
     classes = load_classes()
     out = Path(args.out)
     if args.clean and out.exists():
@@ -325,13 +425,19 @@ def main() -> None:
             (out / "images" / split).mkdir(parents=True, exist_ok=True)
             (out / "labels" / split).mkdir(parents=True, exist_ok=True)
         n = 0
-        tiled = source == "starline" and args.tile > 0
-        stride = args.tile_stride or max(args.tile - 128, args.tile // 2)
+        tiled = source in args.tile_sources and args.tile > 0
+        tile = tile_sizes.get(source, args.tile)
+        stride = args.tile_stride or max(tile - 128, tile // 2)
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
             if tiled:
                 futures = [ex.submit(write_tiles, img, boxes, oi.parent, ol.parent, oi.stem, classes,
-                                     args.tile, stride, args.tile_empty_frac, hash(oi.stem) & 0xFFFF)
+                                     tile, stride, args.tile_empty_frac, hash(oi.stem) & 0xFFFF)
                            for img, boxes, oi, ol, _ in jobs]
+                if source in args.full_sources:
+                    futures += [ex.submit(write_sample, img, boxes, oi.with_name(oi.stem + "_full.jpg"),
+                                          ol.with_name(ol.stem + "_full.txt"), classes, args.max_side)
+                                for img, boxes, oi, ol, _ in jobs]
+                    jobs = jobs + jobs
             else:
                 futures = [ex.submit(write_sample, img, boxes, oi, ol, classes, args.max_side) for img, boxes, oi, ol, _ in jobs]
             for (_, _, _, _, split), fut in zip(jobs, futures):

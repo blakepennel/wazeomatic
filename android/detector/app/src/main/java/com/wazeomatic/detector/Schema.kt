@@ -32,8 +32,10 @@ object Schema {
         // custom hazard model
         "pothole" to "HAZARD_ON_ROAD_POTHOLE",
         "cone" to "HAZARD_ON_ROAD_CONSTRUCTION",
-        "barrel" to "HAZARD_ON_ROAD_CONSTRUCTION",
         "construction_sign" to "HAZARD_ON_ROAD_CONSTRUCTION",
+        "delineator" to "HAZARD_ON_ROAD_CONSTRUCTION",
+        "barricade" to "HAZARD_ON_ROAD_CONSTRUCTION",
+        "worker" to "HAZARD_ON_ROAD_CONSTRUCTION",
         "police_vehicle" to "POLICE",
         // COCO classes used from the stock detector
         "dog" to "HAZARD_SHOULDER_ANIMALS",
