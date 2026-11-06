@@ -93,3 +93,26 @@ The default `virtualscene` camera is a 3D room, useful only to check the camera 
 * Stuck at boot with `-gpu auto`: try `-Gpu swiftshader_indirect` (software, slower).
 * `uiautomator dump` fails while an animation runs: A1 retries a few times.
 * Reports file: `adb -s emulator-5554 shell cat /sdcard/Android/data/com.wazeomatic.mockwaze/files/reports.jsonl`.
+
+## Real Waze on the emulator (pixel9pro_play)
+
+`pixel9pro_test` uses the plain Google APIs image, which has no Play Store, so the real Waze
+app cannot be installed on it. A second profile, `pixel9pro_play`, uses the Google Play image:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\emulator\create_avd.ps1 -Name pixel9pro_play -Image "system-images;android-35;google_apis_playstore;x86_64"
+powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Avd pixel9pro_play -Port 5556 -Wait
+```
+
+Then, in the emulator window, open the Play Store, sign in with a Google account and install
+Waze. Nothing in this repo automates that step on purpose (it is a personal account). Once Waze
+is installed:
+
+* The real app is the reference for the mock: compare screenshots of the report sheets and
+  adjust `WazeMenu.kt` / `Ui.kt` if a label, tile order or position differs.
+* Macro rehearsals against the real app stay in dry-run: tap through to the confirm sheet and
+  Cancel. Never let a test tap Report or wait out the auto-send countdown in real Waze, as that
+  publishes a report to other drivers. Automated full sends stay on mock Waze (`pixel9pro_test`).
+* The two emulators can run side by side (serials `emulator-5554` and `emulator-5556`); pass
+  `--serial emulator-5556` to `run_e2e.py --stage b` to replay a clip into the detector app on
+  the Play device while Waze is in front.

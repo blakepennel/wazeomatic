@@ -4,6 +4,8 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\emulator\create_avd.ps1
   powershell -ExecutionPolicy Bypass -File tools\emulator\create_avd.ps1 -Webcam -Force
+  # second profile with the Play Store, for installing the real Waze app (sign in by hand):
+  powershell -ExecutionPolicy Bypass -File tools\emulator\create_avd.ps1 -Name pixel9pro_play -Image "system-images;android-35;google_apis_playstore;x86_64"
 #>
 param(
     [string]$Name = 'pixel9pro_test',
@@ -58,6 +60,8 @@ $overrides = [ordered]@{
     'skin.path'               = '_no_skin'
     'fastboot.forceColdBoot'  = 'no'
 }
+# Google Play images (tag google_apis_playstore) need this flag or the Play Store app is missing.
+$overrides['PlayStore.enabled'] = if ($Image -match 'playstore') { 'yes' } else { 'no' }
 
 $cfg = Join-Path $avdDir 'config.ini'
 $lines = @(Get-Content $cfg)
