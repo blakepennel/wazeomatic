@@ -59,6 +59,8 @@ dependencies {
 val repoModels = rootProject.file("../../models")
 val hazardModel = (findProperty("hazardModel") as String?) ?: "hazard_yolo11n.onnx"
 val cocoModel = (findProperty("cocoModel") as String?) ?: "coco_yolo11n.onnx"
+// second hazard model fused on the device (ensemble setting); "" skips it
+val hazardModel2 = (findProperty("hazardModel2") as String?) ?: "hazard_yolo11n_416.onnx"
 
 val syncModels by tasks.registering(Copy::class) {
     description = "Copy models/*.onnx and label files into app/src/main/assets"
@@ -69,6 +71,15 @@ val syncModels by tasks.registering(Copy::class) {
     from(repoModels) {
         include(cocoModel)
         rename { "coco.onnx" }
+    }
+    // optional second hazard model for on-device fusion (-PhazardModel2=hazard_yolo11n_416.onnx)
+    from(repoModels) {
+        include(hazardModel2)
+        rename { "hazard2.onnx" }
+    }
+    from(repoModels) {
+        include(hazardModel2.removeSuffix(".onnx") + ".labels.txt")
+        rename { "hazard2_labels.txt" }
     }
     // export_onnx.py writes <model>.labels.txt next to each model
     from(repoModels) {

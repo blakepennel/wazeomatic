@@ -7,6 +7,8 @@ import android.graphics.Rect
 import android.util.Log
 import java.io.Closeable
 import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 
 /**
  * Frame -> all loaded models -> merged detections -> ReportManager -> Reporter.
@@ -14,7 +16,12 @@ import java.util.Locale
  */
 class Pipeline(ctx: Context, private val settings: Settings, private val reporter: Reporter) : Closeable {
     val detectors: List<OnnxDetector>
+    /** Hazard models that are fused into one result (hazard.onnx [+ hazard2.onnx]). */
+    val hazardMembers: List<OnnxDetector>
     val modelStatus: String
+    private val fusionWeights: FloatArray?
+    private val classFloors: Map<String, Float> = settings.classFloors
+    private val pool = Executors.newFixedThreadPool(3) { r -> Thread(r, "detect").apply { isDaemon = true } }
     private val reportManager = ReportManager(settings.reportConfig(), source = "phone")
     /** Second inference pass on a zoomed region of the road ahead; null = single pass. */
     val zoomCrop: ZoomCrop? = settings.zoomCropOrNull
@@ -27,7 +34,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val env = OrtEnvironment.getEnvironment()
         val list = ArrayList<OnnxDetector>()
         val notes = ArrayList<String>()
-        for (name in listOf("hazard", "coco")) {
+        val names = ArrayList<String>()
+        names.add("hazard")
+        if (settings.ensemble && assetExists(ctx, "hazard2.onnx")) names.add("hazard2")
+        names.add("coco")
+        for (name in names) {
             val bytes = readAsset(ctx, "$name.onnx")
             if (bytes == null) {
                 notes.add("$name: missing")
@@ -45,6 +56,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             }
         }
         detectors = list
+        hazardMembers = list.filter { it.name.startsWith("hazard") }
+        fusionWeights = BoxFusion.parseWeights(settings.ensembleWeights, hazardMembers.size)
+        if (hazardMembers.size > 1) notes.add("fusion ${settings.fusion}" + (fusionWeights?.let { " w=${it.toList()}" } ?: ""))
+        if (classFloors.isNotEmpty()) notes.add("floors $classFloors")
+        if (settings.trackIou > 0f) notes.add("track ${settings.trackIou}")
         if (zoomCrop != null) notes.add("zoom crop $zoomCrop")
         modelStatus = if (list.isEmpty()) "model missing" else notes.joinToString(" | ")
         Log.i(TAG, "models: $modelStatus")
@@ -60,21 +76,42 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val crop = zoomCrop?.pixelRect(frame.width, frame.height)
         val effCrop = crop?.let { ZoomCrop.fromRect(it, frame.width, frame.height) }
         if (crop != null) cropRect.set(crop.x1, crop.y1, crop.x2, crop.y2)
-        for (d in detectors) {
-            try {
-                val full = d.detect(frame)
-                lat[d.name] = d.lastMs
-                if (effCrop == null) {
-                    dets.addAll(full)
-                } else {
-                    val zoomed = d.detect(frame, cropRect)
-                    lat["${d.name}_zoom"] = d.lastMs
-                    dets.addAll(ZoomCrop.merge(full + effCrop.toFrame(zoomed), d.iouThres))
+        val t0 = System.nanoTime()
+        // every model (and its zoom pass) runs on its own thread; ORT releases the Java monitor
+        val tasks = detectors.map { d ->
+            Callable {
+                try {
+                    val full = d.detect(frame)
+                    val msFull = d.lastMs
+                    if (effCrop == null) {
+                        Triple(d, full, msFull to 0.0)
+                    } else {
+                        val zoomed = d.detect(frame, cropRect)
+                        Triple(d, ZoomCrop.merge(full + effCrop.toFrame(zoomed), d.iouThres), msFull to d.lastMs)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "inference failed in ${d.name}", e)
+                    Triple(d, emptyList(), 0.0 to 0.0)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "inference failed in ${d.name}", e)
             }
         }
+        val perModel = LinkedHashMap<OnnxDetector, List<Detection>>()
+        for (f in pool.invokeAll(tasks)) {
+            val (d, out, ms) = f.get()
+            perModel[d] = out
+            lat[d.name] = ms.first
+            if (effCrop != null) lat["${d.name}_zoom"] = ms.second
+        }
+        lat["wall"] = (System.nanoTime() - t0) / 1e6
+        val hazardLists = hazardMembers.map { perModel[it] ?: emptyList() }
+        val hazardDets = when {
+            hazardLists.isEmpty() -> emptyList()
+            hazardLists.size == 1 -> hazardLists[0]
+            settings.fusion == "nms" -> BoxFusion.fuseNms(hazardLists, hazardMembers[0].iouThres)
+            else -> BoxFusion.fuseWbf(hazardLists, fusionWeights, modelName = "hazard")
+        }
+        dets.addAll(BoxFusion.applyClassFloors(hazardDets, classFloors))
+        for (d in detectors) if (d !in hazardMembers) dets.addAll(perModel[d] ?: emptyList())
         val now = System.nanoTime()
         if (lastFrameNs != 0L) {
             val inst = 1e9 / (now - lastFrameNs)
@@ -92,6 +129,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     }
 
     override fun close() {
+        pool.shutdownNow()
         detectors.forEach { try { it.close() } catch (_: Exception) {} }
     }
 

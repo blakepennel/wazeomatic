@@ -158,4 +158,55 @@ class ReportManagerTest {
         val off = rm(ReportConfig(minHits = 1, hoodFrac = 0f))
         assertEquals(1, off.update(listOf(det("pothole", 0.9f, BBox(0.49f, 0.88f, 0.15f, 0.10f)))).size)
     }
+
+    @Test
+    fun trackingRejectsSpatiallyInconsistentHits() {
+        val m = rm(ReportConfig(trackIou = 0.3f, globalCooldownS = 0.0))
+        val spots = listOf(0.1f to 0.1f, 0.9f to 0.1f, 0.5f to 0.8f)
+        var events = 0
+        for ((i, s) in spots.withIndex()) {
+            events += m.update(listOf(det("pothole", 0.9f, BBox(s.first, s.second, 0.08f, 0.08f))), frameIndex = i).size
+            now += 0.1
+        }
+        assertEquals(0, events)
+        // the untracked manager reports after three hits anywhere
+        val plain = rm(ReportConfig(globalCooldownS = 0.0))
+        var plainEvents = 0
+        for ((i, s) in spots.withIndex()) {
+            plainEvents += plain.update(listOf(det("pothole", 0.9f, BBox(s.first, s.second, 0.08f, 0.08f))), frameIndex = i).size
+        }
+        assertEquals(1, plainEvents)
+    }
+
+    @Test
+    fun trackingAcceptsAnApproachingObject() {
+        val m = rm(ReportConfig(trackIou = 0.3f, globalCooldownS = 0.0))
+        val steps = listOf(0.55f to 0.05f, 0.60f to 0.06f, 0.66f to 0.075f)
+        var ev: List<HazardEvent> = emptyList()
+        for ((i, s) in steps.withIndex()) {
+            ev = m.update(listOf(det("pothole", 0.8f, BBox(0.5f, s.first, s.second, s.second))), frameIndex = i)
+            now += 0.1
+        }
+        assertEquals(1, ev.size)
+        assertEquals("HAZARD_ON_ROAD_POTHOLE", ev[0].hazardType)
+    }
+
+    @Test
+    fun trackingKeepsSeparateObjectsApart() {
+        val m = rm(ReportConfig(trackIou = 0.3f, globalCooldownS = 0.0))
+        for (i in 0 until 2) {
+            assertTrue(m.update(listOf(det("cone", 0.8f, BBox(0.2f, 0.5f, 0.1f, 0.1f)),
+                det("cone", 0.8f, BBox(0.8f, 0.5f, 0.1f, 0.1f))), frameIndex = i).isEmpty())
+        }
+        assertEquals(1, m.update(listOf(det("cone", 0.8f, BBox(0.21f, 0.5f, 0.1f, 0.1f))), frameIndex = 2).size)
+    }
+
+    @Test
+    fun perLabelFloorOverridesMinConfidence() {
+        val m = rm(ReportConfig(minConfidenceByLabel = mapOf("cone" to 0.9f), globalCooldownS = 0.0))
+        for (i in 0 until 3) assertTrue(m.update(listOf(det("cone", 0.8f)), frameIndex = i).isEmpty())
+        var ev: List<HazardEvent> = emptyList()
+        for (i in 3 until 6) ev = m.update(listOf(det("construction_sign", 0.5f)), frameIndex = i)
+        assertEquals(1, ev.size)
+    }
 }

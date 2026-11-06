@@ -28,7 +28,15 @@ data class Settings(
     val tcpPort: Int = 8765,
     val classMap: String = "",              // extra "label=HAZARD_KEY,label2=HAZARD_KEY" pairs, mostly for testing
     val zoomCrop: String = "",              // "" = off, "true" = default crop, "x1,y1,x2,y2" = second pass on that region
+    val ensemble: Boolean = true,           // also run hazard2.onnx (if bundled) and fuse the two hazard models
+    val fusion: String = "wbf",             // wbf | nms
+    val ensembleWeights: String = "",       // "2,1" = weight per hazard model (default equal)
+    val classConf: String = "",             // per-label floors after fusion, "pothole=0.5,cone=0.4"
+    val reportClassConf: String = "",       // per-label hit floors in the ReportManager
+    val trackIou: Float = 0f,               // > 0 = spatial tracking in the ReportManager
+    val trackGrow: Float = 1.5f,
 ) {
+    val classFloors: Map<String, Float> get() = BoxFusion.parseFloors(classConf)
     /** Two-pass zoom region, null when disabled or malformed (see [ZoomCrop.parse]). */
     val zoomCropOrNull: ZoomCrop? get() = ZoomCrop.parse(zoomCrop)
 
@@ -39,6 +47,9 @@ data class Settings(
         window = window,
         minHits = minHits,
         minConfidence = confThreshold,
+        minConfidenceByLabel = BoxFusion.parseFloors(reportClassConf),
+        trackIou = trackIou,
+        trackGrow = trackGrow,
         cooldownS = cooldownS.toDouble(),
         globalCooldownS = globalCooldownS.toDouble(),
         stoppedVehicleEnabled = stoppedVehicle,
@@ -66,6 +77,13 @@ data class Settings(
             .putInt("tcp_port", tcpPort)
             .putString("class_map", classMap)
             .putString("zoom_crop", zoomCrop)
+            .putBoolean("ensemble", ensemble)
+            .putString("fusion", fusion)
+            .putString("ensemble_weights", ensembleWeights)
+            .putString("class_conf", classConf)
+            .putString("report_class_conf", reportClassConf)
+            .putFloat("track_iou", trackIou)
+            .putFloat("track_grow", trackGrow)
             .apply()
     }
 
@@ -99,6 +117,13 @@ data class Settings(
             tcpPort = i("tcp_port", tcpPort),
             classMap = str("class_map") ?: classMap,
             zoomCrop = str("zoom_crop") ?: zoomCrop,
+            ensemble = z("ensemble", ensemble),
+            fusion = str("fusion")?.lowercase() ?: fusion,
+            ensembleWeights = str("ensemble_weights") ?: ensembleWeights,
+            classConf = str("class_conf") ?: classConf,
+            reportClassConf = str("report_class_conf") ?: reportClassConf,
+            trackIou = f("track_iou", trackIou),
+            trackGrow = f("track_grow", trackGrow),
         )
     }
 
@@ -106,7 +131,8 @@ data class Settings(
         val KNOWN_KEYS = setOf(
             "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
             "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
-            "tcp", "tcp_port", "class_map", "zoom_crop",
+            "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
+            "class_conf", "report_class_conf", "track_iou", "track_grow",
         )
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
@@ -143,6 +169,13 @@ data class Settings(
                 tcpPort = p.getInt("tcp_port", d.tcpPort),
                 classMap = p.getString("class_map", d.classMap) ?: d.classMap,
                 zoomCrop = p.getString("zoom_crop", d.zoomCrop) ?: d.zoomCrop,
+                ensemble = p.getBoolean("ensemble", d.ensemble),
+                fusion = p.getString("fusion", d.fusion) ?: d.fusion,
+                ensembleWeights = p.getString("ensemble_weights", d.ensembleWeights) ?: d.ensembleWeights,
+                classConf = p.getString("class_conf", d.classConf) ?: d.classConf,
+                reportClassConf = p.getString("report_class_conf", d.reportClassConf) ?: d.reportClassConf,
+                trackIou = p.getFloat("track_iou", d.trackIou),
+                trackGrow = p.getFloat("track_grow", d.trackGrow),
             )
         }
     }
