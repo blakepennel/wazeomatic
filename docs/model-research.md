@@ -183,4 +183,41 @@ Hazard-free clips (both models + COCO, every 3rd frame, clean and camera-degrade
 
 Cost: hazard model alone on the desktop 5.4 ms at 416 vs 11.3 ms at 640 (fp32, 4 threads). On the Pixel 9 Pro emulator in live camera mode (x86 host under load) the full stack was hazard 23 ms + zoom 24 ms + COCO 18 ms + zoom 13 ms at 4.4 FPS; the real phone number is still pending.
 
-Open: the RDD2022 potholes are small and low-contrast; the 640b model still finds only 8 % of them at event level (the IVCNZ potholes: 56 %). Run `hazard640c` with the full RDD2022 pothole set was training when this section was written; its numbers replace this paragraph once `eval_events.py` has scored it.
+Run `hazard640c` (fine-tune of 640b on the set with the full RDD2022 potholes, 30 epochs, lr0 0.005, mosaic off for the last 8) is the model shipped as `models/hazard_yolo11n.onnx` since 2026-11-06. Scored on the enlarged validation split (7,360 images, now including 2,193 RDD2022 pothole images; `runs/eval/stage2_640b_val2` vs `stage3_640c_val2`, same split for both):
+
+| | 640b | 640c |
+|---|---|---|
+| AP50 pothole / cone / construction_sign / delineator | 0.10 / 0.31 / 0.47 / 0.21 | 0.58 / 0.31 / 0.46 / 0.28 |
+| AP50 all classes (boxes < 24 px) | 0.24 (0.13) | 0.35 (0.15) |
+| Event P / R / F1, HAZARD_ON_ROAD_POTHOLE | 1.00 / 0.10 / 0.19 | 1.00 / 0.46 / 0.63 |
+| Event P / R / F1, HAZARD_ON_ROAD_CONSTRUCTION | 0.98 / 0.83 / 0.90 | 0.99 / 0.80 / 0.88 |
+| False events on the 4 hazard-free clip runs, min conf 0.45 | 0 | 2 (one pothole each in two runs) |
+| Same with a pothole-only floor of 0.55 (`--report-class-conf pothole=0.55`) | 0 | 0 |
+
+The 640b pothole number on this split is low because 2,193 of its 2,418 pothole images are the new RDD2022 ones, which 640b never saw; on the IVCNZ potholes 640c reaches event recall 0.69. The two extra false events are what the RDD training buys at 0.45: the shipped operating point is therefore min confidence 0.45 for every class and 0.55 for potholes (`min_confidence_by_label` in `ReportConfig`, `report_class_conf` in the app). POTHOLE_FLOOR_PLACEHOLDER Desktop cost is unchanged at about 11 ms per 640 px inference (4 threads).
+
+### Ensembling, zoom and tracking (pipeline pass, 2026-11-06)
+
+The pipeline can now combine several detectors and reason about where a hazard sits across frames (`wazeomatic/fusion.py`, `EnsembleDetector` and `ClassFilter` in `detector.py`, spatial tracking in `report_manager.py`, `Prefetch` in `sources.py`; the Android app has the same in `BoxFusion.kt`, `ReportManager.kt` and `Pipeline.kt`):
+
+- **Weighted Boxes Fusion** across hazard models. Boxes of the same class that overlap (IoU >= 0.55) are averaged, weighted by confidence and by a per-model weight. With `conf_type=avg` the fused confidence is the weighted mean over *all* members, so a box only one of two models saw drops to half its confidence; `max` keeps the best member's confidence; `box_avg` averages only the boxes present. `fusion=nms` keeps the best box unchanged.
+- **Parallel members.** Members of an ensemble, and the hazard stack and the COCO model, run on their own threads (ONNX Runtime releases the GIL); the stats line now reports both the summed model time (compute) and the wall-clock latency of a frame. Frames are decoded and degraded on a background thread (`--prefetch`).
+- **Spatial tracking** (`--track-iou 0.3`): the hits that justify a report must come from boxes that overlap frame to frame (boxes grown by 1.5x, or centres within 1.5 box sizes), i.e. from one object the car approaches. Three flickers in three corners of the frame no longer add up to a report.
+- **Per-label floors** on the detector (`--class-conf`) and in the Report Manager (`--report-class-conf`), so a noisy class can demand more confidence than a clean one.
+
+All variants are scored with `tools/eval_events.py` (same flags as `run_video.py`, built by `wazeomatic/build.py`) on the same subset of the tiled 640 px validation split: 633 images (120 per source plus all 6 cone_voc images, seed 1, 8 jittered frames per image), Report Manager defaults unless stated. The subset includes the RDD2022 potholes added on 2026-11-06, which is why the absolute pothole numbers are lower than in the section above. `runs/eval/ens_*`; table by `tools/summarize_evals.py`.
+
+| Stack | AP50 pothole / cone / sign / delineator | Event P / R / F1 | Construction R (FP) | Pothole R (FP) | Model ms per frame |
+|---|---|---|---|---|---|
+| 640b alone (reference) | 0.33 / 0.30 / 0.50 / 0.15 | 0.943 / 0.508 / 0.660 | 0.82 (12) | 0.36 (0) | 15 |
+| 640b + zoom pass | 0.29 / 0.30 / 0.48 / 0.12 | 0.944 / **0.564** / **0.706** | 0.86 (13) | 0.42 (0) | 30 |
+| 640b + 416, WBF avg | **0.36** / **0.31** / **0.73** / 0.12 | 0.952 / 0.408 / 0.571 | 0.64 (8) | 0.30 (0) | 22 |
+| 640b + 416, WBF max | 0.35 / 0.27 / 0.72 / 0.15 | 0.933 / 0.536 / 0.681 | 0.86 (15) | 0.38 (0) | 37 |
+| 640b + 416, WBF avg + zoom | 0.32 / 0.24 / 0.69 / 0.11 | 0.948 / 0.464 / 0.623 | 0.73 (10) | 0.34 (0) | 55 |
+| 640b + tracking 0.3 | as 640b | 0.943 / 0.508 / 0.660 | 0.82 (12) | 0.36 (0) | 15 |
+
+Reading the numbers:
+
+- The zoom pass is the cheapest real gain: +5.6 points of event recall for one extra inference, no extra false events.
+- Fusing the 416 model is a calibration question, not a detection one. At box level the fused scores are far better ranked (construction-sign AP50 0.50 -> 0.73) because two models agreeing is strong evidence, but `avg` halves every box the weaker 416 model misses, and at the 0.45 report floor that costs 10 points of recall. `max` keeps the recall and gains 2 points of F1 over the single model. Per the sweep on the single model, the floor itself is worth revisiting: 0.35 / 2 hits gives F1 0.697 on synthetic clips, at the price of 2 more false events per 633 clips; whether that holds on real footage is what the tracking runs below measure.
+- Tracking changes nothing on the synthetic clips, by construction: every jittered frame shows the same object in nearly the same place, so all hits are already consistent. Its job is the real-clip false-positive rate, where the hits behind a false report come from different places in the frame.

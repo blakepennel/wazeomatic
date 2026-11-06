@@ -69,6 +69,12 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | "" | two-pass zoom: `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
+| `ensemble` | true | also run `hazard2.onnx` (bundled by the `syncModels` task from `-PhazardModel2`, default `hazard_yolo11n_416.onnx`) and fuse it with `hazard.onnx`; no second asset = single model |
+| `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
+| `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
+| `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
+| `report_class_conf` | "" | per-label hit floors inside the Report Manager (overrides `conf` for those labels) |
+| `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |
 | `dry_run` | true | passed to the macro |
 | `target_package` | "" | empty = implicit broadcast, e.g. `com.arlosoft.macrodroid` |
 | `tcp` / `tcp_port` | true / 8765 | JSON-lines listener, also runs next to camera/video |
@@ -83,6 +89,8 @@ Each event is
 Per-frame latency goes to logcat tag `WazeomaticPerf` and is shown on screen.
 
 ### Two-pass zoom
+
+All models (and their zoom passes) run on their own threads; the `WazeomaticPerf` log line reports each model's time plus `wall`, the latency of the whole frame. The hazard members are fused (`BoxFusion.kt`, a port of `wazeomatic/fusion.py`) before the Report Manager sees them.
 
 `zoom_crop` runs every model a second time on a crop of the road ahead (same as `--zoom-crop`
 in `wazeomatic/run_video.py`): with a 1280x720 frame and a 640 px model the default crop is
