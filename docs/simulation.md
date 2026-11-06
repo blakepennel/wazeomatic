@@ -32,6 +32,7 @@ python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --sink stdo
 | `--ensemble-model <onnx>` (repeatable) | Fuse more hazard models with `--hazard-model`: all members run in parallel threads and their boxes are merged by Weighted Boxes Fusion (`--fusion wbf`, default) or NMS (`--fusion nms`); `--ensemble-weights 2,1`, `--conf-type avg|max|box_avg`, `--fusion-iou 0.55` |
 | `--class-conf pothole=0.5,cone=0.4` | Per-label confidence floor applied after fusion (detector side); `--report-class-conf` does the same for the Report Manager's hit threshold (default `pothole=0.55`, the same floor the phone app ships with) |
 | `--track-iou 0.3 [--track-grow 1.5]` | Spatial tracking in the Report Manager: the hits behind a report must come from boxes that overlap (or sit within 1.5 box sizes) frame to frame, so three unrelated flickers in three corners no longer add up to a report |
+| `--hood-frac 0.10`, `--no-auto-hood` | Minimum hood / dashboard zone, and the switch for learning a larger one from the video: the dashboard keeps sharp edges in a running average of the frames while the road blurs away (`wazeomatic/hood.py`); on both test clips this finds a 22 % dashboard, and the fixed 10 % zone let an air vent at 82 % of the height through as a pothole once the zoom pass added hits |
 | `--prefetch 2`, `--no-parallel` | Frame decoding (and CameraSim) on a background thread, two frames ahead; hazard and COCO models run side by side unless `--no-parallel` |
 | `0 --camera` | Live webcam / capture device instead of a file (`--max-frames` ends the run); see "Live camera without a webcam" |
 | `--show`, `--record <mp4>`, `--stats-json <file>` | Live window, annotated video, latency/FPS summary |
@@ -53,6 +54,8 @@ The test clips come from real dashcams, but a phone behind a windscreen produces
 Run each clip clean and degraded. If event counts change a lot, the thresholds in `ReportConfig` are too tight.
 
 First replay result (both CC0 clips, hazard + COCO models, every 3rd frame): one false pothole event per clip, both caused by the reflection on the car's own bonnet at the bottom of the frame. The Report Manager now has a hood exclusion zone (`hood_frac`, default 10 % of the frame height) and both clips replay with zero events, clean and degraded. Details in [model-research.md](model-research.md#video-replay).
+
+Second finding (2026-11-06, 640 px model with the zoom pass): the dashboard of the test car reaches 22 % up the frame and its air vent, just above the 10 % zone, became a pothole report once the zoom pass contributed extra hits. The zone is now learnt per video (`HoodEstimator`, on by default in `run_video.py`, the clip evaluation and the phone app) and the clip replays are clean again; see [model-research.md](model-research.md#ensembling-zoom-and-tracking-pipeline-pass-2026-11-06).
 
 ### Live camera without a webcam
 

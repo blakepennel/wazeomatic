@@ -221,3 +221,40 @@ Reading the numbers:
 - The zoom pass is the cheapest real gain: +5.6 points of event recall for one extra inference, no extra false events.
 - Fusing the 416 model is a calibration question, not a detection one. At box level the fused scores are far better ranked (construction-sign AP50 0.50 -> 0.73) because two models agreeing is strong evidence, but `avg` halves every box the weaker 416 model misses, and at the 0.45 report floor that costs 10 points of recall. `max` keeps the recall and gains 2 points of F1 over the single model. Per the sweep on the single model, the floor itself is worth revisiting: 0.35 / 2 hits gives F1 0.697 on synthetic clips, at the price of 2 more false events per 633 clips; whether that holds on real footage is what the tracking runs below measure.
 - Tracking changes nothing on the synthetic clips, by construction: every jittered frame shows the same object in nearly the same place, so all hits are already consistent. Its job is the real-clip false-positive rate, where the hits behind a false report come from different places in the frame.
+
+#### Second and third batch: the 640c model, floors, zoom plus tracking, and the real clips
+
+Same subset and protocol as the table above (`runs/eval/ens_f*`, `ens_g*`); the pothole floor of 0.55 that now ships is applied in every `g` row. 640c is the model promoted to `models/hazard_yolo11n.onnx` on 2026-11-06 (RDD2022 potholes added to training).
+
+| Stack | Report floor | Event P / R / F1 | Construction R (FP) | Pothole R (FP) | Model ms |
+|---|---|---|---|---|---|
+| 640b, pothole floor 0.55 | 0.45 | 0.937 / 0.454 / 0.612 | 0.82 (12) | 0.28 (0) | 13 |
+| 640b + zoom + tracking 0.3 | 0.35 | 0.949 / 0.620 / 0.750 | 0.87 (13) | 0.50 (0) | 54 |
+| 640b + 416 (box_avg) + zoom + tracking | 0.35 | 0.906 / 0.691 / 0.784 | 0.90 (22) | 0.59 (6) | 110 |
+| **640c** | 0.45 | 0.957 / 0.513 / 0.668 | 0.79 (9) | 0.38 (0) | 15 |
+| **640c + zoom** | 0.45 | 0.959 / 0.592 / 0.732 | 0.85 (10) | 0.47 (0) | 29 |
+| 640c + 640b (WBF max) | 0.45 | 0.949 / 0.566 / 0.709 | 0.86 (12) | 0.43 (0) | 37 |
+| **640c + 640b (WBF max) + zoom** | 0.45 | 0.950 / 0.635 / 0.761 | 0.90 (13) | 0.51 (0) | 60 |
+| 640c + zoom + tracking 0.3 | 0.35 | 0.956 / 0.602 / 0.739 | 0.88 (11) | 0.47 (0) | 27 |
+
+Real footage (`assets/videos`, every 3rd frame, clean and camera-degraded, 640c unless stated, pothole floor 0.55; `runs/eval/vid_*`):
+
+| Stack | Report floor | Hood zone | False events in 4 x 120 s |
+|---|---|---|---|
+| 640c | 0.45 | fixed 10 % | 0 |
+| 640c + zoom | 0.45 | fixed 10 % | 2 (pothole) |
+| 640c + 640b + zoom | 0.45 | fixed 10 % | 4 (2 pothole, 2 construction) |
+| 640c + zoom, any stack | 0.35 | fixed 10 % | 2 to 5 |
+| 640c | 0.45 | learnt (22 %) | 0 |
+| **640c + zoom** | 0.45 | learnt (22 %) | **0** |
+| 640c + 640b + zoom | 0.45 | learnt (22 %) | 0 false; 2 real cones (see below) |
+| 640c + zoom | 0.35 | learnt (22 %) | 1 pothole + the cones |
+
+What the clips taught us:
+
+- The "pothole" that the zoom pass kept producing was the car's own dashboard air vent at 82 % of the frame height, just above the fixed 10 % hood zone (`runs/demo/zoom_fp_event.jpg`). The zoom pass did not detect it; it added enough extra hits on the road for the vent's full-frame hits to reach three in ten frames. The dashboard of that car reaches 22 % up the frame. The hood zone is therefore now learnt from the picture (`wazeomatic/hood.py`, `HoodEstimator.kt`, on by default): a running average of the frames keeps the dashboard's edges sharp while the road blurs away; the ratio of edge energy in the average to the instantaneous edge energy is 0.87 / 0.92 / 0.73 / 0.56 for the bottom four 5.6 % bands and 0.31 above them, so the zone settles at 22 % within about 80 s of driving and never drops below the configured minimum. With it, every stack is clean at the 0.45 floor.
+- The one event the fused stack still emits is a real traffic cone standing in the parking garage where the recording begins (`runs/demo/fusion_fp_urban_5s_crop.jpg`, an 11 x 29 px box the single model misses); the clip is not entirely hazard-free. Reporting it as "Construction" would be wrong in context, which is a reminder that the report manager has no notion of place yet.
+- Report floor 0.35 is not safe on real footage even with the learnt hood zone (one false pothole at 99 s plus more cone hits); the floor stays at 0.45.
+- The two Commons clips are the same recording at two resolutions and encodings (identical dashboard, identical cone at 5.5 s), so the "4 x 120 s" above is really one two-minute drive, clean and degraded, twice. More and different footage is the most valuable thing the team can add before the real-phone drive.
+
+**Shipped operating point (2026-11-06):** 640c (`models/hazard_yolo11n.onnx`), zoom pass on, learnt hood zone on, detector threshold 0.35, report floor 0.45 with pothole 0.55, 3 hits in 10 frames, 60 s per-type and 5 s global cooldown, tracking off. On the desktop that is 29 ms of model time per frame. The phone app additionally fuses 640b (`hazard2.onnx`, WBF max) because the two run in parallel threads and the fused stack has the higher recall at the same false-event count; disable it with the `ensemble` setting on a phone where latency matters more than the extra recall. Spatial tracking stays available (`--track-iou`) but is off: it changed nothing on these clips because every false event came from one persistent object, which is exactly what tracking cannot reject.

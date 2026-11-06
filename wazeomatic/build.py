@@ -73,7 +73,7 @@ class DetectorSpec:
             coco_model=None if getattr(args, "no_coco", False) else Path(args.coco_model),
             coco_labels=getattr(args, "coco_labels", None),
             conf=args.conf, iou=args.iou, threads=args.threads,
-            zoom_crop=parse_crop(getattr(args, "zoom_crop", None)),
+            zoom_crop=None if getattr(args, "no_zoom", False) else parse_crop(getattr(args, "zoom_crop", None)),
             zoom_coco=bool(getattr(args, "zoom_coco", False)),
             fusion=getattr(args, "fusion", "wbf"), weights=weights,
             conf_type=getattr(args, "conf_type", "avg"), fusion_iou=getattr(args, "fusion_iou", 0.55),
@@ -115,7 +115,10 @@ def add_detector_args(ap, default_hazard: Path | None = None, default_coco: Path
     ap.add_argument("--threads", type=int, default=4, help="ORT intra-op threads per model (phone-like: 4)")
     ap.add_argument("--zoom-crop", nargs="?", const="0.25,0.35,0.75,0.75", default=None,
                     help="also run the hazard model(s) on a zoomed crop of the road ahead (x1,y1,x2,y2 "
-                         "fractions); one extra inference per model, finds small distant hazards")
+                         "fractions); one extra inference per model, finds small distant hazards. "
+                         "run_video.py turns it on by default (pass --no-zoom to disable); eval_events.py "
+                         "leaves it off unless asked, so old comparisons stay valid")
+    ap.add_argument("--no-zoom", action="store_true", help="disable the zoom pass where it is on by default")
     ap.add_argument("--zoom-coco", action="store_true", help="apply the zoom pass to the COCO model too")
     ap.add_argument("--no-parallel", action="store_true", help="run models one after another (debugging)")
 

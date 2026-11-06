@@ -79,6 +79,8 @@ def main(argv=None) -> int:
     class_to_hazard = dict(DEFAULT_CLASS_TO_HAZARD)
     class_to_hazard.update((cls_cfg or {}).get("hazard_map", {}))
 
+    if args.zoom_crop is None and not args.no_zoom:
+        args.zoom_crop = "0.25,0.35,0.75,0.75"  # the measured operating point: zoom pass on
     spec = DetectorSpec.from_args(args)
     detectors = build_detectors(spec)
     if not detectors:
