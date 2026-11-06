@@ -29,6 +29,9 @@ The team set four goals for sprint 1:
 | extra | Detector app (camera / video / TCP sources, ONNX Runtime XNNPACK, foreground service, broadcast) | `android/detector/` | builds; 19 JVM tests pass; video mode verified on the emulator |
 | extra | Mock Waze app and emulator suite (Pixel 9 Pro AVD, API 35) | `android/mockwaze/`, [tools/emulator/](../tools/emulator/README.md) | done; `run_e2e.py` passes all 18 checks: Stage A (mock macro: send once, 60 s rate limit, dry-run cancel, unknown type ignored) and Stage B (detector app in video mode -> broadcast -> mock Waze report with matching hazard type) |
 
+| extra | Model fusion (weighted boxes fusion across hazard models, parallel members), spatial tracking and per-label report floors, prefetching source | `wazeomatic/fusion.py`, `build.py`, `report_manager.py`; `BoxFusion.kt`, `ReportManager.kt` in the app; [model-research.md](model-research.md#ensembling-zoom-and-tracking-pipeline-pass-2026-11-06) | done; scored with `tools/eval_events.py`, same flags as `run_video.py`; shipped operating point: zoom pass on, pothole floor 0.55 |
+| extra | Mock Waze matched to the 2024 Waze report flow (tile size, spacing, colours, auto-send countdown measured from reference screenshots) | `android/mockwaze/` | done; emulator suite re-run against it |
+
 Update the status column at the sprint review.
 
 ## Open items for sprint 2
@@ -42,6 +45,8 @@ Update the status column at the sprint review.
 - Measure latency on the Pixel 9 Pro and decide fp32 vs int8 (int8 is slower than fp32 on the desktop CPU; the phone's ARM cores may differ).
 - Live camera path verified on the desktop (OBS virtual camera) and on the emulator (CameraX, 4.4 FPS with both models and the zoom pass on a loaded host); still to do on the phone with real footage.
 - Tune the stopped-vehicle heuristic on footage with parked cars before enabling it.
+- Measure the fused stack (two hazard models + zoom) on the Pixel 9 Pro; on the desktop the members run in parallel so latency is about the cost of the slowest member plus the zoom pass.
+- Calibrate the mock Waze against screenshots of the real app on the Pixel 9 Pro (the Play emulator cannot sign in to Waze).
 - Record team dashcam footage with real potholes and work zones.
 - Pi variant: run the Python pipeline on a Pi 4/5 and connect it to the phone over TCP 8765.
 - Police and crash classes stay deferred until a usable dataset is found.
