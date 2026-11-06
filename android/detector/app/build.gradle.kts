@@ -59,12 +59,20 @@ dependencies {
 val repoModels = rootProject.file("../../models")
 val hazardModel = (findProperty("hazardModel") as String?) ?: "hazard_yolo11n.onnx"
 val cocoModel = (findProperty("cocoModel") as String?) ?: "coco_yolo11n.onnx"
-// second hazard model fused on the device (ensemble setting); "" skips it. The 640b model is the
-// useful partner for 640c (event F1 0.709 fused vs 0.668 alone); the 416 model only dilutes it.
-val hazardModel2 = (findProperty("hazardModel2") as String?) ?: "hazard_yolo11n_640b.onnx"
+// second hazard model fused on the device (ensemble setting); "" (the default since the v3 model)
+// ships the single v3 nano. The older 4-class models no longer help it (docs/model-research.md);
+// -PhazardModel2=hazard_yolo11s_v3.onnx fuses the v3 small where the phone can afford it.
+val hazardModel2 = (findProperty("hazardModel2") as String?) ?: ""
 
 val syncModels by tasks.registering(Copy::class) {
     description = "Copy models/*.onnx and label files into app/src/main/assets"
+    doFirst {
+        if (hazardModel2.isBlank()) {
+            // a previous build with a second model leaves its assets behind; Copy never deletes
+            layout.projectDirectory.file("src/main/assets/hazard2.onnx").asFile.delete()
+            layout.projectDirectory.file("src/main/assets/hazard2_labels.txt").asFile.delete()
+        }
+    }
     from(repoModels) {
         include(hazardModel)
         rename { "hazard.onnx" }
@@ -73,14 +81,16 @@ val syncModels by tasks.registering(Copy::class) {
         include(cocoModel)
         rename { "coco.onnx" }
     }
-    // optional second hazard model for on-device fusion (-PhazardModel2=hazard_yolo11n_416.onnx)
-    from(repoModels) {
-        include(hazardModel2)
-        rename { "hazard2.onnx" }
-    }
-    from(repoModels) {
-        include(hazardModel2.removeSuffix(".onnx") + ".labels.txt")
-        rename { "hazard2_labels.txt" }
+    // optional second hazard model for on-device fusion (-PhazardModel2=hazard_yolo11s_v3.onnx)
+    if (hazardModel2.isNotBlank()) {
+        from(repoModels) {
+            include(hazardModel2)
+            rename { "hazard2.onnx" }
+        }
+        from(repoModels) {
+            include(hazardModel2.removeSuffix(".onnx") + ".labels.txt")
+            rename { "hazard2_labels.txt" }
+        }
     }
     // export_onnx.py writes <model>.labels.txt next to each model
     from(repoModels) {

@@ -69,7 +69,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
-| `ensemble` | true | also run `hazard2.onnx` (bundled by the `syncModels` task from `-PhazardModel2`, default `hazard_yolo11n_640b.onnx`; pass `-PhazardModel2=""` for a single-model build) and fuse it with `hazard.onnx`; no second asset = single model |
+| `ensemble` | true | also run `hazard2.onnx` when the build bundled one (`syncModels` copies `-PhazardModel2`; the default is none since the v3 model, `-PhazardModel2=hazard_yolo11s_v3.onnx` adds the v3 small) and fuse it with `hazard.onnx`; no second asset = single model |
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |

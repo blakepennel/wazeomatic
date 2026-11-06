@@ -284,18 +284,19 @@ zoom pass on), so the shipped model and the new ones are measured on identical i
 
 Box AP50 on the v3 val subset (`runs/eval/v3val_*`):
 
-| class | 640c (shipped this morning) | v3 nano |
-|---|---|---|
-| pothole | 0.323 | 0.394 |
-| cone | 0.279 | 0.513 |
-| construction_sign | 0.250 | 0.577 |
-| delineator | 0.039 | 0.334 |
-| barricade | - | 0.296 |
-| worker | - | 0.360 |
-| all, small (< 24 px on the 640 input) | 0.035 | 0.246 |
-| all, medium | 0.194 | 0.497 |
-| all, large | 0.374 | 0.542 |
-| **all** | **0.159** | **0.392** |
+| class | 640c (shipped this morning) | v3 nano | v3 small (YOLO11s) |
+|---|---|---|---|
+| pothole | 0.323 | 0.394 | 0.431 |
+| cone | 0.279 | 0.513 | 0.523 |
+| construction_sign | 0.250 | 0.577 | 0.579 |
+| delineator | 0.039 | 0.334 | 0.358 |
+| barricade | - | 0.296 | 0.368 |
+| worker | - | 0.360 | 0.520 |
+| all, small (< 24 px on the 640 input) | 0.035 | 0.246 | 0.267 |
+| all, medium | 0.194 | 0.497 | 0.520 |
+| all, large | 0.374 | 0.542 | 0.569 |
+| **all** | **0.159** | **0.392** | **0.415** |
+| model time per frame, desktop CPU, zoom on | 29 ms | 25 ms | 86 ms |
 
 Event-level (synthetic clips, 3 hits in 10, zoom on; precision / recall / F1):
 
@@ -303,12 +304,18 @@ Event-level (synthetic clips, 3 hits in 10, zoom on; precision / recall / F1):
 |---|---|---|---|---|
 | 640c | 0.45, pothole 0.55 | 0.960 / 0.508 / 0.664 | 0.952 / 0.546 / 0.694 | 0.968 / 0.471 / 0.634 |
 | v3 nano | 0.45, pothole 0.55 | 0.950 / 0.633 / 0.760 | 0.935 / 0.820 / 0.873 | 0.978 / 0.456 / 0.622 |
+| **v3 nano (shipped floors)** | 0.40, pothole 0.45 | **0.947 / 0.717 / 0.816** | 0.925 / 0.847 / 0.884 | 0.979 / 0.593 / 0.739 |
+| v3 nano + 640c (WBF max) | 0.40, pothole 0.45 | 0.922 / 0.742 / 0.822 | 0.915 / 0.858 / 0.886 | 0.931 / 0.632 / 0.753 |
+| v3 small | 0.40, pothole 0.45 | 0.952 / 0.769 / 0.851 | 0.926 / 0.893 / 0.910 | 0.988 / 0.650 / 0.784 |
 | v3 nano, threshold sweep | 0.45 / 3 | 0.953 / 0.704 / 0.809 | | |
 | v3 nano, threshold sweep | 0.35 / 3 | 0.933 / 0.757 / 0.836 | | |
 | v3 nano, threshold sweep | 0.35 / 2 | 0.924 / 0.779 / 0.846 | | |
 
 (The sweep rows apply one floor to every label, which is why their overall numbers differ from the first
-v3 row.) Construction recall went from 0.55 to 0.82 at the same precision; the delineator class, which
+v3 row.) Fusing the old 640c into the v3 nano buys 0.6 F1 overall and costs 2.7x the model time (68 ms
+against 25 ms per frame on the desktop CPU) and 13 extra false pothole events, so the old models are no
+longer ensemble partners; the phone build fuses the v3 nano with the v3 small instead (below) or runs the
+nano alone. Construction recall went from 0.55 to 0.82 at the same precision; the delineator class, which
 640c had effectively never seen in ROADWork's drum / tubular-marker / vertical-panel form, is now found a
 third of the time even when small. Potholes did not move: the new pothole data is small and the pothole
 subset of the val split (IVCNZ close-ups and RDD street views) is the same as before.
@@ -321,6 +328,7 @@ Real footage, v3 nano, learnt hood zone, every 6th frame, clean and camera-degra
 | 0.45, pothole 0.55 | 0 | 275 / 185 |
 | 0.45, pothole 0.45 | 0 | |
 | 0.35, pothole 0.45 | 0 | |
+| 0.40, pothole 0.45, v3 small | 0 | |
 
 The UK clips (`uk_dashcam_002/006`, overcast suburban and rural England, dashboard in the bottom 15 % of the
 frame, wiper in view) are the first footage from a different car and country; the learnt hood zone settles
@@ -329,6 +337,13 @@ at about 25 % on them and nothing is reported. On the Argoverse work-zone clip
 sign, a barrel line and cones) the live pipeline emits exactly one Construction event and draws the sign, the
 barrels and the distant markers (`runs/clips/argo_workzone_v3n.mp4`); the 60 s per-type cooldown absorbs the
 rest of the zone.
+
+The small model is better everywhere (overall event F1 0.851 against 0.816, pothole recall 0.65 against
+0.59 with fewer false events) at 3.4x the model time. It is exported as `models/hazard_yolo11s_v3.onnx`;
+the desktop pipeline takes it with `--hazard-model models/hazard_yolo11s_v3.onnx` and the phone build with
+`-PhazardModel2=hazard_yolo11s_v3.onnx` (fused with the nano) or `-PhazardModel=hazard_yolo11s_v3.onnx`
+(alone). It is not the default because its Pixel 9 Pro latency is unmeasured; the nano with the zoom pass
+already costs two inferences per frame there.
 
 **Operating point after this pass:** v3 nano (`models/hazard_yolo11n.onnx` = `hazard_yolo11n_v3.onnx`,
 six classes), zoom on, learnt hood zone, detector threshold 0.35, report floor **0.40** with pothole
