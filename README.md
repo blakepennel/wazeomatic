@@ -41,17 +41,19 @@ python tools/export_onnx.py --coco                     # stock COCO model -> mod
 python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --sink stdout --record runs/sim/out.mp4
 ```
 
-`--sink tcp:<phone-ip>:8765` sends events to the phone app, `--sink adb --adb-dry-run` fires the broadcast on a connected device or emulator, `--camera-sim` degrades frames to phone-camera quality. Details: [docs/simulation.md](docs/simulation.md).
+`--sink tcp:<phone-ip>:8765` sends events to the phone app, `--sink adb --adb-dry-run` fires the broadcast on a connected device or emulator, `--camera-sim` degrades frames to phone-camera quality, `--zoom-crop` adds a second pass on the road ahead for small distant hazards, `0 --camera` reads a webcam (`tools/camera/start_obs_camera.ps1` turns a clip into one). `tools/eval_events.py` scores report events, not just boxes. Details: [docs/simulation.md](docs/simulation.md).
 
 ### Training and export
 
 ```powershell
 pip install -r requirements-train.txt                  # plus a CUDA build of torch
-python tools/prepare_datasets.py                       # -> F:\dev\datasets\wazeomatic_hazards
-python tools/train.py                                  # fine-tune YOLO11n
-python tools/export_onnx.py --weights runs/train/hazard/weights/best.pt --imgsz 416
-python tools/quantize_onnx.py models/hazard_yolo11n_416.onnx
-python tools/bench_onnx.py models/hazard_yolo11n_416.onnx
+python tools/fetch_rdd2022_potholes.py                 # pothole images of RDD2022 (all countries) -> F:\dev\datasets\rdd2022_full
+python tools/prepare_datasets.py --out F:/dev/datasets/wazeomatic_hazards_640 --tile 1024   # StarLine frames tiled at native resolution
+python tools/train.py --data F:/dev/datasets/wazeomatic_hazards_640/data.yaml --imgsz 640 --batch 16
+python tools/export_onnx.py --weights runs/train/hazard640/weights/best.pt --imgsz 640
+python tools/quantize_onnx.py models/hazard_yolo11n_640.onnx
+python tools/bench_onnx.py models/hazard_yolo11n_640.onnx
+python tools/eval_events.py --model models/hazard_yolo11n.onnx --data F:/dev/datasets/wazeomatic_hazards_640 --sweep
 ```
 
 Model choice, datasets and results: [docs/model-research.md](docs/model-research.md).

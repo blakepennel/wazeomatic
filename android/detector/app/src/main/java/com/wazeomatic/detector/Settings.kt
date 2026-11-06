@@ -27,7 +27,11 @@ data class Settings(
     val tcpEnabled: Boolean = true,
     val tcpPort: Int = 8765,
     val classMap: String = "",              // extra "label=HAZARD_KEY,label2=HAZARD_KEY" pairs, mostly for testing
+    val zoomCrop: String = "",              // "" = off, "true" = default crop, "x1,y1,x2,y2" = second pass on that region
 ) {
+    /** Two-pass zoom region, null when disabled or malformed (see [ZoomCrop.parse]). */
+    val zoomCropOrNull: ZoomCrop? get() = ZoomCrop.parse(zoomCrop)
+
     /** Detector threshold never above the report threshold, otherwise lowering conf does nothing. */
     val effectiveDetConf: Float get() = minOf(detConf, confThreshold)
 
@@ -61,6 +65,7 @@ data class Settings(
             .putBoolean("tcp", tcpEnabled)
             .putInt("tcp_port", tcpPort)
             .putString("class_map", classMap)
+            .putString("zoom_crop", zoomCrop)
             .apply()
     }
 
@@ -93,6 +98,7 @@ data class Settings(
             tcpEnabled = z("tcp", tcpEnabled),
             tcpPort = i("tcp_port", tcpPort),
             classMap = str("class_map") ?: classMap,
+            zoomCrop = str("zoom_crop") ?: zoomCrop,
         )
     }
 
@@ -100,7 +106,7 @@ data class Settings(
         val KNOWN_KEYS = setOf(
             "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
             "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
-            "tcp", "tcp_port", "class_map",
+            "tcp", "tcp_port", "class_map", "zoom_crop",
         )
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
@@ -136,6 +142,7 @@ data class Settings(
                 tcpEnabled = p.getBoolean("tcp", d.tcpEnabled),
                 tcpPort = p.getInt("tcp_port", d.tcpPort),
                 classMap = p.getString("class_map", d.classMap) ?: d.classMap,
+                zoomCrop = p.getString("zoom_crop", d.zoomCrop) ?: d.zoomCrop,
             )
         }
     }

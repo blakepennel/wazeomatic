@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.util.Log
 import java.io.Closeable
@@ -97,11 +98,16 @@ class OnnxDetector(
         return o
     }
 
-    /** Letterbox (114 gray, centered) and write RGB float [0,1] NCHW into [input]. */
-    private fun preprocess(src: Bitmap): Letterbox {
-        val lb = Letterbox.compute(src.width, src.height, inW, inH)
+    /**
+     * Letterbox (114 gray, centered) and write RGB float [0,1] NCHW into [input]. With [region]
+     * only that part of [src] is letterboxed (drawn straight from the source bitmap, no copy).
+     */
+    private fun preprocess(src: Bitmap, region: Rect?): Letterbox {
+        val sw = region?.width() ?: src.width
+        val sh = region?.height() ?: src.height
+        val lb = Letterbox.compute(sw, sh, inW, inH)
         canvas.drawColor(Color.rgb(YoloDecoder.PAD_VALUE, YoloDecoder.PAD_VALUE, YoloDecoder.PAD_VALUE))
-        canvas.drawBitmap(src, null, RectF(lb.padX, lb.padY, lb.padX + lb.newW, lb.padY + lb.newH), paint)
+        canvas.drawBitmap(src, region, RectF(lb.padX, lb.padY, lb.padX + lb.newW, lb.padY + lb.newH), paint)
         canvasBmp.getPixels(pixels, 0, inW, 0, 0, inW, inH)
         val plane = inW * inH
         input.rewind()
@@ -114,8 +120,12 @@ class OnnxDetector(
         return lb
     }
 
-    fun detect(frame: Bitmap): List<Detection> {
-        val lb = preprocess(frame)
+    /**
+     * Run the model on [frame], or only on [region] of it when given. Returned boxes are
+     * normalized to whatever was fed to the model (the whole frame or the region).
+     */
+    fun detect(frame: Bitmap, region: Rect? = null): List<Detection> {
+        val lb = preprocess(frame, region)
         val t0 = System.nanoTime()
         val raw: FloatArray
         val d1: Int

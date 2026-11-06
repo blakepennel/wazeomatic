@@ -29,6 +29,9 @@ def main() -> None:
     ap.add_argument("--patience", type=int, default=20)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--cache", default="ram", help="ultralytics cache: ram, disk or false (ram avoids slow disks)")
+    ap.add_argument("--lr0", type=float, default=0.01, help="initial learning rate (use ~0.002 to fine-tune a finished run)")
+    ap.add_argument("--warmup", type=float, default=3.0, help="warm-up epochs")
+    ap.add_argument("--close-mosaic", type=int, default=10, help="turn mosaic off for the last N epochs")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -50,8 +53,8 @@ def main() -> None:
         # dashcam-friendly augmentation: no vertical flips (potholes do not hang from the sky),
         # mild colour jitter for exposure differences, mosaic off for the last epochs
         fliplr=0.5, flipud=0.0, degrees=2.0, translate=0.1, scale=0.4, shear=1.0,
-        hsv_h=0.015, hsv_s=0.6, hsv_v=0.4, mosaic=1.0, close_mosaic=10, mixup=0.05,
-        cos_lr=True, lr0=0.01, warmup_epochs=3, plots=True, verbose=True,
+        hsv_h=0.015, hsv_s=0.6, hsv_v=0.4, mosaic=1.0, close_mosaic=args.close_mosaic, mixup=0.05,
+        cos_lr=True, lr0=args.lr0, warmup_epochs=args.warmup, plots=True, verbose=True,
     )
     print("best weights:", ROOT / "runs" / "train" / args.name / "weights" / "best.pt")
 

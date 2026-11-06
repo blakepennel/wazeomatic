@@ -28,6 +28,8 @@ python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --sink stdo
 | `--conf`, `--report-conf`, `--min-hits`, `--window`, `--cooldown`, `--global-cooldown` | Detector and Report Manager thresholds (defaults match the phone app) |
 | `--stopped-vehicle` | Enable the experimental car-on-shoulder heuristic |
 | `--camera-sim [--sim-res 1280x720]` | Camera-style degradation, see below |
+| `--zoom-crop [x1,y1,x2,y2]` | Two-pass inference: each model also runs on a zoomed crop of the road ahead (default middle 50 % x 35-75 % of the frame) and the passes are merged; finds small distant hazards for one extra inference per model |
+| `0 --camera` | Live webcam / capture device instead of a file (`--max-frames` ends the run); see "Live camera without a webcam" |
 | `--show`, `--record <mp4>`, `--stats-json <file>` | Live window, annotated video, latency/FPS summary |
 | `--no-coco`, `--no-hazard`, `--threads 4` | Pick models; ORT thread count (4 approximates a phone's big cores) |
 
@@ -48,6 +50,22 @@ Run each clip clean and degraded. If event counts change a lot, the thresholds i
 
 First replay result (both CC0 clips, hazard + COCO models, every 3rd frame): one false pothole event per clip, both caused by the reflection on the car's own bonnet at the bottom of the frame. The Report Manager now has a hood exclusion zone (`hood_frac`, default 10 % of the frame height) and both clips replay with zero events, clean and degraded. Details in [model-research.md](model-research.md#video-replay).
 
+### Live camera without a webcam
+
+The desktop camera source (`run_video.py 0 --camera`) can be fed a dashcam clip through OBS Studio's virtual camera, so the live path is tested without a real camera:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\camera\start_obs_camera.ps1          # loops assets\videos\dashcam_urban_1080p.mp4 as "OBS Virtual Camera"
+.venv\Scripts\python -m wazeomatic.run_video 0 --camera --step 3 --max-frames 100 --stats-json runs\sim\camera_stats.json
+powershell -ExecutionPolicy Bypass -File tools\camera\start_obs_camera.ps1 -Stop
+```
+
+The script writes an OBS profile and scene collection named `wazeomatic` (1280x720 at 30 fps, one looping media source) and starts OBS minimised with the virtual camera on. Measured on the desktop: 100 inference frames in 11.5 s (8.7 FPS end to end at step 3), 242 detections, zero events on the hazard-free clip.
+
+### Event-level evaluation
+
+`tools/eval_events.py` measures what the macro would actually receive, not just boxes: per-class AP by object size on the validation split, precision/recall of report events on short synthetic clips built from the validation images (with the same Report Manager as the apps), a `--sweep` over `min_confidence` x `min_hits`, and the false-report rate on the hazard-free clips. Results land in `runs/eval/<name>/results.md`; the numbers used in [model-research.md](model-research.md#measured-results) come from it.
+
 ## Emulator suite
 
 Details and scripts: [tools/emulator/README.md](../tools/emulator/README.md).
@@ -56,7 +74,7 @@ Details and scripts: [tools/emulator/README.md](../tools/emulator/README.md).
 - Installed: detector app, Mock Waze, MacroDroid (with the macro imported, `DRY_RUN` may be false here because Waze is not installed).
 - Video into the emulator, two options:
   1. **Video-source mode (deterministic):** `adb push` an MP4 to the emulator and select it in the detector app. Same frames every run; use this for automated assertions.
-  2. **Emulator webcam:** play the clip in OBS and start OBS Virtual Camera, then set the AVD back camera to that webcam. Exercises the real camera path, but timing varies.
+  2. **Camera mode through the virtual scene:** `start_emulator.ps1 -Poster <image or mp4>` puts the clip on the wall of the emulator's virtual scene, which the back camera looks at, so the CameraX path of the detector app runs for real (`--es source camera`). The emulator on Windows does not enumerate the OBS virtual camera (it is a DirectShow device, the emulator lists Media Foundation ones), so `-Webcam` only works with a real UVC webcam. Timing varies and the emulator needs a quiet host: with a GPU training run saturating the CPU it stalls to the point of system-UI ANRs, so run camera tests when nothing else is loading the machine.
 - Assertion: Mock Waze logs every report it receives (type, time). The script compares that log against the expected hazards for the clip.
 
 Emulator latency is not representative of the phone; only use it for function.

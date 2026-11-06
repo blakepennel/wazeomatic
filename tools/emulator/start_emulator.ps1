@@ -4,7 +4,10 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1
   powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Headless
-  powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Webcam   # back cam = webcam0 (OBS)
+  powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Webcam   # back cam = webcam0 (a real/UVC webcam)
+  powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Poster assets\videos\dashcam_urban_1080p.mp4
+      # back cam = virtual scene whose wall poster plays the clip (works without any webcam; the
+      # emulator does not enumerate the OBS virtual camera on Windows)
 #>
 param(
     [string]$Avd = 'pixel9pro_test',
@@ -12,6 +15,7 @@ param(
     [switch]$Headless,          # -no-window
     [string]$Gpu = 'auto',      # auto | host | swiftshader_indirect | ...
     [switch]$Webcam,            # -camera-back webcam0 for this run only
+    [string]$Poster = '',       # image/mp4 shown on the virtual scene wall (back camera looks at it)
     [switch]$WipeData,
     [switch]$ColdBoot,          # ignore the quickboot snapshot
     [switch]$Wait               # also run wait_for_boot.ps1
@@ -23,9 +27,19 @@ $serial = Get-Serial $Port
 if (Test-DeviceOnline $serial) {
     Write-Host "$serial is already running, not starting another one."
 } else {
-    $emuArgs = @('-avd', $Avd, '-port', "$Port", '-gpu', $Gpu, '-no-boot-anim', '-no-audio', '-netdelay', 'none', '-netspeed', 'full')
+    # After a crash (or a force-kill) the next start blocks on a crash-report consent dialog
+    # ("Showing crashdialog to get consent" in the log) and looks hung with 1 s of CPU. Drop the
+    # pending crash data and skip metrics so unattended starts never wait on that dialog.
+    Get-ChildItem (Join-Path $env:TEMP 'AndroidEmulator') -Filter 'emu-crash-*.db' -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    $emuArgs = @('-avd', $Avd, '-port', "$Port", '-gpu', $Gpu, '-no-boot-anim', '-no-audio', '-netdelay', 'none', '-netspeed', 'full', '-no-metrics')
     if ($Headless) { $emuArgs += '-no-window' }
     if ($Webcam) { $emuArgs += @('-camera-back', 'webcam0') }
+    if ($Poster) {
+        $posterPath = if ([System.IO.Path]::IsPathRooted($Poster)) { $Poster } else { Join-Path $RepoRoot $Poster }
+        if (-not (Test-Path $posterPath)) { throw "poster not found: $posterPath" }
+        $emuArgs += @('-camera-back', 'virtualscene', '-virtualscene-poster', "wall=$posterPath")
+    }
     if ($WipeData) { $emuArgs += '-wipe-data' }
     if ($ColdBoot) { $emuArgs += '-no-snapshot-load' }
     $log = Join-Path $RunsDir "emulator_$Port.log"

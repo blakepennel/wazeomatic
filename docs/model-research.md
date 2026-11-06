@@ -103,7 +103,7 @@ Desktop: stock COCO YOLO11n exported at each size, onnxruntime 1.23 CPU provider
 |-------|----------|----------|----------|----------|----------|----------|
 | Desktop, ORT CPU (Ryzen 7 9800X3D, 4 threads), mean | 6.1 | 14.7 | 8.4 | 16.4 | 16.3 | 33.2 |
 | Desktop, p90 | 8.3 | 16.5 | 13.4 | 18.7 | 20.3 | 35.7 |
-| Desktop, hazard model (4 classes), mean | 3.3 | 9.3 | 5.3 | 12.8 | | |
+| Desktop, hazard model (4 classes), mean | 3.3 | 9.3 | 5.3 | 12.8 | 11.3 | |
 | Desktop, both models in `run_video` on a 720p clip, mean | | | 13.1 (p90 16.2) | | | |
 | Emulator (x86_64, ORT XNNPACK), detector app readout | | | 12–40 (COCO model, 9–11 FPS end to end) | | | |
 | Pixel 9 Pro (ORT XNNPACK) | TBD | TBD | TBD | TBD | TBD | TBD |
@@ -121,8 +121,8 @@ Take-aways so far:
 |------|------|
 | coco_yolo11n_{320,416,640}.onnx (fp32) | 10.6 / 10.6 / 10.7 MB |
 | coco_yolo11n_{320,416,640}.int8.onnx | 2.9 / 2.9 / 3.0 MB |
-| hazard_yolo11n_{320,416}.onnx (fp32) | 10.5 / 10.6 MB |
-| hazard_yolo11n_{320,416}.int8.onnx | 2.9 / 2.9 MB |
+| hazard_yolo11n_{320,416,640}.onnx (fp32) | 10.5 / 10.6 / 10.7 MB |
+| hazard_yolo11n_{320,416,640}.int8.onnx | 2.9 / 2.9 / 3.0 MB |
 
 ### Accuracy (validation split, 416 px)
 
@@ -150,3 +150,37 @@ Both models, every 3rd frame (10 inferences/s), default Report Manager threshold
 | Panorama II BlackBox daylight, 120 s | 1 (pothole, conf 0.49) | 0 | 0 | 0 | 0 |
 
 The single event in each clip was the same false positive: the reflection on the car's own bonnet at the very bottom of the frame, persisting for 3 frames just above the 0.45 threshold. The Report Manager now ignores boxes whose bottom edge lies in the lowest 10 % of the frame (`hood_frac`), which removes it without touching anything on the road. With `--camera-sim` degradation the urban clip also produced no events.
+
+### Small-object pass (tiled data, 640 px, two-pass zoom)
+
+Why the first model missed cones: in the StarLine source the cones are a median 43 px wide at 2880 px (delineators 61 px). The first dataset build downscaled every frame to 1280 px and training ran at 416 px, so a median cone was about 6 px to the network. Measured with `tools/eval_events.py`, the 416 model had AP50 0.08 on boxes under 24 px against 0.70 on boxes over 64 px, and 7,220 of the 9,248 validation boxes were that small. The merged set also had only 145 near-range cone boxes and 106 RDD potholes.
+
+What changed:
+
+1. `prepare_datasets.py --tile 1024` cuts the StarLine frames into 1024 px tiles at native resolution (stride 896, boxes kept when 60 % visible, 8 % of empty tiles kept as negatives): cone boxes 8k -> 22.6k, delineator 13k -> 24k. Dataset `F:/dev/datasets/wazeomatic_hazards_640`, validation = StarLine test-session tiles plus the other sources' validation images (5,167 images).
+2. Training at 640 px (`train.py --imgsz 640 --batch 16`; about 1.2 min per epoch on the RTX 5070 Ti once the disk cache is warm). Run `hazard640` early-stopped at epoch 27; run `hazard640b` fine-tuned it for 25 epochs at lr0 0.002 with mosaic off for the last 8. `hazard640b` is the model shipped as `models/hazard_yolo11n.onnx`.
+3. The pothole images of the complete RDD2022 release (all six countries, 7,440 images, 10,702 pothole boxes, CC BY-SA 4.0, mirror dronefreak/RDD2022, `tools/fetch_rdd2022_potholes.py`) were added for a third run (`hazard640c`); see the note at the end of this section.
+4. Two-pass zoom inference (`ZoomDetector`, `run_video.py --zoom-crop`, `zoom_crop` launch extra of the Android app): each model runs on the full frame and again on the middle 50 % x 35-75 % of the frame (the road ahead, above the hood zone); boxes are mapped back and merged with per-class NMS. On a 1280x720 frame with a 640 px model the crop pass sees the road at full resolution, so a 20 px cone becomes 40 px to the network, for one extra inference per model and frame.
+
+Box metrics on the tiled validation split (IoU 0.5, detector conf 0.25; `runs/eval/baseline416_tiledval`, `stage2_640_tiledval`):
+
+| Class | AP50, 416 model | AP50, 640b model |
+|-------|-----------------|------------------|
+| pothole | 0.44 | 0.49 |
+| cone | 0.18 | 0.31 |
+| construction_sign | 0.50 | 0.47 |
+| delineator | 0.09 | 0.21 |
+| all, boxes < 24 px | 0.10 | 0.13 (recall 0.30 vs 0.17) |
+
+Report events on synthetic 12-frame clips from the same images (Report Manager defaults: 3 hits in 10 frames, min confidence 0.45):
+
+| Hazard type | 416 model P / R / F1 | 640b model P / R / F1 |
+|-------------|----------------------|------------------------|
+| HAZARD_ON_ROAD_CONSTRUCTION (cone, sign, delineator) | 0.99 / 0.75 / 0.85 | 0.99 / 0.83 / 0.90 |
+| HAZARD_ON_ROAD_POTHOLE | 0.91 / 0.54 / 0.68 | 1.00 / 0.62 / 0.77 |
+
+Hazard-free clips (both models + COCO, every 3rd frame, clean and camera-degraded, 4 x 120 s): zero events for the 416 model and zero for the 640b model. The threshold sweep says min confidence 0.35 buys another 4 to 6 points of event recall for one extra false event per 2,000 clips; the clip false-positive rate at 0.35 has not been measured yet, so 0.45 stays the default.
+
+Cost: hazard model alone on the desktop 5.4 ms at 416 vs 11.3 ms at 640 (fp32, 4 threads). On the Pixel 9 Pro emulator in live camera mode (x86 host under load) the full stack was hazard 23 ms + zoom 24 ms + COCO 18 ms + zoom 13 ms at 4.4 FPS; the real phone number is still pending.
+
+Open: the RDD2022 potholes are small and low-contrast; the 640b model still finds only 8 % of them at event level (the IVCNZ potholes: 56 %). Run `hazard640c` with the full RDD2022 pothole set was training when this section was written; its numbers replace this paragraph once `eval_events.py` has scored it.

@@ -8,9 +8,16 @@ Sources (download locations are the ones used on the team machine; override with
   cone_voc        Junhan0518/Traffic_Cone cone_dataset.tar.gz (Apache-2.0) Pascal VOC, "trafficcone"
   starline        StarLineResearch/Roadwork_Cones_Dataset                  parquet; cone / roadworks /
                   vertical_pannel from vehicle-mounted cameras (2880x1860)
+  rdd2022_full    dronefreak/RDD2022 mirror, pothole images only (CC BY-SA)  YOLO txt; 3 = pothole,
+                  (tools/fetch_rdd2022_potholes.py)                         0-2 cracks dropped
 
 Output: <out>/images/{train,val}, <out>/labels/{train,val}, <out>/data.yaml using the class
 order from configs/classes.yaml. Large images are downscaled to --max-side to speed training.
+
+--tile N cuts the 2880x1860 StarLine frames into N x N tiles at native resolution instead of
+downscaling them (cones there are a median 43 px wide, which is 6 px after a 1280 downscale and
+416 px training; in a 1024 tile trained at 640 they are about 27 px). Tiles that contain a box
+are kept, plus a share of empty tiles as negatives.
 
     python tools/prepare_datasets.py                 # build everything
     python tools/prepare_datasets.py --check starline  # render a few labelled samples to runs/dataset_check
@@ -36,6 +43,7 @@ SRC = {
     "rdd2022_us": DATASETS / "rdd2022_us" / "United_States" / "train",
     "cone_voc": DATASETS / "cones" / "cone_dataset" / "cone_dataset",
     "starline": DATASETS / "starline_roadwork" / "roadwork_cones_dataset",
+    "rdd2022_full": DATASETS / "rdd2022_full" / "data",
 }
 
 # source label -> our class name (None = keep image, drop the box: hard negative)
@@ -44,6 +52,7 @@ LABEL_MAP = {
     "rdd2022_us": {"D40": "pothole", "D00": None, "D10": None, "D20": None, "D43": None, "D44": None, "D50": None},
     "cone_voc": {"trafficcone": "cone", "person": None},
     "starline": {"cone": "cone", "roadworks": "construction_sign", "vertical_pannel": "delineator"},
+    "rdd2022_full": {"3": "pothole", "0": None, "1": None, "2": None},
 }
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".JPG", ".PNG"}
@@ -119,12 +128,98 @@ def read_starline(root: Path):
             yield img, boxes, ("val" if rel.startswith("test/") else "train")
 
 
+def read_rdd2022_full(root: Path):
+    """YOLO-format mirror; only images that were fetched (potholes) exist on disk. The mirror's
+    own train/valid/test split is kept (valid + test -> our val)."""
+    for img in sorted((root / "images").rglob("*.jpg")):
+        rel = img.relative_to(root / "images")
+        lbl = root / "labels" / rel.with_suffix(".txt")
+        if not lbl.exists():
+            continue
+        im = cv2.imread(str(img))
+        if im is None:
+            continue
+        h, w = im.shape[:2]
+        boxes = []
+        for line in lbl.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            c, cx, cy, bw, bh = parts
+            cx, cy, bw, bh = (float(v) for v in (cx, cy, bw, bh))
+            boxes.append((LABEL_MAP["rdd2022_full"].get(c), (cx - bw / 2) * w, (cy - bh / 2) * h,
+                          (cx + bw / 2) * w, (cy + bh / 2) * h))
+        split = "train" if rel.parts[0] == "train" else "val"
+        yield img, boxes, split
+
+
 READERS = {
     "pothole_ivcnz": read_pothole_ivcnz,
     "rdd2022_us": read_rdd2022_us,
     "cone_voc": read_cone_voc,
     "starline": read_starline,
+    "rdd2022_full": read_rdd2022_full,
 }
+
+
+# ----------------------------------------------------------------------------- tiling
+
+def tile_boxes(w: int, h: int, boxes, tile: int, stride: int, min_visible: float = 0.6):
+    """Yield (x0, y0, boxes_in_tile) for every tile; boxes are clipped to the tile and kept
+    when at least min_visible of their area is inside it."""
+    xs = list(range(0, max(w - tile, 0) + 1, stride))
+    ys = list(range(0, max(h - tile, 0) + 1, stride))
+    if xs[-1] + tile < w:
+        xs.append(w - tile)
+    if ys[-1] + tile < h:
+        ys.append(h - tile)
+    for y0 in ys:
+        for x0 in xs:
+            kept = []
+            for cls, x1, y1, x2, y2 in boxes:
+                area = max(x2 - x1, 0) * max(y2 - y1, 0)
+                cx1, cy1 = max(x1, x0), max(y1, y0)
+                cx2, cy2 = min(x2, x0 + tile), min(y2, y0 + tile)
+                inter = max(cx2 - cx1, 0) * max(cy2 - cy1, 0)
+                if area <= 0 or inter / area < min_visible:
+                    continue
+                kept.append((cls, cx1 - x0, cy1 - y0, cx2 - x0, cy2 - y0))
+            yield x0, y0, kept
+
+
+def write_tiles(img_path: Path, boxes, out_dir_img: Path, out_dir_lbl: Path, stem: str, classes: list[str],
+                tile: int, stride: int, empty_frac: float, rng_seed: int) -> Counter:
+    im = cv2.imread(str(img_path))
+    if im is None:
+        return Counter()
+    h, w = im.shape[:2]
+    rng = random.Random(rng_seed)
+    counts = Counter()
+    for x0, y0, kept in tile_boxes(w, h, boxes, tile, stride):
+        positive = any(b[0] for b in kept)
+        if not positive and rng.random() >= empty_frac:
+            continue
+        crop = im[y0:y0 + tile, x0:x0 + tile]
+        th, tw = crop.shape[:2]
+        lines = []
+        for cls, x1, y1, x2, y2 in kept:
+            if cls is None:
+                continue
+            bw, bh = x2 - x1, y2 - y1
+            if bw < 2 or bh < 2:
+                continue
+            cid = classes.index(cls)
+            lines.append(f"{cid} {(x1 + bw / 2) / tw:.6f} {(y1 + bh / 2) / th:.6f} {bw / tw:.6f} {bh / th:.6f}")
+            counts[cls] += 1
+        name = f"{stem}_t{x0}_{y0}"
+        out_dir_img.mkdir(parents=True, exist_ok=True)
+        out_dir_lbl.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out_dir_img / f"{name}.jpg"), crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        (out_dir_lbl / f"{name}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        if not lines:
+            counts["(negative)"] += 1
+        counts["(tiles)"] += 1
+    return counts
 
 
 # ----------------------------------------------------------------------------- writer
@@ -193,6 +288,9 @@ def main() -> None:
     ap.add_argument("--check", choices=list(READERS), help="render labelled samples and exit")
     ap.add_argument("--clean", action="store_true", help="delete the output folder first")
     ap.add_argument("--workers", type=int, default=8, help="parallel image conversions")
+    ap.add_argument("--tile", type=int, default=0, help="tile size for the starline source (0 = downscale instead)")
+    ap.add_argument("--tile-stride", type=int, default=0, help="tile stride (default: tile - 128)")
+    ap.add_argument("--tile-empty-frac", type=float, default=0.08, help="share of empty tiles kept as negatives")
     args = ap.parse_args()
 
     if args.check:
@@ -227,8 +325,15 @@ def main() -> None:
             (out / "images" / split).mkdir(parents=True, exist_ok=True)
             (out / "labels" / split).mkdir(parents=True, exist_ok=True)
         n = 0
+        tiled = source == "starline" and args.tile > 0
+        stride = args.tile_stride or max(args.tile - 128, args.tile // 2)
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futures = [ex.submit(write_sample, img, boxes, oi, ol, classes, args.max_side) for img, boxes, oi, ol, _ in jobs]
+            if tiled:
+                futures = [ex.submit(write_tiles, img, boxes, oi.parent, ol.parent, oi.stem, classes,
+                                     args.tile, stride, args.tile_empty_frac, hash(oi.stem) & 0xFFFF)
+                           for img, boxes, oi, ol, _ in jobs]
+            else:
+                futures = [ex.submit(write_sample, img, boxes, oi, ol, classes, args.max_side) for img, boxes, oi, ol, _ in jobs]
             for (_, _, _, _, split), fut in zip(jobs, futures):
                 totals[source].update(fut.result())
                 per_split[split] += 1

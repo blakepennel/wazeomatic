@@ -178,3 +178,64 @@ class OnnxDetector:
         raw = self.session.run(None, {self.input_name: x})[0]
         self.last_ms = (time.perf_counter() - t0) * 1000.0
         return decode_yolo_output(raw, lb, self.labels, self.conf_thres, self.iou_thres, self.name)
+
+
+class ZoomDetector:
+    """Two-pass wrapper for small, distant hazards: runs the detector on the whole frame and a
+    second time on a zoomed crop of the road ahead, then merges both with per-class NMS.
+
+    With a 1280x720 frame and a 640 px model the full pass sees the scene at half resolution;
+    the default crop (middle 50 % of the width, 35-75 % of the height) is 640x288 px, so the
+    second pass sees that region at full resolution: a 20 px cone becomes 40 px to the network.
+    Costs one extra inference per frame. The crop stays above the hood zone on purpose.
+    """
+
+    def __init__(self, base: "OnnxDetector", crop: tuple[float, float, float, float] = (0.25, 0.35, 0.75, 0.75),
+                 iou_thres: float = 0.5):
+        self.base = base
+        self.crop = crop
+        self.iou_thres = iou_thres
+        self.labels = base.labels
+        self.name = base.name
+        self.size = base.size
+        self.conf_thres = base.conf_thres
+        self.last_ms = 0.0
+
+    def __call__(self, frame_bgr: np.ndarray) -> list[Detection]:
+        h, w = frame_bgr.shape[:2]
+        full = self.base(frame_bgr)
+        ms = self.base.last_ms
+        cx1, cy1, cx2, cy2 = self.crop
+        x1, y1 = int(round(cx1 * w)), int(round(cy1 * h))
+        x2, y2 = int(round(cx2 * w)), int(round(cy2 * h))
+        if x2 - x1 < 32 or y2 - y1 < 32:
+            self.last_ms = ms
+            return full
+        sub = frame_bgr[y1:y2, x1:x2]
+        zoomed = self.base(sub)
+        ms += self.base.last_ms
+        self.last_ms = ms
+        sw, sh = (x2 - x1) / w, (y2 - y1) / h
+        mapped = [
+            Detection(
+                label=d.label,
+                confidence=d.confidence,
+                bbox=(cx1 + d.bbox[0] * sw, cy1 + d.bbox[1] * sh, d.bbox[2] * sw, d.bbox[3] * sh),
+                model=d.model,
+            )
+            for d in zoomed
+        ]
+        return merge_detections(full + mapped, self.iou_thres)
+
+
+def merge_detections(dets: list[Detection], iou_thres: float = 0.5) -> list[Detection]:
+    """Per-class NMS over detections from several passes (normalized xywh boxes)."""
+    if len(dets) <= 1:
+        return list(dets)
+    labels = sorted({d.label for d in dets})
+    xyxy = np.array([[d.bbox[0] - d.bbox[2] / 2, d.bbox[1] - d.bbox[3] / 2,
+                      d.bbox[0] + d.bbox[2] / 2, d.bbox[1] + d.bbox[3] / 2] for d in dets], dtype=np.float32)
+    conf = np.array([d.confidence for d in dets], dtype=np.float32)
+    offs = np.array([labels.index(d.label) * 4.0 for d in dets], dtype=np.float32)
+    keep = nms(xyxy + offs[:, None], conf, iou_thres)
+    return [dets[i] for i in sorted(keep, key=lambda i: -conf[i])]

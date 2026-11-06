@@ -175,6 +175,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
         val cooldown = field("Cooldown per hazard (s)", s.cooldownS.toString(), true)
         val video = field("Video file (in app files dir)", s.video, false)
         val target = field("Target package (empty = implicit broadcast)", s.targetPackage, false)
+        val zoom = field("Zoom crop (empty = off, true = default, or x1,y1,x2,y2)", s.zoomCrop, false)
         val dry = CheckBox(this).apply { text = "Dry run (macro should not submit)"; isChecked = s.dryRun; form.addView(this) }
         val tcp = CheckBox(this).apply { text = "TCP listener on port ${s.tcpPort}"; isChecked = s.tcpEnabled; form.addView(this) }
         val stopped = CheckBox(this).apply { text = "Stopped-vehicle heuristic (experimental)"; isChecked = s.stoppedVehicle; form.addView(this) }
@@ -190,6 +191,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
                     cooldownS = cooldown.text.toString().toFloatOrNull() ?: s.cooldownS,
                     video = video.text.toString().trim().ifEmpty { s.video },
                     targetPackage = target.text.toString().trim(),
+                    zoomCrop = zoom.text.toString().trim(),
                     dryRun = dry.isChecked,
                     tcpEnabled = tcp.isChecked,
                     stoppedVehicle = stopped.isChecked,

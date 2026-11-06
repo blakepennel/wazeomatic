@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from .detector import OnnxDetector
+from .detector import OnnxDetector, ZoomDetector
 from .pipeline import Pipeline
 from .report_manager import ReportConfig, ReportManager
 from .schema import DEFAULT_CLASS_TO_HAZARD
@@ -49,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--conf", type=float, default=0.35, help="detector confidence threshold")
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--threads", type=int, default=4, help="ORT intra-op threads (phone-like: 4)")
+    ap.add_argument("--zoom-crop", nargs="?", const="0.25,0.35,0.75,0.75", default=None,
+                    help="also run each model on a zoomed crop of the road ahead (x1,y1,x2,y2 fractions); "
+                         "doubles inference cost, finds small distant hazards")
     ap.add_argument("--step", type=int, default=3, help="use every Nth frame (30 fps / 3 = 10 inferences/s)")
     ap.add_argument("--start", type=float, default=0.0, help="start offset in seconds")
     ap.add_argument("--max-frames", type=int)
@@ -99,6 +102,12 @@ def main(argv=None) -> int:
         print(f"[warn] coco model not found at {cc}; running without it", file=sys.stderr)
     if not detectors:
         raise SystemExit("no models available; run tools/export_onnx.py first")
+    if args.zoom_crop:
+        # second pass on the road ahead at full resolution (see ZoomDetector)
+        crop = tuple(float(v) for v in args.zoom_crop.split(","))
+        if len(crop) != 4:
+            raise SystemExit("--zoom-crop wants x1,y1,x2,y2 as fractions, e.g. 0.25,0.35,0.75,0.75")
+        detectors = [ZoomDetector(d, crop, args.iou) for d in detectors]
 
     cfg = ReportConfig(window=args.window, min_hits=args.min_hits, min_confidence=args.report_conf,
                        cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown,
@@ -111,7 +120,7 @@ def main(argv=None) -> int:
         w, h = (int(v) for v in args.sim_res.lower().split("x"))
         sim = CameraSim(width=w, height=h)
     if args.camera:
-        source = CameraSource(int(args.source), step=args.step, sim=sim)
+        source = CameraSource(int(args.source), step=args.step, sim=sim, max_frames=args.max_frames)
     else:
         source = VideoSource(args.source, step=args.step, loop=args.loop, start_s=args.start,
                              max_frames=args.max_frames, sim=sim)

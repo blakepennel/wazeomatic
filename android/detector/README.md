@@ -68,6 +68,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `min_hits` / `window` | 3 / 10 | persistence rule |
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
+| `zoom_crop` | "" | two-pass zoom: `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
 | `dry_run` | true | passed to the macro |
 | `target_package` | "" | empty = implicit broadcast, e.g. `com.arlosoft.macrodroid` |
 | `tcp` / `tcp_port` | true / 8765 | JSON-lines listener, also runs next to camera/video |
@@ -80,6 +81,22 @@ Each event is
 - appended to `/sdcard/Android/data/com.wazeomatic.detector/files/events.jsonl`.
 
 Per-frame latency goes to logcat tag `WazeomaticPerf` and is shown on screen.
+
+### Two-pass zoom
+
+`zoom_crop` runs every model a second time on a crop of the road ahead (same as `--zoom-crop`
+in `wazeomatic/run_video.py`): with a 1280x720 frame and a 640 px model the default crop is
+640x288 px, so a distant 20 px cone is 40 px to the network. Crop detections are mapped back
+to frame coordinates and merged with the full-frame ones by per-class NMS (IoU 0.5, the higher
+confidence wins). The crop is skipped when it would be under 32 px in either dimension.
+Inference cost roughly doubles; the second pass shows up as `hazard_zoom` / `coco_zoom` in the
+`WazeomaticPerf` line and on screen.
+
+```powershell
+adb shell am start -n com.wazeomatic.detector/.MainActivity --es source camera --ez zoom_crop true
+adb shell am start -n com.wazeomatic.detector/.MainActivity --es source video --es zoom_crop 0.2,0.3,0.8,0.7
+adb shell am start -n com.wazeomatic.detector/.MainActivity --es zoom_crop ""    # off again
+```
 
 ```powershell
 adb logcat -s WazeomaticEvent

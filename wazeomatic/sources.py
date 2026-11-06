@@ -115,8 +115,9 @@ class CameraSource:
     """Webcam / capture device by index (desktop or Raspberry Pi USB camera)."""
 
     def __init__(self, index: int = 0, width: int = 1280, height: int = 720, step: int = 1,
-                 sim: Optional[CameraSim] = None):
+                 sim: Optional[CameraSim] = None, max_frames: Optional[int] = None):
         self.cap = cv2.VideoCapture(index)
+        self.max_frames = max_frames
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if not self.cap.isOpened():
@@ -134,6 +135,7 @@ class CameraSource:
 
         t0 = time.time()
         idx = 0
+        emitted = 0
         while True:
             ok, img = self.cap.read()
             if not ok:
@@ -142,6 +144,9 @@ class CameraSource:
                 if self.sim is not None:
                     img = self.sim(img)
                 yield Frame(img, idx, time.time() - t0)
+                emitted += 1
+                if self.max_frames and emitted >= self.max_frames:
+                    return
             idx += 1
 
     def release(self) -> None:

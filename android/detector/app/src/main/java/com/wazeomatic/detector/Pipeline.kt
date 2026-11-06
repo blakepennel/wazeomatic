@@ -3,6 +3,7 @@ package com.wazeomatic.detector
 import ai.onnxruntime.OrtEnvironment
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.util.Log
 import java.io.Closeable
 import java.util.Locale
@@ -15,6 +16,9 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     val detectors: List<OnnxDetector>
     val modelStatus: String
     private val reportManager = ReportManager(settings.reportConfig(), source = "phone")
+    /** Second inference pass on a zoomed region of the road ahead; null = single pass. */
+    val zoomCrop: ZoomCrop? = settings.zoomCropOrNull
+    private val cropRect = Rect()
     private var frameIndex = 0
     private var lastFrameNs = 0L
     private var fps = 0.0
@@ -41,6 +45,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             }
         }
         detectors = list
+        if (zoomCrop != null) notes.add("zoom crop $zoomCrop")
         modelStatus = if (list.isEmpty()) "model missing" else notes.joinToString(" | ")
         Log.i(TAG, "models: $modelStatus")
     }
@@ -51,10 +56,21 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         frameIndex++
         val lat = LinkedHashMap<String, Double>()
         val dets = ArrayList<Detection>()
+        // crop region in pixels; null when off or when the frame is too small for it
+        val crop = zoomCrop?.pixelRect(frame.width, frame.height)
+        val effCrop = crop?.let { ZoomCrop.fromRect(it, frame.width, frame.height) }
+        if (crop != null) cropRect.set(crop.x1, crop.y1, crop.x2, crop.y2)
         for (d in detectors) {
             try {
-                dets.addAll(d.detect(frame))
+                val full = d.detect(frame)
                 lat[d.name] = d.lastMs
+                if (effCrop == null) {
+                    dets.addAll(full)
+                } else {
+                    val zoomed = d.detect(frame, cropRect)
+                    lat["${d.name}_zoom"] = d.lastMs
+                    dets.addAll(ZoomCrop.merge(full + effCrop.toFrame(zoomed), d.iouThres))
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "inference failed in ${d.name}", e)
             }
