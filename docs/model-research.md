@@ -194,7 +194,7 @@ Run `hazard640c` (fine-tune of 640b on the set with the full RDD2022 potholes, 3
 | False events on the 4 hazard-free clip runs, min conf 0.45 | 0 | 2 (one pothole each in two runs) |
 | Same with a pothole-only floor of 0.55 (`--report-class-conf pothole=0.55`) | 0 | 0 |
 
-The 640b pothole number on this split is low because 2,193 of its 2,418 pothole images are the new RDD2022 ones, which 640b never saw; on the IVCNZ potholes 640c reaches event recall 0.69. The two extra false events are what the RDD training buys at 0.45: the shipped operating point is therefore min confidence 0.45 for every class and 0.55 for potholes (`min_confidence_by_label` in `ReportConfig`, `report_class_conf` in the app). POTHOLE_FLOOR_PLACEHOLDER Desktop cost is unchanged at about 11 ms per 640 px inference (4 threads).
+The 640b pothole number on this split is low because 2,193 of its 2,418 pothole images are the new RDD2022 ones, which 640b never saw; on the IVCNZ potholes 640c reaches event recall 0.69. The two extra false events are what the RDD training buys at 0.45: the shipped operating point is therefore min confidence 0.45 for every class and 0.55 for potholes (`min_confidence_by_label` in `ReportConfig`, `report_class_conf` in the app). With that floor the synthetic-clip pothole event recall is 0.37 (precision 1.00, F1 0.54; `runs/eval/stage3_640c_val2_p55`), still 3.5x the 640b model, and the clip false-event count is zero. Desktop cost is unchanged at about 11 ms per 640 px inference (4 threads).
 
 ### Ensembling, zoom and tracking (pipeline pass, 2026-11-06)
 
