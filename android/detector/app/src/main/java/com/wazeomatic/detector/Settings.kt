@@ -27,7 +27,7 @@ data class Settings(
     val tcpEnabled: Boolean = true,
     val tcpPort: Int = 8765,
     val classMap: String = "",              // extra "label=HAZARD_KEY,label2=HAZARD_KEY" pairs, mostly for testing
-    val zoomCrop: String = "",              // "" = off, "true" = default crop, "x1,y1,x2,y2" = second pass on that region
+    val zoomCrop: String = "true",          // "" = off, "true" = default crop, "x1,y1,x2,y2" = second pass on that region
     val ensemble: Boolean = true,           // also run hazard2.onnx (if bundled) and fuse the two hazard models
     val fusion: String = "wbf",             // wbf | nms
     val ensembleWeights: String = "",       // "2,1" = weight per hazard model (default equal)
