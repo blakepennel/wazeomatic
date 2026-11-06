@@ -105,8 +105,22 @@ powershell -ExecutionPolicy Bypass -File tools\emulator\start_emulator.ps1 -Avd 
 ```
 
 Then, in the emulator window, open the Play Store, sign in with a Google account and install
-Waze. Nothing in this repo automates that step on purpose (it is a personal account). Once Waze
-is installed:
+Waze. Nothing in this repo automates that step on purpose (it is a personal account).
+
+**Known limit (checked 2026-11-05, Waze 5.26.5, API 35 Play image):** Waze installs and starts,
+but both "Get started" and "Log in" request a Play Integrity token first and the emulator is not
+a certified device, so the verdict has no device integrity and Waze refuses to continue
+("Something went wrong. Try again later." on the guest path, a network error on the login path).
+The emulator's network itself is fine (ping, DNS and the Play Store all work), so there is nothing
+to fix on that side, and we do not try to work around the integrity check. Use the Play emulator
+for look-and-feel comparisons of the installed app's resources only; real-app dry runs and
+reference screenshots of the report sheets have to come from a real phone:
+
+```powershell
+adb -s <phone serial> exec-out screencap -p > runs\waze_ref\hazard_sheet.png
+```
+
+Once Waze runs somewhere (real phone):
 
 * The real app is the reference for the mock: compare screenshots of the report sheets and
   adjust `WazeMenu.kt` / `Ui.kt` if a label, tile order or position differs.
