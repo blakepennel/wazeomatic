@@ -243,6 +243,19 @@ class Runner:
     def service_running(self) -> bool:
         return "AutoMacroService" in self.sh(f"dumpsys activity services {MOCK_PKG}")
 
+    def dismiss_anr_dialogs(self) -> None:
+        """A host overload (training, a second emulator) leaves "<app> isn't responding" dialogs
+        on top of everything; they swallow every tap of the stages below. Kill the offending
+        process so the dialog goes away (the launcher restarts by itself)."""
+        focus = self.sh("dumpsys window | grep -E 'mCurrentFocus'")
+        if "Not Responding" in focus:
+            import re
+            m = re.search(r"Not Responding: ([\w.]+)", focus)
+            if m:
+                self.log(f"dismissing not-responding dialog of {m.group(1)}")
+                self.sh(f"am force-stop {m.group(1)}")
+                time.sleep(2)
+
     # ------------------------------------------------------------ stage A
     def stage_a(self) -> None:
         self.log("=== Stage A: mock Waze auto macro ===")
@@ -252,6 +265,7 @@ class Runner:
         self.sh(f"am force-stop {DET_PKG}")
         self.sh("input keyevent 82")  # make sure the lock screen is gone
         self.sh("svc power stayon true")
+        self.dismiss_anr_dialogs()
         self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=False,
                          clear_reports=True, reset_rate_limit=True)
         time.sleep(2.5)
