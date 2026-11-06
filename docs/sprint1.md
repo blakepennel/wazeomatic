@@ -27,7 +27,7 @@ The team set four goals for sprint 1:
 | 4 | Measured latency and accuracy | [model-research.md](model-research.md#measured-results) | desktop latency and validation mAP recorded; Pixel 9 Pro numbers pending a phone session |
 | extra | Desktop simulator with camera degradation | `wazeomatic/run_video.py`, [simulation.md](simulation.md) | done; 18 unit tests in `tests/` |
 | extra | Detector app (camera / video / TCP sources, ONNX Runtime XNNPACK, foreground service, broadcast) | `android/detector/` | builds; 19 JVM tests pass; video mode verified on the emulator |
-| extra | Mock Waze app and emulator suite (Pixel 9 Pro AVD, API 35) | `android/mockwaze/`, [tools/emulator/](../tools/emulator/README.md) | done; `run_e2e.py` Stage A passes 11/11 checks (send once, 60 s rate limit, dry-run cancel, unknown type ignored) |
+| extra | Mock Waze app and emulator suite (Pixel 9 Pro AVD, API 35) | `android/mockwaze/`, [tools/emulator/](../tools/emulator/README.md) | done; `run_e2e.py` passes all 18 checks: Stage A (mock macro: send once, 60 s rate limit, dry-run cancel, unknown type ignored) and Stage B (detector app in video mode -> broadcast -> mock Waze report with matching hazard type) |
 
 Update the status column at the sprint review.
 

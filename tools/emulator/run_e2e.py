@@ -68,6 +68,7 @@ TIMING = {
 class Runner:
     def __init__(self, serial: str, out: Path):
         self.serial = serial
+        self.detector_extras = ""
         self.out = out
         self.results: list[tuple[str, str, str]] = []  # (status, name, detail)
         self.logcat_proc: subprocess.Popen | None = None
@@ -369,9 +370,14 @@ class Runner:
         time.sleep(2)
         mark = self.logcat_text().count("\n")
         self.sh(f"am force-stop {DET_PKG}")
-        out = self.sh(f"am start -n {DET_PKG}/.MainActivity --es source video --es video test.mp4")
+        out = self.sh(f"am start -n {DET_PKG}/.MainActivity --es source video --es video test.mp4 "
+                      f"--ez reset_settings true {self.detector_extras}".strip())
         self.log("start detector: " + out.strip().replace("\n", " | "))
         self.screenshot("B_detector_start")
+        # On a phone Waze is in front and the detector works from its foreground service; reproduce that
+        time.sleep(5)
+        self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=True)
+        self.screenshot("B_mock_front")
         self.log(f"waiting {wait_s} s for the detector to run through the clip...")
         t_end = time.time() + wait_s
         shot = 0
@@ -457,6 +463,9 @@ def main() -> int:
     ap.add_argument("--video", default=r"F:\dev\datasets\dashcam\dashcam_urban_1080p.ogv")
     ap.add_argument("--video-seconds", type=int, default=0, help="trim the clip (0 = whole 120 s)")
     ap.add_argument("--stage-b-wait", type=int, default=150, help="seconds to let the detector run")
+    ap.add_argument("--detector-extras", default="",
+                    help="extra `am start` arguments for the detector in Stage B, e.g. "
+                         "\"--es class_map car=HAZARD_ON_ROAD_OBJECT --es conf 0.4\" to force events on a hazard-free clip")
     args = ap.parse_args()
 
     check_schema()
@@ -466,6 +475,7 @@ def main() -> int:
         print(f"FAIL: {args.serial} is not online")
         return 2
     r = Runner(args.serial, out)
+    r.detector_extras = args.detector_extras
     r.start_logcat()
     try:
         if not r.ensure_installed(args.install):

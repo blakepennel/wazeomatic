@@ -33,7 +33,11 @@ iex "$ps tools\emulator\install_apps.ps1 -Build"   # mock Waze + detector APK if
 ```powershell
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage a        # mock Waze only
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --stage-b-wait 150
+.venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video-seconds 60 --stage-b-wait 100 --detector-extras "--es class_map car=HAZARD_ON_ROAD_OBJECT --es conf 0.4 --ez dry_run false"
+# (the CC0 clips contain no real hazard; the class_map extra makes the detector treat COCO cars as a hazard so the whole chain is exercised)
 ```
+
+If `adb install` of the detector fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the APK already on the emulator was signed with a different debug keystore (another PC or user). Run `adb -s emulator-5554 uninstall com.wazeomatic.detector` once and install again.
 
 Starts the emulator if it is not running (unless `--no-start`), installs mock Waze if missing
 (`--install` forces it), and writes `logcat.txt`, screenshots, the pulled `reports.jsonl` /
