@@ -69,11 +69,13 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | "" | two-pass zoom: `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
-| `ensemble` | true | also run `hazard2.onnx` (bundled by the `syncModels` task from `-PhazardModel2`, default `hazard_yolo11n_416.onnx`) and fuse it with `hazard.onnx`; no second asset = single model |
+| `ensemble` | true | also run `hazard2.onnx` (bundled by the `syncModels` task from `-PhazardModel2`, default `hazard_yolo11n_640b.onnx`; pass `-PhazardModel2=""` for a single-model build) and fuse it with `hazard.onnx`; no second asset = single model |
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
 | `report_class_conf` | pothole=0.55 | per-label hit floors inside the Report Manager (overrides `conf` for those labels); the pothole floor is the shipped default on both the phone and the desktop pipeline |
+| `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored |
+| `auto_hood` | true | grow the hood zone from the picture itself (`HoodEstimator.kt`): the dashboard keeps sharp edges in a running average of the frames while the road blurs away; on the test clips this finds a 22 % dashboard that the fixed 10 % missed (an air vent was reported as a pothole) |
 | `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |
 | `dry_run` | true | passed to the macro |
 | `target_package` | "" | empty = implicit broadcast, e.g. `com.arlosoft.macrodroid` |

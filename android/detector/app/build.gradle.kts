@@ -59,8 +59,9 @@ dependencies {
 val repoModels = rootProject.file("../../models")
 val hazardModel = (findProperty("hazardModel") as String?) ?: "hazard_yolo11n.onnx"
 val cocoModel = (findProperty("cocoModel") as String?) ?: "coco_yolo11n.onnx"
-// second hazard model fused on the device (ensemble setting); "" skips it
-val hazardModel2 = (findProperty("hazardModel2") as String?) ?: "hazard_yolo11n_416.onnx"
+// second hazard model fused on the device (ensemble setting); "" skips it. The 640b model is the
+// useful partner for 640c (event F1 0.709 fused vs 0.668 alone); the 416 model only dilutes it.
+val hazardModel2 = (findProperty("hazardModel2") as String?) ?: "hazard_yolo11n_640b.onnx"
 
 val syncModels by tasks.registering(Copy::class) {
     description = "Copy models/*.onnx and label files into app/src/main/assets"

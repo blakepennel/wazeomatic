@@ -22,6 +22,15 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     private val fusionWeights: FloatArray?
     private val classFloors: Map<String, Float> = settings.classFloors
     private val pool = Executors.newFixedThreadPool(3) { r -> Thread(r, "detect").apply { isDaemon = true } }
+    /** Learns the dashboard / hood band at the bottom of the picture (null = fixed zone). */
+    val hood: HoodEstimator? = if (settings.autoHood) HoodEstimator(minFrac = settings.hoodFrac) else null
+    private val hoodBmp: Bitmap? = hood?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
+    private val hoodCanvas = hoodBmp?.let { android.graphics.Canvas(it) }
+    private val hoodPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    private val hoodPixels: IntArray? = hood?.let { IntArray(it.width * it.height) }
+    private val hoodGrey: FloatArray? = hood?.let { FloatArray(it.width * it.height) }
+    /** Current hood fraction (for the overlay). */
+    val hoodFrac: Float get() = reportManager.hoodFrac
     private val reportManager = ReportManager(settings.reportConfig(), source = "phone")
     /** Second inference pass on a zoomed region of the road ahead; null = single pass. */
     val zoomCrop: ZoomCrop? = settings.zoomCropOrNull
@@ -61,6 +70,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         if (hazardMembers.size > 1) notes.add("fusion ${settings.fusion}" + (fusionWeights?.let { " w=${it.toList()}" } ?: ""))
         if (classFloors.isNotEmpty()) notes.add("floors $classFloors")
         if (settings.trackIou > 0f) notes.add("track ${settings.trackIou}")
+        if (hood != null) notes.add("auto hood")
         if (zoomCrop != null) notes.add("zoom crop $zoomCrop")
         modelStatus = if (list.isEmpty()) "model missing" else notes.joinToString(" | ")
         Log.i(TAG, "models: $modelStatus")
@@ -122,10 +132,27 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             Log.d(PERF_TAG, String.format(Locale.US, "frame=%d %s fps=%.1f dets=%d", frameIndex,
                 lat.entries.joinToString(" ") { String.format(Locale.US, "%s=%.1fms", it.key, it.value) }, fps, dets.size))
         }
+        updateHood(frame)
         if (hasModel) {
             for (ev in reportManager.update(dets, frameIndex)) reporter.report(ev)
         }
         PipelineBus.postFrame(FrameResult(frame, dets, lat, fps, frameIndex))
+    }
+
+    /** Reduce the frame to the estimator's grey image and feed it (a few hundred microseconds). */
+    private fun updateHood(frame: Bitmap) {
+        val est = hood ?: return
+        val bmp = hoodBmp ?: return
+        val canvas = hoodCanvas ?: return
+        val px = hoodPixels ?: return
+        val grey = hoodGrey ?: return
+        canvas.drawBitmap(frame, null, Rect(0, 0, bmp.width, bmp.height), hoodPaint)
+        bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        for (i in px.indices) {
+            val c = px[i]
+            grey[i] = 0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
+        }
+        reportManager.setHoodFrac(est.update(grey))
     }
 
     override fun close() {

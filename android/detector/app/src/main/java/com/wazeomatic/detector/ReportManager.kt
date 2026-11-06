@@ -56,6 +56,14 @@ class ReportManager(
     private val tracks = LinkedHashMap<String, Track>()
     private var lastGlobalTs = -1e9
     private var frame = 0
+    private var hoodFracDynamic = 0f
+
+    /** Active hood zone: the configured minimum or a larger value learnt by [HoodEstimator]. */
+    val hoodFrac: Float get() = maxOf(cfg.hoodFrac, hoodFracDynamic)
+
+    fun setHoodFrac(frac: Float) {
+        hoodFracDynamic = frac
+    }
 
     /** Feed one inference frame; returns zero or more events to report. */
     fun update(
@@ -123,8 +131,10 @@ class ReportManager(
 
     private fun minConf(label: String): Float = cfg.minConfidenceByLabel[label] ?: cfg.minConfidence
 
-    private fun inHoodZone(d: Detection): Boolean =
-        cfg.hoodFrac > 0f && (d.bbox.cy + d.bbox.h / 2f) > (1f - cfg.hoodFrac)
+    private fun inHoodZone(d: Detection): Boolean {
+        val hood = hoodFrac
+        return hood > 0f && (d.bbox.cy + d.bbox.h / 2f) > (1f - hood)
+    }
 
     private fun inShoulder(d: Detection): Boolean {
         val b = d.bbox

@@ -35,6 +35,8 @@ data class Settings(
     val reportClassConf: String = "pothole=0.55", // per-label hit floors in the ReportManager (same default as Python)
     val trackIou: Float = 0f,               // > 0 = spatial tracking in the ReportManager
     val trackGrow: Float = 1.5f,
+    val hoodFrac: Float = 0.10f,            // minimum hood / dashboard zone (fraction of the frame height)
+    val autoHood: Boolean = true,           // grow the zone from the static bottom of the picture (HoodEstimator)
 ) {
     val classFloors: Map<String, Float> get() = BoxFusion.parseFloors(classConf)
     /** Two-pass zoom region, null when disabled or malformed (see [ZoomCrop.parse]). */
@@ -50,6 +52,7 @@ data class Settings(
         minConfidenceByLabel = BoxFusion.parseFloors(reportClassConf),
         trackIou = trackIou,
         trackGrow = trackGrow,
+        hoodFrac = hoodFrac,
         cooldownS = cooldownS.toDouble(),
         globalCooldownS = globalCooldownS.toDouble(),
         stoppedVehicleEnabled = stoppedVehicle,
@@ -84,6 +87,8 @@ data class Settings(
             .putString("report_class_conf", reportClassConf)
             .putFloat("track_iou", trackIou)
             .putFloat("track_grow", trackGrow)
+            .putFloat("hood_frac", hoodFrac)
+            .putBoolean("auto_hood", autoHood)
             .apply()
     }
 
@@ -124,6 +129,8 @@ data class Settings(
             reportClassConf = str("report_class_conf") ?: reportClassConf,
             trackIou = f("track_iou", trackIou),
             trackGrow = f("track_grow", trackGrow),
+            hoodFrac = f("hood_frac", hoodFrac),
+            autoHood = z("auto_hood", autoHood),
         )
     }
 
@@ -132,7 +139,7 @@ data class Settings(
             "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
             "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
-            "class_conf", "report_class_conf", "track_iou", "track_grow",
+            "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
         )
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
@@ -176,6 +183,8 @@ data class Settings(
                 reportClassConf = p.getString("report_class_conf", d.reportClassConf) ?: d.reportClassConf,
                 trackIou = p.getFloat("track_iou", d.trackIou),
                 trackGrow = p.getFloat("track_grow", d.trackGrow),
+                hoodFrac = p.getFloat("hood_frac", d.hoodFrac),
+                autoHood = p.getBoolean("auto_hood", d.autoHood),
             )
         }
     }
