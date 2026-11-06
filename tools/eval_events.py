@@ -395,15 +395,18 @@ def summarize_by_source(cases: Sequence[EventCase], hazard_types: Sequence[str])
 
 # ---------------------------------------------------------------------------- 3. video false positives
 def video_false_positives(video: Path, detectors: Sequence, cfg: ReportConfig, step: int,
-                          camera_sim: bool, max_frames: int | None, seed: int) -> dict:
+                          camera_sim: bool, max_frames: int | None, seed: int, auto_hood: bool = True) -> dict:
+    from wazeomatic.hood import HoodEstimator
     from wazeomatic.sources import CameraSim, VideoSource
 
     sim = CameraSim(seed=seed) if camera_sim else None
     src = VideoSource(video, step=step, max_frames=max_frames, sim=sim)
     ts_holder = {"t": 0.0}
     rm = ReportManager(cfg, source="sim", clock=lambda: ts_holder["t"])
+    hood = HoodEstimator(min_frac=cfg.hood_frac) if auto_hood else None
     events: Counter = Counter()
     det_labels: Counter = Counter()
+    details: list[dict] = []
     frames = 0
     last_ts = 0.0
     for fr in src:
@@ -413,8 +416,14 @@ def video_false_positives(video: Path, detectors: Sequence, cfg: ReportConfig, s
         for d in detectors:
             dets.extend(d(fr.image))
         det_labels.update(d.label for d in dets if d.label in cfg.class_to_hazard)
+        if hood is not None:
+            rm.set_hood_frac(hood.update(fr.image))
         for ev in rm.update(dets, frame_index=fr.index):
             events[ev.hazard_type] += 1
+            if len(details) < 50:  # where and when, so a false event can be looked at in the clip
+                details.append({"hazard_type": ev.hazard_type, "label": ev.label, "confidence": round(ev.confidence, 3),
+                                "frame": fr.index, "t_s": round(fr.ts, 1),
+                                "bbox": [round(v, 4) for v in ev.bbox] if ev.bbox else None})
         frames += 1
     src.release()
     minutes = max(last_ts, 1e-6) / 60.0
@@ -428,6 +437,8 @@ def video_false_positives(video: Path, detectors: Sequence, cfg: ReportConfig, s
         "events_per_min": {k: round(v / minutes, 3) for k, v in events.items()},
         "events_per_min_total": round(sum(events.values()) / minutes, 3),
         "mapped_detections_by_label": dict(det_labels),
+        "event_details": details,
+        "hood_frac_final": round(rm.hood_frac, 3),
     }
 
 
@@ -517,6 +528,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")
     ap.add_argument("--track-iou", type=float, default=0.0, help="> 0: spatial tracking in the report manager")
     ap.add_argument("--track-grow", type=float, default=1.5)
+    ap.add_argument("--no-auto-hood", action="store_true",
+                    help="videos: keep the fixed hood zone instead of learning the static bottom rows")
     return ap
 
 
@@ -666,7 +679,7 @@ def main(argv=None) -> int:
             for sim in (False, True):
                 print(f"[info] video {clip.name} camera_sim={sim}", file=sys.stderr)
                 vres.append(video_false_positives(clip, detectors, ReportConfig(**base_cfg), args.video_step,
-                                                  sim, args.video_max_frames, args.seed))
+                                                  sim, args.video_max_frames, args.seed, not args.no_auto_hood))
         results["videos"] = vres
         results["timings_s"]["videos"] = round(time.perf_counter() - t0, 1)
         if vres:

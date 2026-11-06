@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from .detector import OnnxDetector
+from .hood import HoodEstimator
 from .report_manager import ReportManager
 from .schema import Detection, HazardEvent
 from .sources import Frame
@@ -26,9 +27,13 @@ COLORS = {
 }
 
 
-def draw(frame: np.ndarray, dets: Iterable[Detection], events: Iterable[HazardEvent], info: str = "") -> np.ndarray:
+def draw(frame: np.ndarray, dets: Iterable[Detection], events: Iterable[HazardEvent], info: str = "",
+         hood_frac: float = 0.0) -> np.ndarray:
     out = frame.copy()
     h, w = out.shape[:2]
+    if hood_frac > 0:  # boxes below this line are ignored (car body)
+        y = int((1 - hood_frac) * h)
+        cv2.line(out, (0, y), (w, y), (80, 80, 255), 1)
     for d in dets:
         cx, cy, bw, bh = d.bbox
         x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
@@ -82,8 +87,10 @@ class PipelineStats:
 class Pipeline:
     def __init__(self, detectors: Sequence[OnnxDetector], manager: ReportManager, sinks: Sequence,
                  show: bool = False, record_path: Optional[str | Path] = None, record_fps: float = 10.0,
-                 on_frame=None, parallel: bool = True):
+                 on_frame=None, parallel: bool = True, hood: Optional[HoodEstimator] = None):
         self.detectors = list(detectors)
+        # learns how much of the bottom of the frame is the car itself (dashboard, hood)
+        self.hood = hood
         # independent models (hazard, COCO) run side by side; ONNX Runtime releases the GIL
         self._pool = None
         if parallel and len(self.detectors) > 1:
@@ -110,6 +117,8 @@ class Pipeline:
             for det in self.detectors:
                 dets.extend(det(frame.image))
         ms = float(sum(det.last_ms for det in self.detectors))
+        if self.hood is not None:
+            self.manager.set_hood_frac(self.hood.update(frame.image))
         events = self.manager.update(dets, frame_index=frame.index)
         self.stats.latency_ms.append((time.perf_counter() - t0) * 1000.0)
         for ev in events:
@@ -124,7 +133,7 @@ class Pipeline:
         self.recent_events = [(t, e) for t, e in self.recent_events if now - t < 3.0]
         if self.show or self.record_path or self.on_frame:
             info = f"frame {frame.index}  t={frame.ts:6.1f}s  infer {ms:5.1f} ms  dets {len(dets)}"
-            vis = draw(frame.image, dets, [e for _, e in self.recent_events], info)
+            vis = draw(frame.image, dets, [e for _, e in self.recent_events], info, hood_frac=self.manager.hood_frac)
             if self.record_path:
                 if self._writer is None:
                     self.record_path.parent.mkdir(parents=True, exist_ok=True)

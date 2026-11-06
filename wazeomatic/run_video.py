@@ -20,6 +20,7 @@ import yaml
 
 from .build import DetectorSpec, add_detector_args, build_detectors
 from .fusion import parse_class_thresholds
+from .hood import HoodEstimator
 from .pipeline import Pipeline
 from .report_manager import ReportConfig, ReportManager
 from .schema import DEFAULT_CLASS_TO_HAZARD
@@ -52,6 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--track-iou", type=float, default=0.0,
                     help="> 0: hits must come from boxes overlapping frame to frame (spatial tracking)")
     ap.add_argument("--track-grow", type=float, default=1.5, help="box growth factor for the tracking IoU test")
+    ap.add_argument("--hood-frac", type=float, default=0.10, help="minimum hood/dashboard zone (fraction of height)")
+    ap.add_argument("--no-auto-hood", action="store_true",
+                    help="do not grow the hood zone from the static bottom rows of the video (wazeomatic/hood.py)")
     ap.add_argument("--stopped-vehicle", action="store_true", help="enable experimental shoulder heuristic")
     ap.add_argument("--event-source", default="sim", choices=["sim", "pi", "phone"])
     # sinks
@@ -84,9 +88,10 @@ def main(argv=None) -> int:
     cfg = ReportConfig(window=args.window, min_hits=args.min_hits, min_confidence=args.report_conf,
                        min_confidence_by_label=parse_class_thresholds(args.report_class_conf),
                        track_iou=args.track_iou, track_grow=args.track_grow,
-                       cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown,
+                       cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown, hood_frac=args.hood_frac,
                        class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
     manager = ReportManager(cfg, source=args.event_source)
+    hood = None if args.no_auto_hood else HoodEstimator(min_frac=args.hood_frac)
     sinks = build_sinks(args.sink or ["stdout"], adb=args.adb, package=args.adb_package, dry_run=args.adb_dry_run)
 
     sim = None
@@ -107,7 +112,7 @@ def main(argv=None) -> int:
         source = Prefetch(source, depth=args.prefetch)
 
     pipe = Pipeline(detectors, manager, sinks, show=args.show, record_path=args.record,
-                    record_fps=source.effective_fps, parallel=not args.no_parallel)
+                    record_fps=source.effective_fps, parallel=not args.no_parallel, hood=hood)
     stats = pipe.run(source)
     source.release()
     summary = stats.summary()

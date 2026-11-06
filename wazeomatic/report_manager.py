@@ -101,6 +101,7 @@ class ReportManager:
         self._tracks: dict[str, _Track] = defaultdict(_Track)
         self._last_global_ts = -1e9
         self._frame = 0
+        self._hood_frac_dynamic = 0.0
 
     # ------------------------------------------------------------------ public
     def update(self, detections: Iterable[Detection], frame_index: Optional[int] = None,
@@ -200,9 +201,19 @@ class ReportManager:
             return "HAZARD_SHOULDER_CAR_STOPPED"
         return None
 
+    @property
+    def hood_frac(self) -> float:
+        """Active hood zone: the configured minimum, or a larger value learnt from the video
+        (see ``hood.HoodEstimator``; the pipeline calls ``set_hood_frac``)."""
+        return max(self.cfg.hood_frac, self._hood_frac_dynamic)
+
+    def set_hood_frac(self, frac: float) -> None:
+        self._hood_frac_dynamic = float(frac)
+
     def _in_hood_zone(self, d: Detection) -> bool:
         cy, h = d.bbox[1], d.bbox[3]
-        return self.cfg.hood_frac > 0 and (cy + h / 2) > (1.0 - self.cfg.hood_frac)
+        hood = self.hood_frac
+        return hood > 0 and (cy + h / 2) > (1.0 - hood)
 
     def _in_shoulder(self, d: Detection) -> bool:
         cx, cy, w, h = d.bbox
