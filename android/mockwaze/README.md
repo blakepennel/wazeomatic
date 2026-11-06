@@ -17,8 +17,12 @@ create it with `sdk.dir=F\:/dev/android-sdk` or set `ANDROID_HOME`).
 
 ## What it looks like
 
-Laid out after the Android Waze app of 2024 (the "What do you see?" redesign), from the
-Waze help pages and press screenshots. Waze's own icon assets are not redistributable, so the
+Laid out after the Android Waze app of 2024 (the "What do you see?" redesign). Sizes, spacing
+and colours were measured on press screenshots of the real app at the same dp scale (73.4 dp
+tiles on a 127 dp column pitch and 120 dp row pitch, 22 sp titles, 13 sp labels, 44 dp buttons
+187 / 173 dp wide, Report #038BE6, selection ring #0275E4, tile grey #F2F4F7) and match within
+about 2 dp; the grid sheet shows three rows and scrolls, the map behind the sheet is not dimmed,
+the confirm sheet has no drag handle. Waze's own icon assets are not redistributable, so the
 tiles use hand-drawn look-alikes with the same motifs and colours.
 
 * Main screen: near-white map with soft grey roads, white menu square top-left (opens the

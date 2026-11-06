@@ -20,18 +20,22 @@ fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toIn
 fun Context.dpf(v: Float): Float = v * resources.displayMetrics.density
 
 /** Waze palette (sampled from the 2024 app screenshots). */
+/** Waze palette, sampled pixel by pixel from the 2024 Android app screenshots. */
 object Palette {
     const val INK = 0xFF202124.toInt()          // titles and labels
-    const val BLUE = 0xFF0A99FF.toInt()         // primary buttons, selection ring
-    const val BLUE_DARK = 0xFF0071C9.toInt()    // auto-send progress fill
-    const val TEAL = 0xFF10B3CC.toInt()         // car arrow
-    const val TILE_BG = 0xFFF1F2F4.toInt()      // round tile background
-    const val CANCEL_BG = 0xFFEDF0F4.toInt()
-    const val MAP_BG = 0xFFF8F8F6.toInt()
-    const val ROAD = 0xFFD8DBD3.toInt()
-    const val ROAD_MAJOR = 0xFFCFD3CA.toInt()
-    const val PINK = 0xFFFF3D9A.toInt()
-    const val SPEED_BG = 0xFF2C333C.toInt()
+    const val BLUE = 0xFF038BE6.toInt()         // Report button
+    const val BLUE_DARK = 0xFF0268B8.toInt()    // auto-send progress fill (left part of Report)
+    const val SELECT = 0xFF0275E4.toInt()       // selection ring, check badge, Cancel text
+    const val TEAL = 0xFF00B5CD.toInt()         // car arrow
+    const val DISC = 0xFFCCD5DD.toInt()         // disc behind the arrow
+    const val TILE_BG = 0xFFF2F4F7.toInt()      // round tile background
+    const val CANCEL_BG = 0xFFF2F4F7.toInt()
+    const val MAP_BG = 0xFFFAFAFA.toInt()
+    const val ROAD = 0xFFCDD0C8.toInt()
+    const val ROAD_MAJOR = 0xFFCDD0C8.toInt()
+    const val PINK = 0xFFFF4499.toInt()
+    const val SPEED_BG = 0xFF3D434A.toInt()
+    const val SPEED_RING = 0xFF5B626A.toInt()
 }
 
 fun roundRect(color: Int, radiusPx: Float) = GradientDrawable().apply {
@@ -48,24 +52,27 @@ fun oval(color: Int) = GradientDrawable().apply {
  * Round light-grey tile with an icon and a label underneath, like the Waze report tiles.
  * Selected tiles get the blue ring and the blue check badge in the top-right corner.
  */
-class Tile(ctx: Context, val label: String, icon: Int, circleDp: Int = 72, iconDp: Int = 44) : LinearLayout(ctx) {
+class Tile(ctx: Context, val label: String, icon: Int, circleDp: Float = 73.4f, iconDp: Int = 66) : LinearLayout(ctx) {
     private val ring: View
     private val badge: ImageView
+    private val circle: View
+    private val img: ImageView
 
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
-        setPadding(ctx.dp(2), ctx.dp(6), ctx.dp(2), ctx.dp(6))
+        setPadding(0, ctx.dp(6), 0, ctx.dp(9))   // 120 dp row pitch like Waze
         isClickable = true
         isFocusable = true
         contentDescription = label
         // no ripple: Waze's tiles only show the blue ring, and the borderless ripple would
         // draw a grey disc the size of the whole tile
 
+        val d = (ctx.dpf(circleDp) + 0.5f).toInt()
         val holder = FrameLayout(ctx)
-        val circle = View(ctx).apply { background = oval(Palette.TILE_BG) }
-        holder.addView(circle, FrameLayout.LayoutParams(ctx.dp(circleDp), ctx.dp(circleDp), Gravity.CENTER))
-        val img = ImageView(ctx).apply {
+        circle = View(ctx).apply { background = oval(Palette.TILE_BG) }
+        holder.addView(circle, FrameLayout.LayoutParams(d, d, Gravity.CENTER))
+        img = ImageView(ctx).apply {
             setImageResource(icon)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
@@ -74,38 +81,51 @@ class Tile(ctx: Context, val label: String, icon: Int, circleDp: Int = 72, iconD
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.TRANSPARENT)
-                setStroke(ctx.dp(2), Palette.BLUE)
+                setStroke(ctx.dp(2), Palette.SELECT)
             }
             visibility = View.INVISIBLE
         }
-        val ringSize = ctx.dp(circleDp + 8)
-        holder.addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
+        holder.addView(ring, FrameLayout.LayoutParams(d, d, Gravity.CENTER))
         badge = ImageView(ctx).apply {
             setImageResource(R.drawable.ic_check)
-            background = oval(Palette.BLUE)
-            setPadding(ctx.dp(4), ctx.dp(4), ctx.dp(4), ctx.dp(4))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Palette.SELECT)
+                setStroke(ctx.dp(2), Color.WHITE)
+            }
+            setPadding(ctx.dp(5), ctx.dp(5), ctx.dp(5), ctx.dp(5))
             visibility = View.INVISIBLE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        holder.addView(badge, FrameLayout.LayoutParams(ctx.dp(22), ctx.dp(22), Gravity.TOP or Gravity.END).apply {
-            topMargin = ctx.dp(2); marginEnd = ctx.dp(2)
+        // badge centre on the ring at 45 degrees up-right
+        val b = ctx.dp(22)
+        val off = (d / 2f * 0.707f).toInt()
+        // FrameLayout shifts a centred child by its full margin, so the margin is the offset itself
+        holder.addView(badge, FrameLayout.LayoutParams(b, b, Gravity.CENTER).apply {
+            leftMargin = off; bottomMargin = off
         })
-        addView(holder, LayoutParams(ringSize, ringSize))
+        val holderSize = d + ctx.dp(8)
+        addView(holder, LayoutParams(holderSize, holderSize))
 
         val text = TextView(ctx).apply {
             this.text = label
             gravity = Gravity.CENTER
             setTextColor(Palette.INK)
-            textSize = 15f
+            textSize = 13f
             maxLines = 2
+            includeFontPadding = false
         }
         addView(text, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = ctx.dp(6) })
     }
 
+    /** Waze keeps the ring at the tile size and shrinks the grey disc and icon inside it. */
     fun setChosen(chosen: Boolean) {
         isSelected = chosen
         ring.visibility = if (chosen) View.VISIBLE else View.INVISIBLE
         badge.visibility = if (chosen) View.VISIBLE else View.INVISIBLE
+        val k = if (chosen) 0.86f else 1f
+        circle.scaleX = k; circle.scaleY = k
+        img.scaleX = k; img.scaleY = k
     }
 }
 
@@ -151,7 +171,7 @@ class ReportButton(ctx: Context) : TextView(ctx) {
 class SpeedometerView(ctx: Context) : View(ctx) {
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.SPEED_BG }
     private val ticks = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF8A9099.toInt(); style = Paint.Style.STROKE
+        color = Palette.SPEED_RING; style = Paint.Style.STROKE
     }
     private val big = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER
@@ -170,12 +190,12 @@ class SpeedometerView(ctx: Context) : View(ctx) {
         val r = width / 2f
         c.drawCircle(cx, cy, r, bg)
         ticks.strokeWidth = context.dpf(3f)
-        ticks.pathEffect = DashPathEffect(floatArrayOf(context.dpf(2f), context.dpf(3.2f)), 0f)
-        c.drawCircle(cx, cy, r - context.dpf(6f), ticks)
-        big.textSize = context.dpf(26f)
-        small.textSize = context.dpf(11f)
-        c.drawText("0", cx, cy + context.dpf(4f), big)
-        c.drawText("MPH", cx, cy + context.dpf(19f), small)
+        ticks.pathEffect = DashPathEffect(floatArrayOf(context.dpf(1.6f), context.dpf(2.6f)), 0f)
+        c.drawCircle(cx, cy, r - context.dpf(5f), ticks)
+        big.textSize = context.dpf(27f)
+        small.textSize = context.dpf(10.5f)
+        c.drawText("0", cx, cy + context.dpf(3f), big)
+        c.drawText("MPH", cx, cy + context.dpf(17f), small)
     }
 }
 
@@ -194,7 +214,7 @@ class FakeMapView(ctx: Context) : View(ctx) {
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF6F7378.toInt(); textAlign = Paint.Align.CENTER
     }
-    private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD5DDE6.toInt() }
+    private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.DISC }
     private val arrow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.TEAL }
 
     init {
@@ -212,8 +232,8 @@ class FakeMapView(ctx: Context) : View(ctx) {
         val w = width.toFloat()
         val h = height.toFloat()
         c.drawRect(0f, 0f, w, h, bg)
-        road.strokeWidth = context.dpf(9f)
-        major.strokeWidth = context.dpf(12f)
+        road.strokeWidth = context.dpf(13.9f)
+        major.strokeWidth = context.dpf(19.7f)
 
         // a loose grid like a residential area: two verticals, a few horizontals, one curve
         val v1 = w * 0.23f
@@ -235,7 +255,7 @@ class FakeMapView(ctx: Context) : View(ctx) {
         c.drawLine(0f, h * 0.62f, v1 + w * 0.02f, h * 0.62f, road)
         c.drawLine(v1 + w * 0.02f, h * 0.84f, w, h * 0.86f, road)
 
-        label.textSize = context.dpf(11.5f)
+        label.textSize = context.dpf(11f)
         roadLabel(c, "N Mississippi St", v2 - w * 0.005f, h * 0.18f, -90f)
         roadLabel(c, "Crestline Dr", v1 + w * 0.005f, h * 0.47f, -90f)
         roadLabel(c, "W 9th St", w * 0.50f, h * 0.283f, 0f)
@@ -245,7 +265,7 @@ class FakeMapView(ctx: Context) : View(ctx) {
         // car arrow
         val cx = w * 0.5f
         val cy = h * 0.55f
-        val r = context.dpf(27f)
+        val r = context.dpf(25f)
         c.drawCircle(cx, cy, r, disc)
         val a = Path().apply {
             moveTo(cx, cy - r * 0.62f)
