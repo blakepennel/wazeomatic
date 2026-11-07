@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" role="img" aria-label="Wazeomatic">
+  <rect width="256" height="256" rx="56" fill="#B45309"/>
+  <g transform="translate(128 128) scale(7.2) translate(-12 -11.75)" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M12 2.5 L17.5 18.5 H6.5 Z"/>
+    <path d="M4 18.5 H20 V21 H4 Z"/>
+    <path d="M8.9 11.5 H15.1 M7.6 15 H16.4"/>
+  </g>
+</svg>
