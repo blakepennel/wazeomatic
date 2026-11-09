@@ -5,15 +5,23 @@ broadcasts with adb, pull reports.jsonl / macro_events.jsonl and check
   - a manual rehearsal through `adb shell input tap` (like MacroDroid coordinate taps) works,
   - a real event is reported exactly once with the right category/subcategory,
   - a second event inside 60 s is suppressed,
-  - dry_run=true reaches the confirm sheet, cancels and is logged with dry_run=true.
+  - dry_run=true reaches the confirm sheet, cancels and is logged with dry_run=true,
+  - the same for hazard types whose menu path has no subcategory tile.
 
-Stage B (needs the detector APK, skipped otherwise): push a dashcam clip, run the detector in
-video mode, read its WazeomaticEvent logcat lines and check mock Waze received them.
+Stage B (needs the detector APK): push a dashcam clip, run the detector in video mode, read
+its WazeomaticEvent logcat lines and check mock Waze received them.
 
 Usage (from the repo root):
-  .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py              # Stage A + B (B skipped if no detector)
+  .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py              # Stage A + B
   .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py --stage a
   .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py --stage b --video-seconds 90
+
+Every check of the requested stages shows up in the summary. A check that could not run (no
+detector APK, no detector events, an earlier step failed) is a SKIP row, and a run with a SKIP
+is INCOMPLETE, not PASS. Exit code: 0 = PASS, 1 = FAIL, 2 = INCOMPLETE (0 with --allow-skip).
+
+adb is taken from --adb, else ANDROID_HOME / ANDROID_SDK_ROOT (platform-tools), else PATH, else
+sdk.dir in android/*/local.properties.
 
 Everything (logcat, screenshots, pulled jsonl, summary) goes to runs/emulator/<timestamp>/.
 """
@@ -24,6 +32,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -33,8 +42,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-SDK = Path(os.environ.get("ANDROID_HOME", r"F:\dev\android-sdk"))
-ADB = str(SDK / "platform-tools" / "adb.exe")
+ADB = "adb"  # replaced by resolve_adb() in main()
+VIDEO_DIR = REPO / "assets" / "videos"
+DEFAULT_VIDEOS = ("dashcam_urban_1080p.mp4", "dashcam_urban_1080p.ogv")
 MOCK_PKG = "com.wazeomatic.mockwaze"
 DET_PKG = "com.wazeomatic.detector"
 MOCK_APK = REPO / "android" / "mockwaze" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
@@ -53,6 +63,41 @@ EXPECTED = {
     "CRASH": ("Crash", ""),
 }
 
+# Labels of the shipped six-class hazard model. A detector event with one of these labels came
+# from the hazard model itself, not from a COCO class remapped with the class_map extra.
+HAZARD_MODEL_LABELS = {"pothole", "cone", "construction_sign", "delineator", "barricade", "worker"}
+
+# Macro outcomes that end a run of the auto macro.
+MACRO_END = {"sent", "dry_run_cancelled", "failed", "obstructed"}
+
+# Every check of a stage, in run order. All of them appear in the summary of a run that asked
+# for the stage: PASS/FAIL when they ran, SKIP when they could not.
+CHECKS_A = {
+    "A0": "A0 auto macro service running",
+    "A1": "A1 manual tap rehearsal logged as dry_run=true",
+    "A1_police": "A1 manual Police send logged as a touch report",
+    "A2_outcome": "A2 macro finished with outcome=sent",
+    "A2_once": "A2 Hazard > Pothole reported exactly once",
+    "A3_suppressed": "A3 second event inside 60 s suppressed",
+    "A3_once": "A3 still exactly one real report",
+    "A4_outcome": "A4 dry run finished with outcome=dry_run_cancelled",
+    "A4_logged": "A4 dry run logged dry_run=true, action=cancel, Hazard > Construction",
+    "A4_no_send": "A4 no real send from the dry run",
+    "A4_police": "A4 POLICE dry run (no subcategory step) cancelled as Police, empty subcategory",
+    "A4_animals": "A4 HAZARD_SHOULDER_ANIMALS dry run (no subcategory step) cancelled as Hazard, empty subcategory",
+    "A5": "A5 unknown hazard_type ignored",
+    "A6": "A6 MockWazeReport lines in logcat",
+}
+CHECKS_B = {
+    "B0": "B0 detector installed",
+    "B1": "B1 video pushed",
+    "B2": "B2 detector emitted WazeomaticEvent",
+    "B3": "B3 mock Waze received the detector broadcasts",
+    "B4": "B4 sent reports match the hazard_type mapping",
+    "B5": "B5 every report traces back to a detector event",
+    "B6": "B6 one-per-minute limit held",
+}
+
 # Timings used for the run (ms). macro_wait_ms must be longer than sheet_ms/page_ms.
 TIMING = {
     "sheet_ms": 300,
@@ -68,10 +113,192 @@ TIMING = {
 }
 
 
+# ---------------------------------------------------------------- pure helpers (unit tested)
+def b7_name(hazard_type: str) -> str:
+    return f"B7 detector reported {hazard_type} from the hazard model"
+
+
+def planned_checks(stage: str, expect_hazards: list[str]) -> list[str]:
+    """Names of all checks a run of `stage` has to produce. A stage that was not asked for
+    contributes nothing (it is not a skip)."""
+    plan: list[str] = []
+    if stage in ("a", "all"):
+        plan += CHECKS_A.values()
+    if stage in ("b", "all"):
+        plan += CHECKS_B.values()
+        plan += [b7_name(t) for t in expect_hazards]
+    return plan
+
+
+def fill_skips(results: list[tuple[str, str, str]], plan: list[str], why: str) -> list[tuple[str, str, str]]:
+    """Rows in plan order with a SKIP row for every planned check that produced none; rows that
+    are not in the plan (a crash, a failed install) go last."""
+    by_name = {name: (status, name, detail) for status, name, detail in results}
+    rows = [by_name.get(name, ("SKIP", name, why or "not run")) for name in plan]
+    return rows + [r for r in results if r[1] not in plan]
+
+
+def verdict(results: list[tuple[str, str, str]]) -> str:
+    """PASS only when nothing failed and nothing was skipped."""
+    statuses = {r[0] for r in results}
+    if "FAIL" in statuses:
+        return "FAIL"
+    if "SKIP" in statuses or not results:
+        return "INCOMPLETE"
+    return "PASS"
+
+
+def exit_code(v: str, allow_skip: bool = False) -> int:
+    if v == "PASS":
+        return 0
+    if v == "INCOMPLETE":
+        return 0 if allow_skip else 2
+    return 1
+
+
+def parse_focus(dumpsys: str) -> str:
+    """Title of the focused window from `dumpsys window` (mCurrentFocus), '' when there is none.
+    Example lines:
+      mCurrentFocus=Window{1f2e3d u0 com.wazeomatic.mockwaze/com.wazeomatic.mockwaze.MainActivity}
+      mCurrentFocus=Window{9ab7c1 u0 Application Not Responding: com.android.systemui}
+      mCurrentFocus=null
+    """
+    for m in re.finditer(r"mCurrentFocus=Window\{\S+\s+\S+\s+([^}\r\n]*)\}", dumpsys):
+        if m.group(1).strip():
+            return m.group(1).strip()
+    return ""
+
+
+def focus_package(title: str) -> str:
+    """Package that owns a focused activity window ('pkg/activity'), '' for anything else."""
+    m = re.match(r"([\w.]+)/", title)
+    return m.group(1) if m else ""
+
+
+def anr_package(title: str) -> str:
+    m = re.search(r"Not Responding: ([\w.]+)", title)
+    return m.group(1) if m else ""
+
+
+def parse_event_lines(lines: list[str]) -> list[dict]:
+    """WazeomaticEvent logcat lines -> the JSON objects they carry."""
+    events = []
+    for line in lines:
+        i = line.find("{")
+        if i < 0:
+            continue
+        try:
+            obj = json.loads(line[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+    return events
+
+
+def check_expected_hazard(hazard_type: str, events: list[dict], macro: list[dict]) -> tuple[bool, str]:
+    """B7: the detector reported `hazard_type` from a hazard-model class (not a remapped COCO
+    class) and mock Waze took one of those events through to the end of the macro."""
+    of_type = [e for e in events if e.get("hazard_type") == hazard_type]
+    real = [e for e in of_type if e.get("label") in HAZARD_MODEL_LABELS]
+    labels = sorted({str(e.get("label")) for e in of_type})
+    got = [m for m in macro if m.get("hazard_type") == hazard_type]
+    outcomes = sorted({str(m.get("outcome")) for m in got})
+    done = [m for m in got if m.get("outcome") in ("sent", "dry_run_cancelled")]
+
+    def from_real_event(m: dict) -> bool:
+        # the broadcast carries the event ts with three decimals; the mock logs it as event_ts
+        try:
+            ts = float(m.get("event_ts"))
+            return any(abs(ts - float(e.get("ts"))) < 0.002 for e in real)
+        except (TypeError, ValueError):
+            return False
+
+    traced = [m for m in done if from_real_event(m)]
+    detail = (f"{len(of_type)} detector event(s) of this type, labels={labels}, {len(real)} from the hazard "
+              f"model; mock outcomes={outcomes}, {len(traced)} completed macro run(s) for a hazard-model event")
+    return bool(real) and bool(traced), detail
+
+
+def _sdk_dirs_from_local_properties() -> list[str]:
+    dirs = []
+    for prop in sorted((REPO / "android").glob("*/local.properties")):
+        try:
+            text = prop.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = re.search(r"^sdk\.dir\s*=\s*(.+)$", text, re.M)
+        if m:
+            # undo the java properties escaping of ':' and '\'
+            dirs.append(re.sub(r"\\(.)", r"\1", m.group(1).strip()))
+    return dirs
+
+
+def resolve_adb(explicit: str | None = None) -> str:
+    """--adb, else ANDROID_HOME / ANDROID_SDK_ROOT, else PATH, else sdk.dir of local.properties."""
+    exe = "adb.exe" if os.name == "nt" else "adb"
+    if explicit:
+        found = explicit if Path(explicit).is_file() else shutil.which(explicit)
+        if not found:
+            raise SystemExit(f"adb not found: --adb {explicit} is neither a file nor a command on PATH")
+        return str(found)
+    tried = []
+    for var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        root = os.environ.get(var)
+        if root:
+            cand = Path(root) / "platform-tools" / exe
+            if cand.is_file():
+                return str(cand)
+            tried.append(f"{var}={root} (no platform-tools/{exe})")
+        else:
+            tried.append(f"{var} not set")
+    on_path = shutil.which("adb")
+    if on_path:
+        return on_path
+    tried.append("adb not on PATH")
+    for root in _sdk_dirs_from_local_properties():
+        cand = Path(root) / "platform-tools" / exe
+        if cand.is_file():
+            return str(cand)
+        tried.append(f"sdk.dir={root} (no platform-tools/{exe})")
+    raise SystemExit("adb not found. Set ANDROID_HOME (or ANDROID_SDK_ROOT) to the Android SDK, put adb on "
+                     "PATH, or pass --adb <path to adb>. Tried: " + "; ".join(tried))
+
+
+def resolve_video(explicit: str | None = None) -> str:
+    """--video, else the test clip that tools/fetch_test_videos.py puts in assets/videos/."""
+    if explicit:
+        path = Path(explicit)
+        if not path.is_file() and not path.is_absolute() and (REPO / path).is_file():
+            path = REPO / path
+        if not path.is_file():
+            raise SystemExit(f"video not found: {explicit}")
+        return str(path.resolve())
+    for name in DEFAULT_VIDEOS:
+        if (VIDEO_DIR / name).is_file():
+            return str(VIDEO_DIR / name)
+    raise SystemExit(f"no test clip in {VIDEO_DIR} (looked for {', '.join(DEFAULT_VIDEOS)}). Run "
+                     "tools/fetch_test_videos.py to download the test clips, or pass --video <file>. "
+                     "Stage A alone (--stage a) needs no clip.")
+
+
+def script_env() -> dict:
+    """Environment for the .ps1 helpers, so they use the SDK the resolved adb belongs to."""
+    env = dict(os.environ)
+    tools = Path(ADB).parent
+    if tools.name == "platform-tools" and not (env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT")):
+        env["ANDROID_HOME"] = str(tools.parent)
+    return env
+
+
 class Runner:
     def __init__(self, serial: str, out: Path):
         self.serial = serial
         self.detector_extras = ""
+        self.expect_hazards: list[str] = []
+        self.plan: list[str] = []   # names of all checks this run has to produce
+        self.not_run_reason = ""    # why the remaining planned checks did not run
+        self.last_tap_error = ""
         self.out = out
         self.results: list[tuple[str, str, str]] = []  # (status, name, detail)
         self.logcat_proc: subprocess.Popen | None = None
@@ -174,6 +401,13 @@ class Runner:
             time.sleep(0.5)
         return None
 
+    def macro_detail(self, row: dict | None) -> str:
+        """Check detail for a macro outcome row; spells out an obstructed run."""
+        if row and row.get("outcome") == "obstructed":
+            return (f"macro obstructed: mock Waze was not the focused window ({row.get('detail', '')}); "
+                    f"focused now: '{self.focused_window() or 'none'}'; row={row}")
+        return str(row)
+
     def device_time(self) -> float:
         out = self.sh("date +%s").strip().splitlines()
         try:
@@ -199,13 +433,51 @@ class Runner:
                 continue
             x1, y1, x2, y2 = map(int, m.groups())
             nodes.append({"text": n.get("text", ""), "desc": n.get("content-desc", ""),
-                          "pkg": n.get("package", ""), "clickable": n.get("clickable") == "true",
+                          "pkg": n.get("package", ""), "rid": n.get("resource-id", ""),
+                          "clickable": n.get("clickable") == "true",
                           "cx": (x1 + x2) // 2, "cy": (y1 + y2) // 2, "bounds": (x1, y1, x2, y2)})
         return nodes
 
+    def focused_window(self) -> str:
+        return parse_focus(self.sh("dumpsys window | grep -E 'mCurrentFocus'"))
+
+    def clear_obstruction(self, allowed: tuple[str, ...] = (MOCK_PKG,)) -> str:
+        """Look at the focused window. Returns '' when it belongs to one of the `allowed` apps,
+        otherwise a description of what is in the way.
+
+        A host overload (training, a second emulator) leaves "<app> isn't responding" dialogs on
+        top of everything; they swallow every tap. For a foreign app the offending process is
+        killed so the dialog goes away (the launcher restarts by itself). The mock and the
+        detector are never killed: their dialog is answered with its Wait button."""
+        title = self.focused_window()
+        if not title:
+            return "no focused window (mCurrentFocus=null)"
+        if focus_package(title) in allowed:
+            return ""
+        pkg = anr_package(title)
+        if not pkg:
+            return f"window '{title}'"
+        if pkg in (MOCK_PKG, DET_PKG):
+            wait = [n for n in self.ui_nodes() if n["rid"].endswith(":id/aerr_wait") or n["text"] == "Wait"]
+            if wait:
+                self.sh(f"input tap {wait[0]['cx']} {wait[0]['cy']}")
+                self.log(f"not-responding dialog of {pkg}: pressed Wait")
+                time.sleep(1)
+                return f"window '{title}' (pressed Wait)"
+            self.log(f"not-responding dialog of {pkg}: no Wait button found, cannot dismiss it")
+            return f"window '{title}' (no Wait button found, not dismissed)"
+        self.log(f"dismissing not-responding dialog of {pkg}")
+        self.sh(f"am force-stop {pkg}")
+        time.sleep(2)
+        return f"window '{title}' (force-stopped {pkg})"
+
     def tap_label(self, label: str, retries: int = 6) -> tuple[int, int] | None:
-        """Find a view by text or content description and tap its centre with `input tap`."""
+        """Find a view by text or content description and tap its centre with `input tap`.
+        On failure last_tap_error says which window was in the way."""
+        blocker = ""
         for _ in range(retries):
+            # a foreign window (ANR dialog, permission prompt, ...) hides the mock from the dump
+            blocker = self.clear_obstruction()
             nodes = [n for n in self.ui_nodes() if n["pkg"] == MOCK_PKG and label in (n["text"], n["desc"])]
             nodes.sort(key=lambda n: not n["clickable"])
             if nodes:
@@ -214,7 +486,12 @@ class Runner:
                 self.log(f"tap '{label}' at ({n['cx']},{n['cy']})")
                 return n["cx"], n["cy"]
             time.sleep(0.7)
-        self.log(f"could not find '{label}' on screen")
+        blocker = self.clear_obstruction() or blocker
+        if blocker:
+            self.last_tap_error = f"could not tap '{label}': obstructed by {blocker}"
+        else:
+            self.last_tap_error = f"could not find '{label}' on screen (mock Waze had window focus)"
+        self.log(self.last_tap_error)
         return None
 
     # ------------------------------------------------------------ setup
@@ -243,19 +520,6 @@ class Runner:
     def service_running(self) -> bool:
         return "AutoMacroService" in self.sh(f"dumpsys activity services {MOCK_PKG}")
 
-    def dismiss_anr_dialogs(self) -> None:
-        """A host overload (training, a second emulator) leaves "<app> isn't responding" dialogs
-        on top of everything; they swallow every tap of the stages below. Kill the offending
-        process so the dialog goes away (the launcher restarts by itself)."""
-        focus = self.sh("dumpsys window | grep -E 'mCurrentFocus'")
-        if "Not Responding" in focus:
-            import re
-            m = re.search(r"Not Responding: ([\w.]+)", focus)
-            if m:
-                self.log(f"dismissing not-responding dialog of {m.group(1)}")
-                self.sh(f"am force-stop {m.group(1)}")
-                time.sleep(2)
-
     # ------------------------------------------------------------ stage A
     def stage_a(self) -> None:
         self.log("=== Stage A: mock Waze auto macro ===")
@@ -265,16 +529,17 @@ class Runner:
         self.sh(f"am force-stop {DET_PKG}")
         self.sh("input keyevent 82")  # make sure the lock screen is gone
         self.sh("svc power stayon true")
-        self.dismiss_anr_dialogs()
+        self.clear_obstruction()  # the launcher is in front here; only a dialog gets handled
         self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=False,
                          clear_reports=True, reset_rate_limit=True)
         time.sleep(2.5)
-        self.check("A0 auto macro service running", self.service_running())
+        self.check(CHECKS_A["A0"], self.service_running())
         self.screenshot("A0_map")
 
         # --- A1: manual rehearsal with input taps, the way the MacroDroid macro taps ------
         self.log("A1: manual rehearsal with adb input tap (Report button > Hazard > Pothole > Cancel)")
         t0 = self.device_time()
+        self.last_tap_error = ""
         ok = self.tap_label("Report button") is not None
         time.sleep(0.8)
         self.screenshot("A1_report_grid")
@@ -289,16 +554,27 @@ class Runner:
         rows = [r for r in self.pull_jsonl("reports.jsonl") if r.get("via") == "touch" and r.get("ts", 0) >= t0 - 2]
         good = [r for r in rows if r.get("category") == "Hazard" and r.get("subcategory") == "Pothole"
                 and r.get("dry_run") is True and r.get("action") == "cancel"]
-        self.check("A1 manual tap rehearsal logged as dry_run=true", ok and len(good) == 1,
-                   f"{len(rows)} touch row(s): {rows}")
+        self.check(CHECKS_A["A1"], ok and len(good) == 1,
+                   (self.last_tap_error + "; " if not ok else "") + f"{len(rows)} touch row(s): {rows}")
 
-        # also screenshot a one-step category and the Thanks! toast via a manual Police send
-        self.tap_label("Report button"); time.sleep(0.8)
-        self.tap_label("Police"); time.sleep(0.8)
+        # --- A1: a one-step category and the Thanks! toast via a manual Police send --------
+        self.log("A1: manual Police send with adb input tap (Report button > Police > Report)")
+        t1 = self.device_time()
+        self.last_tap_error = ""
+        ok = self.tap_label("Report button") is not None
+        time.sleep(0.8)
+        ok = ok and self.tap_label("Police") is not None
+        time.sleep(0.8)
         self.screenshot("A1_police_confirm")
-        self.tap_label("Report"); time.sleep(0.4)
+        ok = ok and self.tap_label("Report") is not None
+        time.sleep(0.4)
         self.screenshot("A1_thanks_toast")
         time.sleep(1.5)
+        rows = [r for r in self.pull_jsonl("reports.jsonl") if r.get("via") == "touch" and r.get("ts", 0) >= t1 - 2]
+        good = [r for r in rows if r.get("category") == "Police" and r.get("action") == "send"
+                and r.get("dry_run") is False]
+        self.check(CHECKS_A["A1_police"], ok and len(good) == 1,
+                   (self.last_tap_error + "; " if not ok else "") + f"{len(rows)} touch row(s): {rows}")
 
         # --- A2: real event via broadcast -> exactly one report ---------------------------
         self.log("A2: HAZARD_ON_ROAD_POTHOLE dry_run=false")
@@ -307,14 +583,14 @@ class Runner:
         # timeline: start delay 0.5 s, then a tap every 1.0 s -> confirm sheet at ~2.5-3.4 s
         time.sleep(3.0)
         self.screenshot("A2_macro_confirm_sheet")
-        row = self.wait_macro_outcome("HAZARD_ON_ROAD_POTHOLE", {"sent", "failed"}, t_a2)
-        self.check("A2 macro finished with outcome=sent", bool(row and row["outcome"] == "sent"), str(row))
+        row = self.wait_macro_outcome("HAZARD_ON_ROAD_POTHOLE", MACRO_END, t_a2)
+        self.check(CHECKS_A["A2_outcome"], bool(row and row["outcome"] == "sent"), self.macro_detail(row))
         time.sleep(0.5)
         self.screenshot("A2_after_send")
         sends = [r for r in self.pull_jsonl("reports.jsonl") if r.get("via") == "auto_macro" and r.get("action") == "send"]
         pothole = [r for r in sends if r.get("category") == "Hazard" and r.get("subcategory") == "Pothole"
                    and r.get("dry_run") is False and r.get("hazard_type") == "HAZARD_ON_ROAD_POTHOLE"]
-        self.check("A2 Hazard > Pothole reported exactly once", len(pothole) == 1 and len(sends) == 1,
+        self.check(CHECKS_A["A2_once"], len(pothole) == 1 and len(sends) == 1,
                    f"{len(sends)} auto send(s): {sends}")
 
         # --- A3: second event inside 60 s is suppressed ------------------------------------
@@ -322,11 +598,11 @@ class Runner:
         t_a3 = self.device_time()
         self.broadcast("CRASH", "0.91", dry_run=False)
         row = self.wait_macro_outcome("CRASH", {"suppressed_rate_limit", "accepted", "sent", "failed"}, t_a3, 10)
-        self.check("A3 second event inside 60 s suppressed", bool(row and row["outcome"] == "suppressed_rate_limit"),
+        self.check(CHECKS_A["A3_suppressed"], bool(row and row["outcome"] == "suppressed_rate_limit"),
                    str(row))
         time.sleep(4.5)  # long enough that a non-suppressed macro would have sent
         sends = [r for r in self.pull_jsonl("reports.jsonl") if r.get("via") == "auto_macro" and r.get("action") == "send"]
-        self.check("A3 still exactly one real report", len(sends) == 1, f"{len(sends)} send(s)")
+        self.check(CHECKS_A["A3_once"], len(sends) == 1, f"{len(sends)} send(s)")
 
         # --- A4: dry run -> confirm sheet, wait, cancel, logged dry_run=true ----------------
         self.log("A4: HAZARD_ON_ROAD_CONSTRUCTION dry_run=true (inside the window, dry runs are not limited)")
@@ -334,51 +610,85 @@ class Runner:
         self.broadcast("HAZARD_ON_ROAD_CONSTRUCTION", "0.66", dry_run=True)
         time.sleep(3.6)  # confirm sheet is held for dry_run_hold_ms before Cancel
         self.screenshot("A4_dry_run_confirm_sheet")
-        row = self.wait_macro_outcome("HAZARD_ON_ROAD_CONSTRUCTION", {"dry_run_cancelled", "failed",
-                                                                       "suppressed_rate_limit"}, t_a4)
-        self.check("A4 dry run finished with outcome=dry_run_cancelled",
-                   bool(row and row["outcome"] == "dry_run_cancelled"), str(row))
+        row = self.wait_macro_outcome("HAZARD_ON_ROAD_CONSTRUCTION", MACRO_END | {"suppressed_rate_limit"}, t_a4)
+        self.check(CHECKS_A["A4_outcome"],
+                   bool(row and row["outcome"] == "dry_run_cancelled"), self.macro_detail(row))
         rows = [r for r in self.pull_jsonl("reports.jsonl") if r.get("via") == "auto_macro"
                 and r.get("hazard_type") == "HAZARD_ON_ROAD_CONSTRUCTION"]
-        self.check("A4 dry run logged dry_run=true, action=cancel, Hazard > Construction",
+        self.check(CHECKS_A["A4_logged"],
                    len(rows) == 1 and rows[0].get("dry_run") is True and rows[0].get("action") == "cancel"
                    and rows[0].get("subcategory") == "Construction", str(rows))
         sends = [r for r in self.pull_jsonl("reports.jsonl") if r.get("action") == "send" and r.get("via") == "auto_macro"]
-        self.check("A4 no real send from the dry run", len(sends) == 1, f"{len(sends)} auto send(s)")
+        self.check(CHECKS_A["A4_no_send"], len(sends) == 1, f"{len(sends)} auto send(s)")
+
+        # --- A4 again for the types whose menu path has no subcategory tile ----------------
+        # (the macro then goes report button > category > Cancel, without a "sub:" step)
+        self.dry_run_without_sub("A4_police", "POLICE")
+        self.dry_run_without_sub("A4_animals", "HAZARD_SHOULDER_ANIMALS")
 
         # --- A5: unknown hazard type is ignored ------------------------------------------
         t_a5 = self.device_time()
         self.broadcast("NOT_A_REAL_HAZARD", "0.5", dry_run=False)
         row = self.wait_macro_outcome("NOT_A_REAL_HAZARD", {"unknown_hazard_type"}, t_a5, 8)
-        self.check("A5 unknown hazard_type ignored", row is not None, str(row))
+        self.check(CHECKS_A["A5"], row is not None, str(row))
 
         # --- logcat ------------------------------------------------------------------------
         time.sleep(1)
         text = self.logcat_text()
         n_report = len(re.findall(r"MockWazeReport", text))
-        self.check("A6 MockWazeReport lines in logcat", n_report >= 3, f"{n_report} line(s)")
+        self.check(CHECKS_A["A6"], n_report >= 3, f"{n_report} line(s)")
         self.save_jsonl("_stage_a")
+
+    def dry_run_without_sub(self, key: str, hazard_type: str) -> None:
+        category, sub = EXPECTED[hazard_type]
+        assert sub == "", hazard_type
+        self.log(f"{key}: {hazard_type} dry_run=true ({category}, no subcategory)")
+        time.sleep(1.0)  # let the sheet of the previous macro close
+        t = self.device_time()
+        self.broadcast(hazard_type, "0.70", dry_run=True)
+        time.sleep(2.4)  # confirm sheet is up from ~1.5 s until Cancel at ~4 s
+        self.screenshot(f"{key}_dry_run_confirm_sheet")
+        row = self.wait_macro_outcome(hazard_type, MACRO_END | {"suppressed_rate_limit", "skipped_busy",
+                                                                "skipped_not_foreground"}, t)
+        reports = self.pull_jsonl("reports.jsonl")
+        rows = [r for r in reports if r.get("via") == "auto_macro" and r.get("hazard_type") == hazard_type]
+        sends = [r for r in reports if r.get("action") == "send" and r.get("via") == "auto_macro"]
+        ok = (bool(row) and row.get("outcome") == "dry_run_cancelled"
+              and row.get("category") == category and row.get("subcategory") == ""
+              and len(rows) == 1 and rows[0].get("action") == "cancel" and rows[0].get("dry_run") is True
+              and rows[0].get("category") == category and rows[0].get("subcategory") == ""
+              and len(sends) == 1)
+        self.check(CHECKS_A[key], ok,
+                   f"{self.macro_detail(row)}; report row(s): {rows}; {len(sends)} auto send(s)")
 
     # ------------------------------------------------------------ stage B
     def stage_b(self, video: str, video_seconds: int, wait_s: int) -> None:
         self.log("=== Stage B: detector video mode -> mock Waze ===")
+        blocker = self.clear_obstruction(allowed=(MOCK_PKG, DET_PKG))
+        if "Not Responding" in blocker:
+            self.log(f"Stage B started behind {blocker}")
         apks = sorted(glob.glob(DET_APK_GLOB), key=os.path.getmtime)
         installed = DET_PKG in self.sh(f"pm path {DET_PKG}")
         if not apks and not installed:
-            self.skip("Stage B", "detector APK not built (android/detector/app/build/outputs/apk/debug/*.apk)")
+            self.not_run_reason = "detector APK not built (android/detector/app/build/outputs/apk/debug/*.apk)"
+            self.log(f"Stage B cannot run: {self.not_run_reason}")
             return
         if apks:
             out = self.adb("install", "-r", "-g", apks[-1], timeout=300)
-            if not self.check("B0 detector installed", "Success" in out, out.strip().splitlines()[-1] if out else ""):
+            if not self.check(CHECKS_B["B0"], "Success" in out, out.strip().splitlines()[-1] if out else ""):
+                self.not_run_reason = "detector install failed (B0)"
                 return
+        else:
+            self.check(CHECKS_B["B0"], True, "already on the device, no APK built to reinstall")
         ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "push_video.ps1"),
               "-InputFile", video, "-Port", self.serial.split("-")[-1]]
         if video_seconds:
             ps += ["-Seconds", str(video_seconds)]
-        p = subprocess.run(ps, capture_output=True, text=True, timeout=900)
+        p = subprocess.run(ps, capture_output=True, text=True, timeout=900, env=script_env())
         (self.out / "push_video.log").write_text(p.stdout + p.stderr, encoding="utf-8")
-        if not self.check("B1 video pushed", p.returncode == 0, (p.stdout + p.stderr).strip().splitlines()[-1:][0]
+        if not self.check(CHECKS_B["B1"], p.returncode == 0, (p.stdout + p.stderr).strip().splitlines()[-1:][0]
                           if (p.stdout + p.stderr).strip() else ""):
+            self.not_run_reason = "video not pushed (B1)"
             return
 
         # Mock Waze must take events while the detector is on screen; bring_to_front needs the
@@ -397,6 +707,10 @@ class Runner:
         # On a phone Waze is in front and the detector works from its foreground service; reproduce that
         time.sleep(5)
         self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=True)
+        time.sleep(1)  # window focus follows the launch a moment later
+        blocker = self.clear_obstruction()
+        if blocker:
+            self.log(f"mock Waze is not in front after its launch: obstructed by {blocker}")
         self.screenshot("B_mock_front")
         self.log(f"waiting {wait_s} s for the detector to run through the clip...")
         t_end = time.time() + wait_s
@@ -418,32 +732,51 @@ class Runner:
         self.log(f"detector event lines: {len(ev_lines)} types={sorted(det_types)}; mock received {len(received)}; "
                  f"reports {len(reports)}")
         if not ev_lines:
-            self.skip("B2 detector emitted events", "no WazeomaticEvent lines (nothing detected or tag differs)")
+            self.skip(CHECKS_B["B2"], "no WazeomaticEvent lines (nothing detected or tag differs)")
+            self.not_run_reason = "the detector logged no events (B2), nothing to compare"
             return
-        self.check("B2 detector emitted WazeomaticEvent", True, f"{len(ev_lines)} line(s)")
-        self.check("B3 mock Waze received the detector broadcasts", len(received) > 0,
-                   f"{len(received)} received, outcomes={sorted({m.get('outcome') for m in received})}")
+        self.check(CHECKS_B["B2"], True, f"{len(ev_lines)} line(s)")
+        obstructed = [m for m in received if m.get("outcome") == "obstructed"]
+        detail = f"{len(received)} received, outcomes={sorted({str(m.get('outcome')) for m in received})}"
+        if obstructed:
+            detail += (f"; {len(obstructed)} macro run(s) obstructed: mock Waze was not the focused window "
+                       f"({obstructed[0].get('detail', '')})")
+        self.check(CHECKS_B["B3"], len(received) > 0 and not obstructed, detail)
         sends = [r for r in reports if r.get("action") == "send" and r.get("via") == "auto_macro"]
         mismatched = [r for r in sends if (r.get("category"), r.get("subcategory")) !=
                       EXPECTED.get(r.get("hazard_type", ""), ("?", "?"))]
-        self.check("B4 sent reports match the hazard_type mapping", len(sends) > 0 and not mismatched,
+        self.check(CHECKS_B["B4"], len(sends) > 0 and not mismatched,
                    f"{len(sends)} send(s), {len(mismatched)} mismatched")
         unknown = [r for r in sends if r.get("hazard_type") not in det_types]
-        self.check("B5 every report traces back to a detector event", not unknown, f"{len(unknown)} untraced")
+        self.check(CHECKS_B["B5"], not unknown, f"{len(unknown)} untraced")
         limit_ok = len(sends) <= int(wait_s / 60) + 1
-        self.check("B6 one-per-minute limit held", limit_ok, f"{len(sends)} sends in {wait_s} s")
+        self.check(CHECKS_B["B6"], limit_ok, f"{len(sends)} sends in {wait_s} s")
+        events = parse_event_lines(ev_lines)
+        for hazard_type in self.expect_hazards:
+            ok, detail = check_expected_hazard(hazard_type, events, macro)
+            self.check(b7_name(hazard_type), ok, detail)
 
     # ------------------------------------------------------------ summary
-    def summary(self) -> int:
-        fails = [r for r in self.results if r[0] == "FAIL"]
-        lines = ["", "=" * 64, "E2E SUMMARY  " + ("PASS" if not fails else "FAIL"), "=" * 64]
+    def summary(self, allow_skip: bool = False) -> int:
+        recorded = {r[1] for r in self.results}
+        self.results = fill_skips(self.results, self.plan, self.not_run_reason)
         for status, name, detail in self.results:
-            lines.append(f"{status:5} {name}")
+            if status == "SKIP" and name not in recorded:
+                self.log(f"SKIP  {name}  ({detail})")
+        v = verdict(self.results)
+        count = {st: sum(1 for r in self.results if r[0] == st) for st in ("PASS", "FAIL", "SKIP")}
+        lines = ["", "=" * 64, "E2E SUMMARY  " + v, "=" * 64]
+        for status, name, detail in self.results:
+            lines.append(f"{status:5} {name}" + (f"  ({detail})" if status == "SKIP" and detail else ""))
+        lines.append(f"{len(self.results)} check(s): {count['PASS']} PASS, {count['FAIL']} FAIL, {count['SKIP']} SKIP")
+        if v == "INCOMPLETE":
+            lines.append("INCOMPLETE: the skipped checks produced no evidence, so this run is not a pass"
+                         + (" (exit code 0 because of --allow-skip)" if allow_skip else ""))
         lines.append(f"artifacts: {self.out}")
         for l in lines:
             print(l)
         (self.out / "summary.txt").write_text("\n".join(self.log_lines + lines) + "\n", encoding="utf-8")
-        return 1 if fails else 0
+        return exit_code(v, allow_skip)
 
 
 def check_schema() -> None:
@@ -470,46 +803,69 @@ def ensure_device(serial: str, start: bool) -> bool:
     port = serial.split("-")[-1]
     print(f"{serial} not running, starting it...")
     p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                        str(HERE / "start_emulator.ps1"), "-Port", port, "-Wait"], text=True)
+                        str(HERE / "start_emulator.ps1"), "-Port", port, "-Wait"], text=True, env=script_env())
     return p.returncode == 0
 
 
 def main() -> int:
+    global ADB
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serial", default="emulator-5554")
     ap.add_argument("--stage", choices=["a", "b", "all"], default="all")
     ap.add_argument("--install", action="store_true", help="reinstall mock Waze even if present")
     ap.add_argument("--no-start", action="store_true", help="do not start the emulator if it is not running")
-    ap.add_argument("--video", default=r"F:\dev\datasets\dashcam\dashcam_urban_1080p.ogv")
+    ap.add_argument("--adb", default=None,
+                    help="adb executable (default: ANDROID_HOME / ANDROID_SDK_ROOT platform-tools, then PATH, "
+                         "then sdk.dir of android/*/local.properties)")
+    ap.add_argument("--video", default=None,
+                    help="clip for Stage B (default: assets/videos/dashcam_urban_1080p.mp4, which "
+                         "tools/fetch_test_videos.py downloads)")
     ap.add_argument("--video-seconds", type=int, default=0, help="trim the clip (0 = whole 120 s)")
     ap.add_argument("--stage-b-wait", type=int, default=150, help="seconds to let the detector run")
     ap.add_argument("--detector-extras", default="",
                     help="extra `am start` arguments for the detector in Stage B, e.g. "
                          "\"--es class_map car=HAZARD_ON_ROAD_OBJECT --es conf 0.4\" to force events on a hazard-free clip")
+    ap.add_argument("--expect-hazard", action="append", default=[], metavar="HAZARD_TYPE",
+                    help="Stage B: add check B7 that the detector reported this hazard_type from a hazard-model "
+                         "class (not a remapped COCO class) and mock Waze took it. Repeatable.")
+    ap.add_argument("--allow-skip", action="store_true",
+                    help="exit 0 for an INCOMPLETE run (nothing failed, but checks were skipped)")
     args = ap.parse_args()
 
+    for t in args.expect_hazard:
+        if t not in EXPECTED:
+            ap.error(f"--expect-hazard {t}: unknown hazard_type (known: {', '.join(EXPECTED)})")
+    if args.expect_hazard and args.stage == "a":
+        ap.error("--expect-hazard is a Stage B check, it cannot be used with --stage a")
     check_schema()
+    ADB = resolve_adb(args.adb)
+    video = resolve_video(args.video) if args.stage in ("b", "all") else ""
     out = REPO / "runs" / "emulator" / datetime.now().strftime("%Y%m%d_%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     if not ensure_device(args.serial, not args.no_start):
         print(f"FAIL: {args.serial} is not online")
-        return 2
+        return 1
     r = Runner(args.serial, out)
     r.detector_extras = args.detector_extras
+    r.expect_hazards = list(dict.fromkeys(args.expect_hazard))
+    r.plan = planned_checks(args.stage, r.expect_hazards)
+    r.log(f"adb: {ADB}")
     r.start_logcat()
     try:
         if not r.ensure_installed(args.install):
             r.check("mock Waze installed", False)
-            return r.summary()
+            r.not_run_reason = "mock Waze is not installed"
+            return r.summary(args.allow_skip)
         if args.stage in ("a", "all"):
             r.stage_a()
         if args.stage in ("b", "all"):
-            r.stage_b(args.video, args.video_seconds, args.stage_b_wait)
+            r.stage_b(video, args.video_seconds, args.stage_b_wait)
     except Exception as e:  # keep the summary even if something blows up
         r.check("runner crashed", False, repr(e))
+        r.not_run_reason = r.not_run_reason or "the runner crashed before this check"
     finally:
         r.stop_logcat()
-    return r.summary()
+    return r.summary(args.allow_skip)
 
 
 if __name__ == "__main__":

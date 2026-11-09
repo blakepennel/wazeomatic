@@ -40,6 +40,12 @@ class MainActivity : Activity() {
 
     enum class Page { NONE, GRID, CONFIRM }
 
+    private companion object {
+        /** How long a macro step waits for the app to be resumed and focused before it gives up. */
+        const val OBSTRUCTED_TIMEOUT_MS = 2000L
+        const val OBSTRUCTED_POLL_MS = 100L
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var root: FrameLayout
     private lateinit var reportButton: ImageView
@@ -535,9 +541,13 @@ class MainActivity : Activity() {
 
     /**
      * Replays the MacroDroid macro: tap, wait, check, tap, ... with the configured waits.
-     * Taps are real touch events at the centre of the target view, dispatched through the
-     * window, so a tap during an animation or on a covered view misses just like it would
-     * for a coordinate tap.
+     * Taps are touch events at the centre of the target view, dispatched in-process to this
+     * window's decor view. A tap during an animation or on a view covered by another view of
+     * this window misses like a coordinate tap would. A window on top of the app (system
+     * dialog, another activity) does not intercept such an event, whereas a MacroDroid tap at
+     * screen coordinates would land on that window. So every step first requires that the
+     * activity is resumed and has window focus (see whenUnobstructed) and the macro ends with
+     * outcome "obstructed" when it does not.
      */
     fun runMacro(job: MacroJob) {
         macroJob = job
@@ -566,21 +576,46 @@ class MainActivity : Activity() {
         val wait = Config.int(this, "macro_wait_ms").toLong()
         val before = if (key == "confirm:cancel") Config.int(this, "dry_run_hold_ms").toLong() else 0L
         handler.postDelayed({
-            if (macroJob !== job) return@postDelayed
-            val v = if (key == "report_button") reportButton else targets[key]
-            if (v == null || !v.isShown) {
-                failMacro(job, "'$key' not on screen (page=$page)")
-                return@postDelayed
+            whenUnobstructed(job, key, SystemClock.uptimeMillis() + OBSTRUCTED_TIMEOUT_MS) {
+                val v = if (key == "report_button") reportButton else targets[key]
+                if (v == null || !v.isShown) {
+                    failMacro(job, "'$key' not on screen (page=$page)")
+                    return@whenUnobstructed
+                }
+                tap(v)
+                handler.postDelayed({
+                    if (macroJob !== job) return@postDelayed
+                    if (page != expect) failMacro(job, "after tapping '$key' expected $expect but page=$page")
+                    else if (key.startsWith("sub:") && confirmPath?.item != key.removePrefix("sub:"))
+                        failMacro(job, "tapped '$key' but selected tile is '${confirmPath?.item}'")
+                    else step(job, steps, i + 1)
+                }, wait)
             }
-            tap(v)
-            handler.postDelayed({
-                if (macroJob !== job) return@postDelayed
-                if (page != expect) failMacro(job, "after tapping '$key' expected $expect but page=$page")
-                else if (key.startsWith("sub:") && confirmPath?.item != key.removePrefix("sub:"))
-                    failMacro(job, "tapped '$key' but selected tile is '${confirmPath?.item}'")
-                else step(job, steps, i + 1)
-            }, wait)
         }, before)
+    }
+
+    /**
+     * Runs [action] once this activity is resumed and its window has input focus, i.e. a tap
+     * at screen coordinates would reach it. Polls for up to OBSTRUCTED_TIMEOUT_MS (focus
+     * arrives a moment after onResume), then ends the macro with outcome "obstructed".
+     */
+    private fun whenUnobstructed(job: MacroJob, key: String, deadline: Long, action: () -> Unit) {
+        if (macroJob !== job) return
+        if (isFinishing || isDestroyed) { endMacro(job, "failed", "activity closed"); return }
+        val resumed = MacroEngine.foreground === this
+        val focused = hasWindowFocus()
+        if (resumed && focused) {
+            action()
+            return
+        }
+        if (SystemClock.uptimeMillis() >= deadline) {
+            if (page != Page.NONE) closeSheet()
+            endMacro(job, "obstructed", "step '$key': " +
+                (if (!resumed) "activity not resumed" else "window has no focus (another window is on top)") +
+                " for $OBSTRUCTED_TIMEOUT_MS ms, tap not sent")
+            return
+        }
+        handler.postDelayed({ whenUnobstructed(job, key, deadline, action) }, OBSTRUCTED_POLL_MS)
     }
 
     private fun tap(v: View) {

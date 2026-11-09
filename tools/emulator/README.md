@@ -2,8 +2,7 @@
 
 Scripts to run the Wazeomatic Android pieces on an emulator set up like the Pixel 9 Pro
 (1280x2856, 495 dpi) against **mock Waze** (`android/mockwaze`) instead of real Waze.
-Everything stays on F: (SDK, AVDs under `F:\dev\android-sdk\.android\avd`, outputs under
-`runs\emulator\`).
+Outputs go to `runs\emulator\`; the SDK and AVD locations come from the environment (below).
 
 Our emulator is AVD `pixel9pro_test` on port **5554** (`emulator-5554`). Every script only uses
 that serial, so the detector team's `wazeomatic_dev` on 5560 is never touched.
@@ -15,8 +14,30 @@ $ps = 'powershell -NoProfile -ExecutionPolicy Bypass -File'
 iex "$ps tools\emulator\create_avd.ps1"            # once; -Webcam for back cam = webcam0, -Force to recreate
 iex "$ps tools\emulator\start_emulator.ps1 -Wait"  # -Headless (no window), -Gpu auto|host|swiftshader_indirect, -ColdBoot
 iex "$ps tools\emulator\install_apps.ps1 -Build"   # mock Waze + detector APK if built
-.venv\Scripts\python.exe tools\emulator\run_e2e.py  # Stage A (+ Stage B if the detector exists)
+.venv\Scripts\python.exe tools\fetch_test_videos.py # once; test clips for Stage B into assets\videos\
+.venv\Scripts\python.exe tools\emulator\run_e2e.py  # Stage A + Stage B (needs the detector APK)
 ```
+
+## Environment
+
+Nothing in `run_e2e.py` is tied to one machine. The `.ps1` scripts dot-source `_env.ps1`, which
+uses these variables when they are set and otherwise falls back to the original dev PC layout:
+
+| variable | used for | fallback in `_env.ps1` |
+|---|---|---|
+| `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) | SDK root: `platform-tools\adb.exe`, `emulator\emulator.exe`, `cmdline-tools` | `F:\dev\android-sdk` |
+| `ANDROID_USER_HOME` | where AVDs live (`<it>\avd`) | `<SDK>\.android` |
+| `JAVA_HOME` | JDK for `avdmanager` and gradle | `C:\Program Files\OpenLogic\jdk-21.0.7.6-hotspot` |
+| `GRADLE_USER_HOME` | gradle cache for `install_apps.ps1 -Build` | `F:\dev\gradle\home` |
+| `FFMPEG` | ffmpeg executable for `push_video.ps1` | `ffmpeg` on `PATH`, then the chocolatey install |
+
+`run_e2e.py` finds adb in this order: `--adb <path>`, `%ANDROID_HOME%\platform-tools`,
+`%ANDROID_SDK_ROOT%\platform-tools`, `adb` on `PATH`, `sdk.dir` from `android\*\local.properties`
+(the file Android Studio writes). If none has adb it stops with a message that lists what it
+tried. When it starts a `.ps1` helper it passes the SDK of that adb on as `ANDROID_HOME` unless
+one is set. The default Stage B clip is `assets\videos\dashcam_urban_1080p.mp4`, which
+`tools\fetch_test_videos.py` downloads; without it (and without `--video`) a run that includes
+Stage B stops before it starts and says so. `--stage a` needs no clip.
 
 | script | what it does |
 |---|---|
@@ -35,23 +56,49 @@ iex "$ps tools\emulator\install_apps.ps1 -Build"   # mock Waze + detector APK if
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --stage-b-wait 150
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video-seconds 60 --stage-b-wait 100 --detector-extras "--es class_map car=HAZARD_ON_ROAD_OBJECT --es conf 0.4 --ez dry_run false"
 # (the CC0 clips contain no real hazard; the class_map extra makes the detector treat COCO cars as a hazard so the whole chain is exercised)
+.venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video assets/videos/labelled/argo_2ff4f798_workzone.mp4 --expect-hazard HAZARD_ON_ROAD_CONSTRUCTION --detector-extras "--ez dry_run false"
+# (a real work-zone clip through the shipped hazard model, no class_map; the clip is a local file, it is not in the repo)
 ```
 
 If `adb install` of the detector fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the APK already on the emulator was signed with a different debug keystore (another PC or user). Run `adb -s emulator-5554 uninstall com.wazeomatic.detector` once and install again.
 
 Starts the emulator if it is not running (unless `--no-start`), installs mock Waze if missing
 (`--install` forces it), and writes `logcat.txt`, screenshots, the pulled `reports.jsonl` /
-`macro_events.jsonl` and `summary.txt` to `runs\emulator\<timestamp>\`. Exit code 0 = all PASS.
+`macro_events.jsonl` and `summary.txt` to `runs\emulator\<timestamp>\`.
+
+**Result and exit code.** A default full run has **21 checks** (14 in Stage A, 7 in Stage B, plus
+one B7 per `--expect-hazard`), and every check of the requested stages is listed in the summary.
+A check that could not run (no detector APK, the detector logged no events, an earlier step of
+the stage failed, the runner crashed) is listed as `SKIP` with the reason. A stage that was not
+requested (`--stage a` leaves out Stage B) is not listed and is not a skip.
+
+| summary line | meaning | exit code |
+|---|---|---|
+| `E2E SUMMARY  PASS` | every listed check passed | 0 |
+| `E2E SUMMARY  FAIL` | at least one `FAIL` (or the emulator is not online) | 1 |
+| `E2E SUMMARY  INCOMPLETE` | no `FAIL`, but at least one `SKIP`: part of the run produced no evidence | 2 (0 with `--allow-skip`) |
+
+**Blocking windows.** Before every tap attempt the runner reads `mCurrentFocus` from
+`dumpsys window`. An "<app> isn't responding" dialog of a foreign app is dismissed by
+force-stopping that app; for mock Waze or the detector the dialog's Wait button is pressed
+instead. If a label still cannot be tapped, the failure says which window was in the way
+(`could not tap 'Hazard': obstructed by window '...'`). The mock's own macro refuses to tap
+while the app is not resumed and focused and logs outcome `obstructed`; the runner reports that
+as a failure of the check.
 
 **Stage A** (mock Waze only):
 * A1 taps Report > Hazard > Pothole > Cancel with `adb shell input tap` at the coordinates
   from `uiautomator dump` (same kind of taps the MacroDroid macro does) and expects a
-  `dry_run=true` row; a manual Police send grabs the "Thanks!" toast screenshot.
+  `dry_run=true` row. A manual Police send (Report > Police > Report) grabs the "Thanks!" toast
+  screenshot and must leave a `touch` row with category Police and `action=send`.
 * A2 broadcasts `HAZARD_ON_ROAD_POTHOLE` (`dry_run=false`) and expects exactly one
   `Hazard / Pothole` report from the auto macro.
 * A3 broadcasts `CRASH` straight after: must be `suppressed_rate_limit` and nothing sent.
 * A4 broadcasts `HAZARD_ON_ROAD_CONSTRUCTION` with `dry_run=true`: must reach the confirm
-  sheet, cancel, and log `dry_run=true` with no extra send.
+  sheet, cancel, and log `dry_run=true` with no extra send. Then the same dry run for `POLICE`
+  and `HAZARD_SHOULDER_ANIMALS`, whose menu path has no subcategory tile (the macro goes
+  Report > category > Cancel): outcome `dry_run_cancelled`, category Police / Hazard, empty
+  subcategory, still no extra send.
 * A5 unknown hazard_type is ignored; A6 `MockWazeReport` lines show up in logcat.
 
 The broadcasts look exactly like what the detector sends:
@@ -60,13 +107,20 @@ The broadcasts look exactly like what the detector sends:
 adb -s emulator-5554 shell am broadcast -a com.wazeomatic.HAZARD_DETECTED --es hazard_type HAZARD_ON_ROAD_POTHOLE --es confidence 0.87 --es dry_run false --es source e2e --es waze_category Hazard --es waze_subcategory Pothole
 ```
 
-**Stage B** (skipped when no detector APK is built or installed): pushes the clip, starts mock
+**Stage B** (all of B0-B6 are `SKIP` when no detector APK is built or installed): pushes the clip, starts mock
 Waze with `bring_to_front=true` (+ `appops set ... SYSTEM_ALERT_WINDOW allow` so it may come to
 the front from the background), launches
 `am start -n com.wazeomatic.detector/.MainActivity --es source video --es video test.mp4`,
 waits, reads logcat tag `WazeomaticEvent` and checks mock Waze received those events, sent
 reports match the schema mapping and the one-per-minute limit held. If the detector logs no
-events at all the stage is reported as SKIP (nothing to compare), not PASS.
+events at all, B2-B6 are reported as SKIP (nothing to compare) and the run is INCOMPLETE.
+
+`--expect-hazard <HAZARD_TYPE>` (repeatable) adds check "B7 detector reported <type> from the
+hazard model": at least one detector event of that type whose `label` is a class of the shipped
+hazard model (pothole, cone, construction_sign, delineator, barricade, worker), not a COCO class
+remapped with `class_map`, and a mock Waze macro run for one of those events that finished
+(`sent`, or `dry_run_cancelled` when the detector runs with dry_run on). An event that mock Waze
+only suppressed (rate limit, busy) does not count. Without the option there is no B7.
 
 Note: once mock Waze jumps to the front, the detector goes to the background. If the detector
 pauses video playback when it is not visible, run it as a foreground service (its owner's call).
@@ -75,12 +129,12 @@ pauses video playback when it is not visible, run it as a foreground service (it
 
 The detector's in-app video mode is the easy way. To test the real camera code path instead:
 
-1. Install OBS Studio, add a *Media Source* with `F:\dev\datasets\dashcam\dashcam_urban_1080p.ogv`
+1. Install OBS Studio, add a *Media Source* with `assets\videos\dashcam_urban_1080p.mp4`
    (loop on), and click **Start Virtual Camera**.
 2. Recreate or start the AVD with the webcam as back camera:
    `create_avd.ps1 -Webcam -Force` (permanent) or `start_emulator.ps1 -Webcam` (this run only;
    passes `-camera-back webcam0`). Check the name with
-   `F:\dev\android-sdk\emulator\emulator.exe -webcam-list`; if OBS is not `webcam0`, use the
+   `%ANDROID_HOME%\emulator\emulator.exe -webcam-list`; if OBS is not `webcam0`, use the
    name it shows (e.g. `webcam1`) in `config.ini` (`hw.camera.back`).
 3. Start the detector in camera mode; the emulator back camera now shows the OBS clip.
 
@@ -92,6 +146,8 @@ The default `virtualscene` camera is a 3D room, useful only to check the camera 
 * `adb devices` shows `emulator-5554 offline`: wait, or `adb -s emulator-5554 emu kill` and start again with `-ColdBoot`.
 * Stuck at boot with `-gpu auto`: try `-Gpu swiftshader_indirect` (software, slower).
 * `uiautomator dump` fails while an animation runs: A1 retries a few times.
+* `obstructed by window '...'` in a failed check: something else had focus (a dialog, the
+  launcher, another app). Look at the screenshot of that step in the run folder.
 * Reports file: `adb -s emulator-5554 shell cat /sdcard/Android/data/com.wazeomatic.mockwaze/files/reports.jsonl`.
 
 ## Real Waze on the emulator (pixel9pro_play)

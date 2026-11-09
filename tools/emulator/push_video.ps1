@@ -4,10 +4,10 @@
   video mode (/sdcard/Android/data/com.wazeomatic.detector/files/test.mp4 and /sdcard/Download/).
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\emulator\push_video.ps1
-  powershell -ExecutionPolicy Bypass -File tools\emulator\push_video.ps1 -InputFile F:\dev\datasets\dashcam\dashcam_daylight_720p.ogv -Seconds 60
+  powershell -ExecutionPolicy Bypass -File tools\emulator\push_video.ps1 -InputFile assets\videos\dashcam_daylight_720p.mp4 -Seconds 60
 #>
 param(
-    [string]$InputFile = 'F:\dev\datasets\dashcam\dashcam_urban_1080p.ogv',
+    [string]$InputFile = '',   # default: assets\videos\dashcam_urban_1080p.mp4 (tools\fetch_test_videos.py)
     [string]$Name = 'test.mp4',
     [int]$Seconds = 0,     # 0 = whole clip
     [int]$Port = 5554,
@@ -15,6 +15,15 @@ param(
 )
 . "$PSScriptRoot\_env.ps1"
 $serial = Get-Serial $Port
+if (-not $InputFile) {
+    $candidates = @(
+        (Join-Path $RepoRoot 'assets\videos\dashcam_urban_1080p.mp4'),
+        (Join-Path $RepoRoot 'assets\videos\dashcam_urban_1080p.ogv'),
+        'F:\dev\datasets\dashcam\dashcam_urban_1080p.ogv'
+    )
+    $InputFile = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $InputFile) { throw "No test clip in assets\videos. Run tools\fetch_test_videos.py or pass -InputFile." }
+}
 if (-not (Test-Path $InputFile)) { throw "Input not found: $InputFile" }
 
 $base = [IO.Path]::GetFileNameWithoutExtension($InputFile)

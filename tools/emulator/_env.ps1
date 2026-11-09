@@ -1,10 +1,17 @@
 # Shared paths/env for the emulator scripts. Dot-source it: . "$PSScriptRoot\_env.ps1"
-# Everything (SDK, AVDs, gradle cache, recordings) stays on F: because C: is almost full.
+# ANDROID_HOME (or ANDROID_SDK_ROOT), ANDROID_USER_HOME, JAVA_HOME, GRADLE_USER_HOME and FFMPEG are
+# used when they are already set. The fallbacks below are the locations on the original dev PC,
+# where everything (SDK, AVDs, gradle cache, recordings) stays on F: because C: is almost full.
 
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$SdkRoot = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { 'F:\dev\android-sdk' }
+$SdkRoot = if ($env:ANDROID_HOME) { $env:ANDROID_HOME }
+           elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT }
+           else { 'F:\dev\android-sdk' }
+if (-not (Test-Path $SdkRoot)) {
+    throw "Android SDK not found at $SdkRoot. Set ANDROID_HOME (or ANDROID_SDK_ROOT) to the SDK folder."
+}
 $env:ANDROID_HOME = $SdkRoot
 $env:ANDROID_SDK_ROOT = $SdkRoot
 if (-not $env:ANDROID_USER_HOME) { $env:ANDROID_USER_HOME = Join-Path $SdkRoot '.android' }
@@ -15,7 +22,9 @@ if (-not $env:GRADLE_USER_HOME) { $env:GRADLE_USER_HOME = 'F:\dev\gradle\home' }
 $Adb = Join-Path $SdkRoot 'platform-tools\adb.exe'
 $EmulatorExe = Join-Path $SdkRoot 'emulator\emulator.exe'
 $AvdManager = Join-Path $SdkRoot 'cmdline-tools\latest\bin\avdmanager.bat'
-$Ffmpeg = 'C:\ProgramData\chocolatey\bin\ffmpeg.exe'
+$Ffmpeg = if ($env:FFMPEG) { $env:FFMPEG }
+          elseif (Get-Command ffmpeg -ErrorAction SilentlyContinue) { (Get-Command ffmpeg).Source }
+          else { 'C:\ProgramData\chocolatey\bin\ffmpeg.exe' }
 
 $DefaultAvd = 'pixel9pro_test'
 $DefaultPort = 5554

@@ -64,6 +64,12 @@ logs the macro outcome as `failed`. What the auto macro did with
 every broadcast (accepted / sent / suppressed_rate_limit / skipped_not_foreground / ...) goes to
 `macro_events.jsonl` and logcat tag `MockWazeMacro`.
 
+The macro's taps are dispatched inside the app, so they would still arrive when a system dialog
+or another window sits on top, where a MacroDroid tap at screen coordinates would hit that
+window instead. Before every step the macro therefore requires that the activity is resumed and
+has window focus; if that is not the case for 2 s it stops with outcome `obstructed` (the
+`detail` names the step) and taps nothing.
+
 ```powershell
 adb -s emulator-5554 shell cat /sdcard/Android/data/com.wazeomatic.mockwaze/files/reports.jsonl
 adb -s emulator-5554 logcat -s MockWazeReport MockWazeMacro
