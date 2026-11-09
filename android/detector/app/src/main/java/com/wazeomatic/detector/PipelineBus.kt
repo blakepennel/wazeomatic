@@ -3,6 +3,7 @@ package com.wazeomatic.detector
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 
 /** Latest processed frame plus the numbers shown on screen. */
 class FrameResult(
@@ -30,6 +31,8 @@ object PipelineBus {
     @Volatile var status: String = "stopped"
         private set
     @Volatile var running: Boolean = false
+    /** SystemClock.elapsedRealtime() of the last processed frame, 0 before the first one. */
+    @Volatile var lastFrameAtMs: Long = 0L
 
     val recentEvents = ArrayDeque<Pair<HazardEvent, Boolean>>()
 
@@ -42,6 +45,7 @@ object PipelineBus {
     }
 
     fun postFrame(r: FrameResult) {
+        lastFrameAtMs = SystemClock.elapsedRealtime()
         main.post { listeners.toList().forEach { it.onFrame(r) } }
     }
 

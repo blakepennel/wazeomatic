@@ -54,6 +54,22 @@ adb forward tcp:8765 tcp:8765    # emulator / USB: then send JSON lines to local
 adb shell am start -n com.wazeomatic.detector/.MainActivity --ez stop true
 ```
 
+### Mounting the phone
+
+Mount the phone in landscape, like a dashcam: the models are trained on landscape frames and the
+zoom crop assumes a wide picture. With `orientation` on `auto` the frames are turned upright from
+the accelerometer, whichever way the phone is held and whether or not auto-rotate is on (a flat
+phone keeps the last orientation; before the first reading landscape is assumed); a portrait
+mount still runs but the status line warns about portrait frames. Set the app's battery usage to
+Unrestricted (the app shows a hint with a button to the system screen while it is not): the
+service holds a wake lock while it runs, the status line and the notification show
+`battery: restricted` / `battery: unrestricted`, and `stalled Ns` appears when no frame has been
+processed for more than 5 s.
+
+With the `video` or `tcp` source the service runs as a `dataSync` foreground service, which
+Android 15 limits to about 6 hours a day; when the limit is reached the detector stops and the
+status line says so (press Start to run again). The camera source has no such limit.
+
 Passing `source` (or `--ez autostart true`) starts the detector without taps. Extras are saved
 into the settings; `--ez reset_settings true` restores defaults first.
 
@@ -63,17 +79,19 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `video` | test.mp4 | file in the app external files dir (or absolute path) |
 | `frame_step` / `loop` | 5 / true | video: infer every Nth frame, restart at end |
 | `max_fps` | 6 | camera: inference rate cap (extra frames are dropped) |
-| `conf` | 0.40 | report min confidence (detector box threshold is min(0.30, conf)) |
-| `cooldown` / `global_cooldown` | 60 / 5 | seconds |
+| `conf` | 0.40 | report min confidence (detector box threshold is min(0.35, conf), the desktop default) |
+| `cooldown` / `global_cooldown` | 60 / 60 | seconds per hazard type / between any two events; the second matches the macro, which files at most one report a minute, so a held-back hazard is counted here (`heldBack`) instead of vanishing there |
 | `min_hits` / `window` | 3 / 10 | persistence rule |
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
+| `zoom_coco` | false | also run the zoom pass on the COCO model (`--zoom-coco` on the desktop); off by default, the second pass is for the hazard model(s) |
+| `orientation` | auto | camera: how the phone is mounted. `auto` follows the accelerometer (independent of the system auto-rotate setting), `landscape` (top edge to the left), `landscape_reverse` (top edge to the right) and `portrait` pin it |
 | `ensemble` | true | also run `hazard2.onnx` when the build bundled one (`syncModels` copies `-PhazardModel2`; the default is none since the v3 model, `-PhazardModel2=hazard_yolo11s_v3.onnx` adds the v3 small) and fuse it with `hazard.onnx`; no second asset = single model |
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
-| `report_class_conf` | pothole=0.45 | per-label hit floors inside the Report Manager (overrides `conf` for those labels); the pothole floor is the shipped default on both the phone and the desktop pipeline |
+| `report_class_conf` | pothole=0.45 | per-label hit floors inside the Report Manager; the higher of the floor and `conf` applies, so a floor can raise the bar for a label but never lower it (same as `_min_conf` in `wazeomatic/report_manager.py`); the pothole floor is the shipped default on both the phone and the desktop pipeline |
 | `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored |
 | `auto_hood` | true | grow the hood zone from the picture itself (`HoodEstimator.kt`): the dashboard keeps sharp edges in a running average of the frames while the road blurs away; on the test clips this finds a 22 % dashboard that the fixed 10 % missed (an air vent was reported as a pothole) |
 | `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |
@@ -92,15 +110,16 @@ Per-frame latency goes to logcat tag `WazeomaticPerf` and is shown on screen.
 
 ### Two-pass zoom
 
-All models (and their zoom passes) run on their own threads; the `WazeomaticPerf` log line reports each model's time plus `wall`, the latency of the whole frame. The hazard members are fused (`BoxFusion.kt`, a port of `wazeomatic/fusion.py`) before the Report Manager sees them.
+All models (each with its zoom pass, if it has one) run on their own threads; the `WazeomaticPerf` log line reports each model's time plus `wall`, the latency of the whole frame. The hazard members are fused (`BoxFusion.kt`, a port of `wazeomatic/fusion.py`) before the Report Manager sees them.
 
-`zoom_crop` runs every model a second time on a crop of the road ahead (same as `--zoom-crop`
-in `wazeomatic/run_video.py`): with a 1280x720 frame and a 640 px model the default crop is
+`zoom_crop` runs the hazard model(s) a second time on a crop of the road ahead (same as
+`--zoom-crop` in `wazeomatic/run_video.py`); the COCO model is only zoomed with `zoom_coco`
+(`--zoom-coco`), off by default. With a 1280x720 frame and a 640 px model the default crop is
 640x288 px, so a distant 20 px cone is 40 px to the network. Crop detections are mapped back
 to frame coordinates and merged with the full-frame ones by per-class NMS (IoU 0.5, the higher
 confidence wins). The crop is skipped when it would be under 32 px in either dimension.
-Inference cost roughly doubles; the second pass shows up as `hazard_zoom` / `coco_zoom` in the
-`WazeomaticPerf` line and on screen.
+The hazard inference cost roughly doubles; the second pass shows up as `hazard_zoom` (and
+`coco_zoom` with `zoom_coco`) in the `WazeomaticPerf` line and on screen.
 
 ```powershell
 adb shell am start -n com.wazeomatic.detector/.MainActivity --es source camera --ez zoom_crop true

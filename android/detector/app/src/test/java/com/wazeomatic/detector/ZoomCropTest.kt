@@ -7,6 +7,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ZoomCropTest {
+    @Test
+    fun zoomPassIsForTheHazardModelsUnlessCocoIsOptedIn() {
+        assertTrue(ZoomCrop.appliesTo("hazard", zoomCoco = false))
+        assertTrue(ZoomCrop.appliesTo("hazard2", zoomCoco = false))
+        assertEquals(false, ZoomCrop.appliesTo("coco", zoomCoco = false))
+        assertTrue(ZoomCrop.appliesTo("coco", zoomCoco = true))
+        assertTrue(ZoomCrop.appliesTo("hazard", zoomCoco = true))
+    }
+
     private fun det(label: String, conf: Float, cx: Float, cy: Float, w: Float, h: Float, model: String = "hazard") =
         Detection(label, conf, BBox(cx, cy, w, h), model)
 

@@ -15,10 +15,10 @@ data class Settings(
     val loop: Boolean = true,               // video: restart at the end
     val maxFps: Float = 6f,                 // camera: inference rate cap
     val confThreshold: Float = 0.40f,       // ReportManager min_confidence
-    val detConf: Float = 0.30f,             // detector box threshold (boxes drawn in the preview)
+    val detConf: Float = 0.35f,             // detector box threshold, same as --conf on the desktop
     val iou: Float = 0.5f,
     val cooldownS: Float = 60f,
-    val globalCooldownS: Float = 5f,
+    val globalCooldownS: Float = 60f,
     val minHits: Int = 3,
     val window: Int = 10,
     val stoppedVehicle: Boolean = false,
@@ -37,6 +37,8 @@ data class Settings(
     val trackGrow: Float = 1.5f,
     val hoodFrac: Float = 0.10f,            // minimum hood / dashboard zone (fraction of the frame height)
     val autoHood: Boolean = true,           // grow the zone from the static bottom of the picture (HoodEstimator)
+    val zoomCoco: Boolean = false,          // also run the zoom pass on the COCO model (same default as Python)
+    val orientation: String = "auto",       // camera: auto | landscape | landscape_reverse | portrait (how the phone is mounted)
 ) {
     val classFloors: Map<String, Float> get() = BoxFusion.parseFloors(classConf)
     /** Two-pass zoom region, null when disabled or malformed (see [ZoomCrop.parse]). */
@@ -89,6 +91,8 @@ data class Settings(
             .putFloat("track_grow", trackGrow)
             .putFloat("hood_frac", hoodFrac)
             .putBoolean("auto_hood", autoHood)
+            .putBoolean("zoom_coco", zoomCoco)
+            .putString("orientation", orientation)
             .apply()
     }
 
@@ -131,6 +135,8 @@ data class Settings(
             trackGrow = f("track_grow", trackGrow),
             hoodFrac = f("hood_frac", hoodFrac),
             autoHood = z("auto_hood", autoHood),
+            zoomCoco = z("zoom_coco", zoomCoco),
+            orientation = str("orientation")?.trim()?.lowercase() ?: orientation,
         )
     }
 
@@ -140,6 +146,7 @@ data class Settings(
             "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
+            "zoom_coco", "orientation",
         )
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
@@ -185,6 +192,8 @@ data class Settings(
                 trackGrow = p.getFloat("track_grow", d.trackGrow),
                 hoodFrac = p.getFloat("hood_frac", d.hoodFrac),
                 autoHood = p.getBoolean("auto_hood", d.autoHood),
+                zoomCoco = p.getBoolean("zoom_coco", d.zoomCoco),
+                orientation = p.getString("orientation", d.orientation) ?: d.orientation,
             )
         }
     }

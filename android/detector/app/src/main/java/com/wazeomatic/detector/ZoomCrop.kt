@@ -16,7 +16,7 @@ data class CropRect(val x1: Int, val y1: Int, val x2: Int, val y2: Int) {
  * Second-pass region as normalized frame fractions. With a 1280x720 frame and a 640 px model
  * the full pass sees the scene at half resolution; the default crop (middle 50 % of the width,
  * 35-75 % of the height) is 640x288 px, so the second pass sees the road ahead at full
- * resolution. Costs one extra inference per model and frame.
+ * resolution. Costs one extra inference per zoomed model and frame.
  */
 data class ZoomCrop(val x1: Float, val y1: Float, val x2: Float, val y2: Float) {
 
@@ -60,6 +60,13 @@ data class ZoomCrop(val x1: Float, val y1: Float, val x2: Float, val y2: Float) 
             if (v[2] <= v[0] || v[3] <= v[1]) return null
             return ZoomCrop(v[0], v[1], v[2], v[3])
         }
+
+        /**
+         * Whether a model gets the second pass. The hazard model(s) always do; the COCO model
+         * only with the zoom_coco setting (same rule as wazeomatic/build.py).
+         */
+        fun appliesTo(modelName: String, zoomCoco: Boolean): Boolean =
+            zoomCoco || modelName.startsWith("hazard")
 
         /** The fractions actually covered by a rounded pixel rectangle. */
         fun fromRect(r: CropRect, frameW: Int, frameH: Int) = ZoomCrop(

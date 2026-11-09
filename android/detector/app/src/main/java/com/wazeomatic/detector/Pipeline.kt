@@ -71,7 +71,10 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         if (classFloors.isNotEmpty()) notes.add("floors $classFloors")
         if (settings.trackIou > 0f) notes.add("track ${settings.trackIou}")
         if (hood != null) notes.add("auto hood")
-        if (zoomCrop != null) notes.add("zoom crop $zoomCrop")
+        if (zoomCrop != null) {
+            val zoomed = list.filter { ZoomCrop.appliesTo(it.name, settings.zoomCoco) }.joinToString("+") { it.name }
+            notes.add("zoom crop $zoomCrop on ${zoomed.ifEmpty { "no model" }}" + if (settings.zoomCoco) "" else " (coco not zoomed)")
+        }
         modelStatus = if (list.isEmpty()) "model missing" else notes.joinToString(" | ")
         Log.i(TAG, "models: $modelStatus")
     }
@@ -87,21 +90,23 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val effCrop = crop?.let { ZoomCrop.fromRect(it, frame.width, frame.height) }
         if (crop != null) cropRect.set(crop.x1, crop.y1, crop.x2, crop.y2)
         val t0 = System.nanoTime()
-        // every model (and its zoom pass) runs on its own thread; ORT releases the Java monitor
+        // every model (and its zoom pass) runs on its own thread; ORT releases the Java monitor.
+        // The zoom pass is for the hazard model(s); COCO only with zoom_coco (as in build.py).
         val tasks = detectors.map { d ->
+            val zoomThis = effCrop != null && ZoomCrop.appliesTo(d.name, settings.zoomCoco)
             Callable {
                 try {
                     val full = d.detect(frame)
                     val msFull = d.lastMs
-                    if (effCrop == null) {
-                        Triple(d, full, msFull to 0.0)
+                    if (effCrop == null || !zoomThis) {
+                        Triple(d, full, msFull to null)
                     } else {
                         val zoomed = d.detect(frame, cropRect)
                         Triple(d, ZoomCrop.merge(full + effCrop.toFrame(zoomed), d.iouThres), msFull to d.lastMs)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "inference failed in ${d.name}", e)
-                    Triple(d, emptyList(), 0.0 to 0.0)
+                    Triple(d, emptyList(), 0.0 to null)
                 }
             }
         }
@@ -110,7 +115,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             val (d, out, ms) = f.get()
             perModel[d] = out
             lat[d.name] = ms.first
-            if (effCrop != null) lat["${d.name}_zoom"] = ms.second
+            ms.second?.let { lat["${d.name}_zoom"] = it }
         }
         lat["wall"] = (System.nanoTime() - t0) / 1e6
         val hazardLists = hazardMembers.map { perModel[it] ?: emptyList() }

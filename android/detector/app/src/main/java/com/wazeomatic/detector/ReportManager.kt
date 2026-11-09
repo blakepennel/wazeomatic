@@ -23,7 +23,9 @@ data class ReportConfig(
     // ignore boxes whose bottom edge is in the lowest 10 % of the frame: the car's own bonnet reflection
     val hoodFrac: Float = 0.10f,
     val cooldownS: Double = 60.0,
-    val globalCooldownS: Double = 5.0,
+    /** Between any two events. The macro files at most one report a minute in total, so a sooner
+     *  event would be dropped there unseen; holding it back here keeps the loss visible ([ReportManager.heldBack]). */
+    val globalCooldownS: Double = 60.0,
     val classToHazard: Map<String, String> = Schema.DEFAULT_CLASS_TO_HAZARD,
     val stoppedVehicleEnabled: Boolean = false,
     val shoulderXMin: Float = 0.62f,
@@ -56,6 +58,12 @@ class ReportManager(
     private val tracks = LinkedHashMap<String, Track>()
     private var lastGlobalTs = -1e9
     private var frame = 0
+
+    /** Hazards that qualified while another type's report held the global cooldown, counted once
+     *  per hazard type per cooldown window. */
+    var heldBack = 0
+        private set
+    private val held = HashSet<String>()
     private var hoodFracDynamic = 0f
 
     /** Active hood zone: the configured minimum or a larger value learnt by [HoodEstimator]. */
@@ -97,8 +105,11 @@ class ReportManager(
         for ((hazard, tr) in tracks) {
             val hits = qualifyingHits(tr) ?: continue
             if (now - tr.lastEmittedTs < cfg.cooldownS) continue
-            if (now - lastGlobalTs < cfg.globalCooldownS) continue
             if (hazard == "HAZARD_SHOULDER_CAR_STOPPED" && !stoppedVehicleConfirmed(tr)) continue
+            if (now - lastGlobalTs < cfg.globalCooldownS) {
+                if (held.add(hazard)) heldBack++
+                continue
+            }
             val top = hits.maxByOrNull { it.conf } ?: continue
             events.add(
                 HazardEvent(
@@ -115,6 +126,7 @@ class ReportManager(
             )
             tr.lastEmittedTs = now
             lastGlobalTs = now
+            held.clear()
             tr.hits.clear()
             tr.tracklets.clear()
         }
@@ -129,7 +141,9 @@ class ReportManager(
         return null
     }
 
-    private fun minConf(label: String): Float = cfg.minConfidenceByLabel[label] ?: cfg.minConfidence
+    /** A per-label floor can only raise the bar above minConfidence, never lower it. */
+    private fun minConf(label: String): Float =
+        maxOf(cfg.minConfidence, cfg.minConfidenceByLabel[label] ?: 0f)
 
     private fun inHoodZone(d: Detection): Boolean {
         val hood = hoodFrac

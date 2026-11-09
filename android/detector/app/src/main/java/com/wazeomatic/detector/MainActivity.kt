@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
+import android.os.PowerManager
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -37,6 +38,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
     private lateinit var overlay: OverlayView
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
+    private lateinit var batteryHint: LinearLayout
     private lateinit var eventsAdapter: ArrayAdapter<String>
     private var pendingStart = false
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -53,6 +55,29 @@ class MainActivity : Activity(), PipelineBus.Listener {
         super.onNewIntent(intent)
         setIntent(intent)
         handleLaunch(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshBatteryHint()
+    }
+
+    /** Shown while battery optimisation is on for the app; the system may then stop it behind Waze. */
+    private fun refreshBatteryHint() {
+        val unrestricted = try {
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        } catch (e: Exception) {
+            true
+        }
+        batteryHint.visibility = if (unrestricted) View.GONE else View.VISIBLE
+    }
+
+    private fun openBatterySettings() {
+        try {
+            startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        } catch (e: Exception) {
+            statusText.text = "could not open the battery settings: ${e.message}"
+        }
     }
 
     override fun onDestroy() {
@@ -74,6 +99,20 @@ class MainActivity : Activity(), PipelineBus.Listener {
             setTextColor(Color.rgb(120, 230, 120)); textSize = 13f
             setPadding((8 * dp).toInt(), 0, (8 * dp).toInt(), (4 * dp).toInt())
         }
+        batteryHint = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding((8 * dp).toInt(), 0, (8 * dp).toInt(), 0)
+            addView(TextView(this@MainActivity).apply {
+                text = "Battery is restricted: set it to Unrestricted so detection keeps running behind Waze"
+                setTextColor(Color.rgb(255, 190, 80)); textSize = 13f
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(Button(this@MainActivity).apply {
+                text = "Battery settings"
+                setOnClickListener { openBatterySettings() }
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        }
         overlay = OverlayView(this)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         fun btn(label: String, onClick: () -> Unit) = Button(this).apply {
@@ -91,6 +130,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
 
         root.addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(statsText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(batteryHint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(overlay, LinearLayout.LayoutParams(MATCH_PARENT, 0, 3f))
         root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(list, LinearLayout.LayoutParams(MATCH_PARENT, 0, 2f))
@@ -103,7 +143,13 @@ class MainActivity : Activity(), PipelineBus.Listener {
         setContentView(root)
 
         val hasModel = Pipeline.assetExists(this, "hazard.onnx") || Pipeline.assetExists(this, "coco.onnx")
-        statusText.text = if (PipelineBus.running) PipelineBus.status else if (hasModel) "ready (stopped)" else "model missing"
+        statusText.text = when {
+            PipelineBus.running -> PipelineBus.status
+            // the service stopped itself and said why (e.g. the Android 15 time limit)
+            PipelineBus.status.startsWith("stopped:") -> PipelineBus.status
+            hasModel -> "ready (stopped)"
+            else -> "model missing"
+        }
         overlay.message = if (hasModel) "press Start" else "model missing - see README"
     }
 
@@ -176,6 +222,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
         val video = field("Video file (in app files dir)", s.video, false)
         val target = field("Target package (empty = implicit broadcast)", s.targetPackage, false)
         val zoom = field("Zoom crop (empty = off, true = default, or x1,y1,x2,y2)", s.zoomCrop, false)
+        val mount = field("Orientation (${MountOrientation.MODES.joinToString(", ")})", s.orientation, false)
         val dry = CheckBox(this).apply { text = "Dry run (macro should not submit)"; isChecked = s.dryRun; form.addView(this) }
         val tcp = CheckBox(this).apply { text = "TCP listener on port ${s.tcpPort}"; isChecked = s.tcpEnabled; form.addView(this) }
         val stopped = CheckBox(this).apply { text = "Stopped-vehicle heuristic (experimental)"; isChecked = s.stoppedVehicle; form.addView(this) }
@@ -192,6 +239,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
                     video = video.text.toString().trim().ifEmpty { s.video },
                     targetPackage = target.text.toString().trim(),
                     zoomCrop = zoom.text.toString().trim(),
+                    orientation = mount.text.toString().trim().lowercase().takeIf { it in MountOrientation.MODES } ?: s.orientation,
                     dryRun = dry.isChecked,
                     tcpEnabled = tcp.isChecked,
                     stoppedVehicle = stopped.isChecked,
@@ -223,7 +271,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
 
     override fun onStatus(status: String) {
         statusText.text = status
-        if (status == "model missing") overlay.message = "model missing - see README"
+        if (status.startsWith("model missing")) overlay.message = "model missing - see README"
     }
 
     companion object {

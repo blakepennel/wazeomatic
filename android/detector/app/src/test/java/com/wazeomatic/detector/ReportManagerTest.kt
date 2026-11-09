@@ -65,8 +65,20 @@ class ReportManagerTest {
     }
 
     @Test
+    fun defaultGlobalCooldownMatchesTheMacroAndCountsWhatItHoldsBack() {
+        assertEquals(60.0, ReportConfig().globalCooldownS, 0.0)   // the macro: one report a minute in total
+        val m = rm(ReportConfig(minHits = 1))
+        assertEquals(1, m.update(listOf(det("pothole", 0.7f))).size)
+        repeat(5) { assertTrue(m.update(listOf(det("cone", 0.7f))).isEmpty()) }
+        assertEquals(1, m.heldBack)                               // once, not once per frame
+        now += 61
+        assertEquals(1, m.update(listOf(det("cone", 0.7f))).size)
+        assertEquals(1, m.heldBack)
+    }
+
+    @Test
     fun globalCooldownBetweenDifferentTypes() {
-        val m = rm()
+        val m = rm(ReportConfig(globalCooldownS = 5.0))
         val out = (1..3).flatMap { m.update(listOf(det("dog"), det("pothole", 0.7f))) }
         // both qualify on frame 3, but only one event per 5 s globally
         assertEquals(1, out.size)
@@ -207,6 +219,15 @@ class ReportManagerTest {
         for (i in 0 until 3) assertTrue(m.update(listOf(det("cone", 0.8f)), frameIndex = i).isEmpty())
         var ev: List<HazardEvent> = emptyList()
         for (i in 3 until 6) ev = m.update(listOf(det("construction_sign", 0.5f)), frameIndex = i)
+        assertEquals(1, ev.size)
+    }
+
+    @Test
+    fun perLabelFloorNeverLowersMinConfidence() {
+        val m = rm(ReportConfig(minConfidence = 0.6f, minConfidenceByLabel = mapOf("pothole" to 0.45f), globalCooldownS = 0.0))
+        for (i in 0 until 6) assertTrue(m.update(listOf(det("pothole", 0.5f)), frameIndex = i).isEmpty())
+        var ev: List<HazardEvent> = emptyList()
+        for (i in 6 until 9) ev = m.update(listOf(det("pothole", 0.65f)), frameIndex = i)
         assertEquals(1, ev.size)
     }
 
