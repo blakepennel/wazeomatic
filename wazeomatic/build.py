@@ -128,8 +128,11 @@ def build_hazard_detector(spec: DetectorSpec):
     members = []
     for p in spec.hazard_models:
         if not p.exists():
-            print(f"[warn] hazard model not found at {p}; skipped", file=sys.stderr)
-            continue
+            # running on with the COCO model alone looks like clean footage: none of the hazard
+            # classes can fire. Asked for a hazard model and it is not there -> stop.
+            raise SystemExit(f"hazard model not found: {p}\n"
+                             f"  models are not committed; see models/README.md for how to build them, "
+                             f"or pass --no-hazard to run the stock COCO detector alone")
         det = OnnxDetector(p, labels_for(p, spec.hazard_labels), f"hazard:{p.stem}", spec.conf, spec.iou,
                            threads=spec.threads)
         if spec.zoom_crop:

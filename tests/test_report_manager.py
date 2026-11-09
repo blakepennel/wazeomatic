@@ -72,6 +72,19 @@ def test_cooldown_per_type_and_global():
     assert len(rm.update([det("pothole")])) == 1
 
 
+def test_default_global_cooldown_matches_the_macro_and_counts_what_it_holds_back():
+    from wazeomatic.report_manager import ReportConfig
+    assert ReportConfig().global_cooldown_s == 60.0     # the macro: one report a minute in total
+    rm, clock = make(window=10, min_hits=1)
+    assert len(rm.update([det("pothole")])) == 1
+    for _ in range(5):                                  # a cone qualifies on five frames in the window
+        assert rm.update([det("cone")]) == []
+    assert rm.held_back == 1                            # counted once, not once per frame
+    clock.advance(61)
+    assert len(rm.update([det("cone")])) == 1
+    assert rm.held_back == 1
+
+
 def test_unmapped_labels_ignored():
     rm, _ = make(window=10, min_hits=1)
     assert rm.update([det("toothbrush"), det("car")]) == []

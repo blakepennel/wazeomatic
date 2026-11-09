@@ -20,7 +20,7 @@ Examples
     python tools/eval_events.py                                  # full val split, default model
     python tools/eval_events.py --limit 60                       # quick: 60 images per source
     python tools/eval_events.py --sweep --limit 40 --camera-sim
-    python tools/eval_events.py --model models/hazard_yolo11n_320.int8.onnx --data F:/dev/datasets/wazeomatic_hazards_640
+    python tools/eval_events.py --model models/hazard_yolo11s_v3.onnx --limit 120 --zoom-crop
     python tools/eval_events.py --skip-videos --skip-boxes       # events only
     python tools/eval_events.py --ensemble-model models/hazard_yolo11n_416.onnx --zoom-crop --track-iou 0.3
 
@@ -45,11 +45,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running fr
 
 from wazeomatic.build import DetectorSpec, add_detector_args, build_detectors, build_hazard_detector  # noqa: E402
 from wazeomatic.fusion import parse_class_thresholds  # noqa: E402
-from wazeomatic.report_manager import ReportConfig, ReportManager  # noqa: E402
+from wazeomatic.report_manager import ReportConfig, ReportManager, default_label_floor_spec  # noqa: E402
 from wazeomatic.schema import DEFAULT_CLASS_TO_HAZARD, Detection  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA = Path("F:/dev/datasets/wazeomatic_hazards")
+from wazeomatic.paths import merged_dataset  # noqa: E402
+
+DEFAULT_DATA = merged_dataset()
 SIZE_BUCKETS = (("small", 0.0, 24.0), ("medium", 24.0, 64.0), ("large", 64.0, float("inf")))
 BUCKET_NAMES = tuple(b[0] for b in SIZE_BUCKETS) + ("all",)
 # Known dataset source prefixes, longest first so "pothole_ivcnz" wins over "pothole".
@@ -525,8 +527,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--window", type=int, default=10)
     ap.add_argument("--report-conf", type=float, default=0.40)
     ap.add_argument("--cooldown", type=float, default=60.0)
-    ap.add_argument("--global-cooldown", type=float, default=5.0)
-    ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")
+    ap.add_argument("--global-cooldown", type=float, default=60.0)
+    ap.add_argument("--report-class-conf", default=default_label_floor_spec(),
+                    help="per-label hit floors for the report manager, e.g. cone=0.55 "
+                         "(default: the shipped floors; pass an empty string for none)")
     ap.add_argument("--track-iou", type=float, default=0.0, help="> 0: spatial tracking in the report manager")
     ap.add_argument("--track-grow", type=float, default=1.5)
     ap.add_argument("--no-auto-hood", action="store_true",
@@ -535,13 +539,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_class_to_hazard(classes_yaml: Path) -> dict[str, str]:
-    import yaml
+    from wazeomatic.schema import load_class_to_hazard as _load
 
-    m = dict(DEFAULT_CLASS_TO_HAZARD)
-    if classes_yaml.exists():
-        cfg = yaml.safe_load(classes_yaml.read_text(encoding="utf-8")) or {}
-        m.update(cfg.get("hazard_map", {}))
-    return m
+    return _load(classes_yaml)
 
 
 def main(argv=None) -> int:

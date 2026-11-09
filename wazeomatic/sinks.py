@@ -94,10 +94,14 @@ class TcpSink:
 
 
 class AdbBroadcastSink:
-    """``adb shell am broadcast -a com.wazeomatic.HAZARD_DETECTED --es hazard_type ...``"""
+    """``adb shell am broadcast -a com.wazeomatic.HAZARD_DETECTED --es hazard_type ...``
+
+    ``dry_run`` defaults to True like every other sender: the macro then stops before the final
+    Report tap whatever its own DRY_RUN variable says. A live broadcast has to be asked for.
+    """
 
     def __init__(self, adb: str = "adb", serial: Optional[str] = None, package: Optional[str] = None,
-                 dry_run: bool = False):
+                 dry_run: bool = True):
         self.adb, self.serial, self.package, self.dry_run = adb, serial, package, dry_run
 
     def command(self, ev: HazardEvent) -> list[str]:
@@ -108,7 +112,11 @@ class AdbBroadcastSink:
         if self.package:
             cmd += ["-p", self.package]
         for k, v in ev.intent_extras().items():
-            cmd += ["--es", k, v]
+            # adb joins the arguments into one remote shell line, where an empty string vanishes and
+            # shifts everything after it (waze_subcategory is empty for Police, Crash and plain
+            # Hazard). A missing extra reads as empty on the receiving side, so leave it out.
+            if v != "":
+                cmd += ["--es", k, v]
         cmd += ["--es", "dry_run", "true" if self.dry_run else "false"]
         return cmd
 
@@ -162,7 +170,7 @@ def build_sinks(specs: list[str], **kw) -> list:
             sinks.append(TcpSink(host or "127.0.0.1", int(port or 8765)))
         elif kind == "adb":
             sinks.append(AdbBroadcastSink(adb=kw.get("adb", "adb"), serial=arg or None,
-                                          package=kw.get("package"), dry_run=kw.get("dry_run", False)))
+                                          package=kw.get("package"), dry_run=kw.get("dry_run", True)))
         elif kind in ("http", "https"):
             sinks.append(HttpSink(s, method=kw.get("http_method", "POST")))
         else:

@@ -63,6 +63,9 @@ class PipelineStats:
     infer_ms: list = field(default_factory=list)      # summed model time per frame (compute)
     latency_ms: list = field(default_factory=list)    # wall time of one process() call
     started: float = field(default_factory=time.time)
+    ended: str = "running"            # completed | interrupted | error
+    held_back: int = 0                # hazards that qualified during another report's cooldown
+    error: str = ""                   # what stopped the run when ended == "error"
 
     def summary(self) -> dict:
         ms = sorted(self.infer_ms)
@@ -73,9 +76,12 @@ class PipelineStats:
 
         wall = time.time() - self.started
         return {
+            "ended": self.ended,
+            "error": self.error,
             "frames": self.frames,
             "detections": self.detections,
             "events": self.events,
+            "held_back": self.held_back,
             "infer_ms_mean": round(sum(ms) / len(ms), 2) if ms else 0.0,
             "infer_ms_p50": round(pct(ms, 0.5), 2),
             "infer_ms_p90": round(pct(ms, 0.9), 2),
@@ -129,6 +135,7 @@ class Pipeline:
         self.stats.frames += 1
         self.stats.detections += len(dets)
         self.stats.events += len(events)
+        self.stats.held_back = self.manager.held_back
         self.stats.infer_ms.append(ms)
         now = time.time()
         self.recent_events += [(now, e) for e in events]
@@ -155,8 +162,13 @@ class Pipeline:
         try:
             for frame in source:
                 self.process(frame)
+            self.stats.ended = "completed"
         except KeyboardInterrupt:
-            pass
+            self.stats.ended = "interrupted"
+        except Exception as e:  # noqa: BLE001 - a dead source or model must end up in the stats,
+            # not be mistaken for the end of the clip; callers check stats.error
+            self.stats.ended = "error"
+            self.stats.error = f"{type(e).__name__}: {e}"
         finally:
             self.close()
         return self.stats

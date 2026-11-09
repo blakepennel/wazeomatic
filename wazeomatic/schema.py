@@ -112,3 +112,29 @@ class HazardEvent:
             "waze_category": self.waze.waze_category,
             "waze_subcategory": self.waze.waze_subcategory,
         }
+
+
+def load_class_to_hazard(classes_yaml=None, warn=None) -> dict[str, str]:
+    """DEFAULT_CLASS_TO_HAZARD plus the ``hazard_map`` of configs/classes.yaml.
+
+    A hazard key that is not in HAZARD_TYPES is dropped with a warning, the same rule as the phone
+    app (Settings.kt): a typo in the YAML must not surface as a KeyError at the first event,
+    hours into a run.
+    """
+    import sys
+    from pathlib import Path
+
+    m = dict(DEFAULT_CLASS_TO_HAZARD)
+    path = Path(classes_yaml) if classes_yaml else None
+    if path is not None and path.exists():
+        import yaml
+
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for label, key in (cfg.get("hazard_map") or {}).items():
+            if key in HAZARD_TYPES:
+                m[str(label)] = key
+            else:
+                msg = f"[warn] {path.name}: unknown hazard key {key!r} for class {label!r}; mapping ignored"
+                (warn or (lambda t: print(t, file=sys.stderr)))(msg)
+                m.pop(str(label), None)
+    return m

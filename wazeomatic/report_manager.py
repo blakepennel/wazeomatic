@@ -30,6 +30,12 @@ from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45}
 
 
+def default_label_floor_spec() -> str:
+    """The shipped per-label floors as a CLI string (``"pothole=0.45"``): the default value of
+    ``--report-class-conf`` so the command-line tools run the same operating point as the phone."""
+    return ",".join(f"{k}={v:g}" for k, v in DEFAULT_LABEL_FLOORS.items())
+
+
 @dataclass
 class ReportConfig:
     window: int = 10                 # inference frames considered
@@ -46,7 +52,10 @@ class ReportConfig:
     hood_frac: float = 0.10          # ignore boxes whose bottom edge is in the lowest 10 % of the frame
                                      # (the car's own hood / dashboard reflection looks like a pothole)
     cooldown_s: float = 60.0         # per hazard type
-    global_cooldown_s: float = 5.0   # between any two events
+    global_cooldown_s: float = 60.0  # between any two events. The macro files at most one report a
+                                     # minute in total (docs/pipeline-to-macro.md), so anything sent
+                                     # sooner would be dropped there unseen; holding it back here
+                                     # keeps the loss visible (ReportManager.held_back)
     class_to_hazard: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_CLASS_TO_HAZARD))
     # stopped-vehicle heuristic
     stopped_vehicle_enabled: bool = False
@@ -102,6 +111,10 @@ class ReportManager:
         self._last_global_ts = -1e9
         self._frame = 0
         self._hood_frac_dynamic = 0.0
+        # hazards that qualified while another type's report held the global cooldown, counted once
+        # per hazard type per cooldown window: reports the driver would have expected and did not get
+        self.held_back = 0
+        self._held: set[str] = set()
 
     # ------------------------------------------------------------------ public
     def update(self, detections: Iterable[Detection], frame_index: Optional[int] = None,
@@ -136,9 +149,12 @@ class ReportManager:
                 continue
             if now - tr.last_emitted_ts < self.cfg.cooldown_s:
                 continue
-            if now - self._last_global_ts < self.cfg.global_cooldown_s:
-                continue
             if hazard == "HAZARD_SHOULDER_CAR_STOPPED" and not self._stopped_vehicle_confirmed(tr):
+                continue
+            if now - self._last_global_ts < self.cfg.global_cooldown_s:
+                if hazard not in self._held:
+                    self._held.add(hazard)
+                    self.held_back += 1
                 continue
             _, conf, bbox, label = max(hits, key=lambda h: h[1])
             ev = HazardEvent(hazard_type=hazard, confidence=conf, source=self.source, ts=now,
@@ -146,6 +162,7 @@ class ReportManager:
             events.append(ev)
             tr.last_emitted_ts = now
             self._last_global_ts = now
+            self._held.clear()
             tr.hits.clear()
             tr.tracklets.clear()
         return events

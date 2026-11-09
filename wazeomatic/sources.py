@@ -58,6 +58,10 @@ class CameraSim:
         return img
 
 
+class SourceError(RuntimeError):
+    """The frame source stopped for a reason other than reaching its end."""
+
+
 class VideoSource:
     """Iterate frames of a video file at a fixed step (every ``step``-th frame)."""
 
@@ -91,10 +95,12 @@ class VideoSource:
             while True:
                 ok = self.cap.grab()
                 if not ok:
+                    self._check_complete(idx)
                     break
                 if idx % self.step == 0:
                     ok, img = self.cap.retrieve()
                     if not ok:
+                        self._check_complete(idx)
                         break
                     if self.sim is not None:
                         img = self.sim(img)
@@ -107,6 +113,12 @@ class VideoSource:
                 return
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
+    def _check_complete(self, idx: int) -> None:
+        """A decoder that gives up well before the container's frame count hit a corrupt or
+        truncated file. Containers are often a few frames off, so allow a small margin."""
+        if self.frame_count and idx < self.frame_count - max(5, int(0.02 * self.frame_count)):
+            raise SourceError(f"{self.path}: decoding stopped at frame {idx} of {self.frame_count}")
+
     def release(self) -> None:
         self.cap.release()
 
@@ -115,9 +127,12 @@ class CameraSource:
     """Webcam / capture device by index (desktop or Raspberry Pi USB camera)."""
 
     def __init__(self, index: int = 0, width: int = 1280, height: int = 720, step: int = 1,
-                 sim: Optional[CameraSim] = None, max_frames: Optional[int] = None):
+                 sim: Optional[CameraSim] = None, max_frames: Optional[int] = None,
+                 max_read_failures: int = 50):
         self.cap = cv2.VideoCapture(index)
         self.max_frames = max_frames
+        self.index = index
+        self.max_read_failures = max_read_failures
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if not self.cap.isOpened():
@@ -136,10 +151,19 @@ class CameraSource:
         t0 = time.time()
         idx = 0
         emitted = 0
+        misses = 0
         while True:
             ok, img = self.cap.read()
             if not ok:
-                return
+                # a camera has no end of stream: one dropped frame is normal (USB hiccup, virtual
+                # camera restart), a long run of them means the device is gone
+                misses += 1
+                if misses > self.max_read_failures:
+                    raise SourceError(f"camera {self.index} delivered no frame {misses} times in a row "
+                                      f"after {idx} frames")
+                time.sleep(0.02)
+                continue
+            misses = 0
             if idx % self.step == 0:
                 if self.sim is not None:
                     img = self.sim(img)
@@ -170,6 +194,7 @@ class Prefetch:
         self._done = object()
         self._thread = threading.Thread(target=self._run, name="prefetch", daemon=True)
         self._started = False
+        self._error: Optional[BaseException] = None
 
     def __getattr__(self, name):  # width, height, fps, effective_fps, frame_count ...
         return getattr(self.source, name)
@@ -180,6 +205,8 @@ class Prefetch:
                 if self._stop.is_set():
                     break
                 self._q.put(fr)
+        except BaseException as e:  # noqa: BLE001 - handed to the consumer, which re-raises it
+            self._error = e
         finally:
             self._q.put(self._done)
 
@@ -190,6 +217,10 @@ class Prefetch:
         while True:
             item = self._q.get()
             if item is self._done:
+                if self._error is not None:
+                    # the source died on the background thread; ending the iteration quietly
+                    # would make a broken run look like a finished one
+                    raise SourceError(f"frame source failed: {self._error!r}") from self._error
                 return
             yield item
 

@@ -4,7 +4,7 @@ Examples
     python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4
     python -m wazeomatic.run_video clip.mp4 --camera-sim --show --record runs/sim/out.mp4
     python -m wazeomatic.run_video clip.mp4 --sink tcp:192.168.1.20:8765        # to the phone app
-    python -m wazeomatic.run_video clip.mp4 --sink adb --adb-dry-run            # straight to emulator
+    python -m wazeomatic.run_video clip.mp4 --sink adb                          # straight to emulator (dry_run=true)
     python -m wazeomatic.run_video 0 --camera                                    # webcam / Pi camera
     python -m wazeomatic.run_video clip.mp4 --ensemble-model models/hazard_yolo11n_416.onnx --zoom-crop \
         --track-iou 0.3 --class-conf cone=0.5                                    # fused + tracked
@@ -16,14 +16,13 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
 
 from .build import DetectorSpec, add_detector_args, build_detectors
 from .fusion import parse_class_thresholds
 from .hood import HoodEstimator
 from .pipeline import Pipeline
-from .report_manager import ReportConfig, ReportManager
-from .schema import DEFAULT_CLASS_TO_HAZARD
+from .report_manager import ReportConfig, ReportManager, default_label_floor_spec
+from .schema import load_class_to_hazard
 from .sinks import build_sinks
 from .sources import CameraSim, CameraSource, Prefetch, VideoSource
 
@@ -48,8 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--window", type=int, default=10)
     ap.add_argument("--report-conf", type=float, default=0.40)
     ap.add_argument("--cooldown", type=float, default=60.0)
-    ap.add_argument("--global-cooldown", type=float, default=5.0)
-    ap.add_argument("--report-class-conf", help="per-label hit floors for the report manager, e.g. cone=0.55")
+    ap.add_argument("--global-cooldown", type=float, default=60.0,
+                    help="seconds between any two events (the macro files at most one report a minute)")
+    ap.add_argument("--report-class-conf", default=default_label_floor_spec(),
+                    help="per-label hit floors for the report manager, e.g. cone=0.55 "
+                         "(default: the shipped floors; pass an empty string for none)")
     ap.add_argument("--track-iou", type=float, default=0.0,
                     help="> 0: hits must come from boxes overlapping frame to frame (spatial tracking)")
     ap.add_argument("--track-grow", type=float, default=1.5, help="box growth factor for the tracking IoU test")
@@ -63,7 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="stdout | jsonl:<path> | tcp:<host>[:port] | adb[:<serial>] | http:<url> (repeatable)")
     ap.add_argument("--adb", default="adb")
     ap.add_argument("--adb-package", help="explicit target package for the broadcast, e.g. com.arlosoft.macrodroid")
-    ap.add_argument("--adb-dry-run", action="store_true", help="set dry_run=true on broadcast events")
+    ap.add_argument("--adb-live", action="store_true",
+                    help="send dry_run=false on adb broadcasts (the macro may then file a real report if "
+                         "its own DRY_RUN is off too); without it every broadcast carries dry_run=true")
+    ap.add_argument("--adb-dry-run", action="store_true",
+                    help="accepted for old command lines; dry run is already the default")
     # output
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--record", help="write annotated video here")
@@ -74,17 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
-    cls_path = Path(args.classes)
-    cls_cfg = yaml.safe_load(cls_path.read_text(encoding="utf-8")) if cls_path.exists() else {}
-    class_to_hazard = dict(DEFAULT_CLASS_TO_HAZARD)
-    class_to_hazard.update((cls_cfg or {}).get("hazard_map", {}))
+    class_to_hazard = load_class_to_hazard(args.classes)
 
     if args.zoom_crop is None and not args.no_zoom:
         args.zoom_crop = "0.25,0.35,0.75,0.75"  # the measured operating point: zoom pass on
     spec = DetectorSpec.from_args(args)
     detectors = build_detectors(spec)
     if not detectors:
-        raise SystemExit("no models available; run tools/export_onnx.py first")
+        raise SystemExit("no models available; see models/README.md for how to get or build them")
     print(f"[info] detectors: {spec.describe()}", file=sys.stderr)
 
     cfg = ReportConfig(window=args.window, min_hits=args.min_hits, min_confidence=args.report_conf,
@@ -94,7 +97,9 @@ def main(argv=None) -> int:
                        class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
     manager = ReportManager(cfg, source=args.event_source)
     hood = None if args.no_auto_hood else HoodEstimator(min_frac=args.hood_frac)
-    sinks = build_sinks(args.sink or ["stdout"], adb=args.adb, package=args.adb_package, dry_run=args.adb_dry_run)
+    if args.adb_live and args.adb_dry_run:
+        raise SystemExit("--adb-live and --adb-dry-run contradict each other")
+    sinks = build_sinks(args.sink or ["stdout"], adb=args.adb, package=args.adb_package, dry_run=not args.adb_live)
 
     sim = None
     if args.camera_sim:
@@ -122,6 +127,10 @@ def main(argv=None) -> int:
     if args.stats_json:
         Path(args.stats_json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.stats_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if stats.error:
+        # a dead camera or a decoder error must not look like the end of the clip
+        print(f"[error] run ended early: {stats.error}", file=sys.stderr)
+        return 1
     return 0
 
 
