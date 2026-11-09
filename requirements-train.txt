@@ -1,4 +1,12 @@
-# Training / export extras (needs a CUDA torch install first, see requirements.txt)
-ultralytics>=8.3
+# Training, ONNX export and the dataset tools (on top of requirements.txt).
+#   pip install -r requirements.txt -r requirements-train.txt -c constraints.txt
+# pip pulls a CPU build of torch, which is enough for tools/export_onnx.py. For training install a
+# CUDA build first:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+ultralytics>=8.3              # tools/train.py, tools/export_onnx.py
 onnxsim>=0.4
-onnxruntime-tools>=1.7
+onnxruntime-tools>=1.7        # tools/quantize_onnx.py
+requests>=2.31                # tools/fetch_argoverse_hazards.py
+huggingface_hub>=0.23         # tools/fetch_rdd2022_potholes.py, tools/fetch_datasets.py
+pyarrow>=15                   # StarLine annotations (tools/prepare_datasets.py)
+pandas>=2.1                   # tools/fetch_argoverse_hazards.py, tools/argoverse_to_yolo.py
+av2>=0.3                      # Argoverse 2 camera models (tools/argoverse_to_yolo.py)

@@ -28,7 +28,12 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-AV2 = Path("F:/dev/datasets/argoverse2")
+import sys  # noqa: E402
+
+sys.path.insert(0, str(ROOT))
+from wazeomatic.paths import datasets_root  # noqa: E402
+
+AV2 = datasets_root() / "argoverse2"
 CAMERA = "ring_front_center"
 CLASS_MAP = {"CONSTRUCTION_CONE": "cone", "CONSTRUCTION_BARREL": "delineator"}
 

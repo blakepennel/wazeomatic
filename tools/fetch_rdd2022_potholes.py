@@ -6,7 +6,7 @@ CC BY-SA 4.0, cite arXiv:2209.08538). We only need the images that contain a pot
 a fifth of the set, so this script downloads the label files first, picks the images with a
 class-3 box and fetches just those.
 
-    python tools/fetch_rdd2022_potholes.py                 # -> F:/dev/datasets/rdd2022_full
+    python tools/fetch_rdd2022_potholes.py                 # -> <datasets>/rdd2022_full
     python tools/fetch_rdd2022_potholes.py --max-images 3000 --workers 8
 
 Afterwards tools/prepare_datasets.py --sources ... rdd2022_full merges them (class 3 -> pothole,
@@ -20,7 +20,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 REPO = "dronefreak/RDD2022"
-DEFAULT_OUT = Path("F:/dev/datasets/rdd2022_full")
+import sys  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from wazeomatic.paths import datasets_root  # noqa: E402
+
+DEFAULT_OUT = datasets_root() / "rdd2022_full"
 
 
 def main() -> None:

@@ -28,7 +28,10 @@ import requests
 
 BUCKET = "https://s3.amazonaws.com/argoverse"
 PREFIX = "datasets/av2/sensor"
-OUT = Path("F:/dev/datasets/argoverse2")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from wazeomatic.paths import datasets_root  # noqa: E402
+
+OUT = datasets_root() / "argoverse2"
 NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 CAMERA = "ring_front_center"
 

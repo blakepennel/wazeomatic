@@ -41,8 +41,13 @@ from pathlib import Path
 import cv2
 import yaml
 
+import sys  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running from the repo without installing
+from wazeomatic.paths import datasets_root, merged_dataset  # noqa: E402,F401
+
 ROOT = Path(__file__).resolve().parents[1]
-DATASETS = Path("F:/dev/datasets")
+DATASETS = datasets_root()   # WAZEOMATIC_DATASETS, configs/local.yaml or <repo>/datasets; --datasets overrides
 
 SRC = {
     "pothole_ivcnz": DATASETS / "pothole_ivcnz" / "Pothole Dataset",
@@ -367,9 +372,30 @@ def check(source: str, n: int = 6) -> None:
     print(f"wrote {k} samples to {out}")
 
 
+def write_train_yaml(out: Path, data: dict, val_subset: int) -> None:
+    """data_train.yaml: the same set, but validation on a fixed random subset of the val split
+    (val_subset.txt) so the check after every epoch stays quick. tools/train.py uses it by default;
+    tools/eval_events.py reads the full data.yaml."""
+    train_yaml = dict(data)
+    val_imgs = sorted(p.name for p in (out / "images" / "val").glob("*.jpg"))
+    if val_subset and len(val_imgs) > val_subset:
+        subset = sorted(random.Random(1).sample(val_imgs, val_subset))
+        base = str(out).replace("\\", "/")
+        (out / "val_subset.txt").write_text("".join(f"{base}/images/val/{n}\n" for n in subset), encoding="utf-8")
+        train_yaml["val"] = "val_subset.txt"
+    (out / "data_train.yaml").write_text(yaml.safe_dump(train_yaml, sort_keys=False), encoding="utf-8")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(DATASETS / "wazeomatic_hazards"))
+    ap.add_argument("--datasets", help="folder holding the source datasets (default: see wazeomatic/paths.py)")
+    ap.add_argument("--out", help="output folder (default: <datasets>/wazeomatic_hazards_v3)")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="skip sources that are not on disk instead of stopping (the result is then a different, "
+                         "smaller dataset than the shipped model was trained on)")
+    ap.add_argument("--val-subset", type=int, default=3000,
+                    help="size of the fixed random val subset written to val_subset.txt for per-epoch validation "
+                         "(data_train.yaml points at it; 0 = use the whole val split)")
     ap.add_argument("--sources", nargs="+", default=list(READERS), choices=list(READERS))
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--max-side", type=int, default=1280)
@@ -398,7 +424,19 @@ def main() -> None:
     ARGOVERSE_STRIDE = max(1, args.argoverse_stride)
     tile_sizes = {kv.split("=")[0]: int(kv.split("=")[1]) for kv in args.tile_size}
     classes = load_classes()
-    out = Path(args.out)
+    if args.datasets:
+        base = Path(args.datasets)
+        for k, v in list(SRC.items()):
+            SRC[k] = base / v.relative_to(DATASETS)
+    else:
+        base = DATASETS
+    out = Path(args.out) if args.out else base / "wazeomatic_hazards_v3"
+    missing = [s for s in args.sources if not SRC[s].exists()]
+    if missing and not args.allow_missing:
+        lines = "\n".join(f"  {s}: {SRC[s]}" for s in missing)
+        raise SystemExit(f"source dataset(s) not found:\n{lines}\n"
+                         f"fetch them with tools/fetch_datasets.py (see docs/model-research.md, Datasets), "
+                         f"point --datasets / WAZEOMATIC_DATASETS at the right folder, or pass --allow-missing")
     if args.clean and out.exists():
         shutil.rmtree(out)
     rng = random.Random(args.seed)
@@ -455,12 +493,15 @@ def main() -> None:
         "names": {i: c for i, c in enumerate(classes)},
     }
     (out / "data.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_train_yaml(out, data, args.val_subset)
     grand = Counter()
     for c in totals.values():
         grand.update(c)
     print("images per split:", dict(per_split))
     print("boxes per class:", dict(grand))
-    print("wrote", out / "data.yaml")
+    print("wrote", out / "data.yaml", "and", out / "data_train.yaml")
+    if not per_split:
+        raise SystemExit("no images were written; check the source folders")
 
 
 if __name__ == "__main__":

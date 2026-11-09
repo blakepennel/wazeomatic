@@ -1,7 +1,10 @@
-"""Fine-tune YOLO11n on the merged hazard dataset.
+"""Fine-tune a YOLO11 model on the merged hazard dataset.
 
-    python tools/train.py                       # defaults: 416 px, 60 epochs, batch 32
-    python tools/train.py --imgsz 320 --epochs 40 --name hazard320
+    python tools/train.py --name hazard_v3n                      # defaults: yolo11n, 640 px, 40 epochs, batch 32
+    python tools/train.py --model yolo11s.pt --batch 24 --name hazard_v3s
+
+Put the dataset on an SSD (WAZEOMATIC_DATASETS or configs/local.yaml): from a hard disk the data
+loader starves the GPU.
 
 Expects the dataset produced by tools/prepare_datasets.py (data yaml path below).
 Checkpoints land in runs/train/<name>/weights/{best,last}.pt; export them with
@@ -10,18 +13,22 @@ tools/export_onnx.py.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # allow running from the repo without installing
+from wazeomatic.paths import datasets_root, merged_dataset  # noqa: E402,F401
+
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA = Path("F:/dev/datasets/wazeomatic_hazards/data.yaml")
+DEFAULT_DATA = merged_dataset() / "data_train.yaml"
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=str(DEFAULT_DATA))
     ap.add_argument("--model", default="yolo11n.pt", help="starting weights (COCO pretrained)")
-    ap.add_argument("--imgsz", type=int, default=416)
-    ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument("--imgsz", type=int, default=640)
+    ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--name", default="hazard")
     ap.add_argument("--device", default="0")

@@ -35,7 +35,12 @@ def main() -> int:
         mp4 = OUT / f"{name}.mp4"
         if not ogv.exists() and not mp4.exists():
             print(f"downloading {name} from {page}")
-            urllib.request.urlretrieve(url, ogv)
+            # Wikimedia answers 403 to requests without a descriptive User-Agent
+            req = urllib.request.Request(url, headers={"User-Agent": "wazeomatic-fetch/1.0 (test clip download)"})
+            tmp = ogv.with_suffix(".part")
+            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            tmp.replace(ogv)
         if not mp4.exists():
             if not ffmpeg:
                 print("ffmpeg not found; keeping .ogv (OpenCV can read it, Android cannot)", file=sys.stderr)

@@ -33,3 +33,6 @@ Thumbs.db
 
 # stray checkpoints downloaded by ultralytics
 /*.pt
+
+# machine-specific paths (wazeomatic/paths.py)
+configs/local.yaml

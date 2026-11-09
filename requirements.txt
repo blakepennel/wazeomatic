@@ -1,5 +1,6 @@
-# Desktop pipeline (inference + simulation). Install torch separately for training:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# Desktop pipeline: inference, simulation, evaluation and the tests.
+#   pip install -r requirements.txt -c constraints.txt
+# constraints.txt holds the versions everything was last tested with; leave it out to take the newest.
 numpy>=1.26
 opencv-python>=4.9
 onnxruntime>=1.18
