@@ -80,7 +80,7 @@ Since the 2024 redesign the Hazard tile opens a flat list: Construction, Car on 
 | Type | Broadcast (`sendBroadcast`), no category, no data URI |
 | Extras (all strings) | `hazard_type`, `confidence` (3 dp), `ts` (3 dp), `source`, `waze_category`, `waze_subcategory`, `dry_run` (`"true"`/`"false"`) |
 
-All extras are strings because MacroDroid stores them in string variables. `dry_run` is added by the sender (detector app setting; `run_video --sink adb --adb-dry-run` on the desktop); the other extras come from `HazardEvent.intent_extras()`.
+All extras are strings because MacroDroid stores them in string variables. `dry_run` is added by the sender, and every sender defaults it to `"true"`: the detector app's `dry_run` setting is on by default, and `run_video --sink adb` on the desktop sends `dry_run=true` unless `--adb-live` is given (`--adb-dry-run` is still accepted for old command lines and changes nothing). The other extras come from `HazardEvent.intent_extras()`.
 
 Test from a PC without the detector app:
 
@@ -127,17 +127,21 @@ https://trigger.macrodroid.com/<device-id>/<identifier>?hazard_type=HAZARD_ON_RO
 
 ## Fallback 2: Pi to phone over TCP
 
-For the Pi variant the phone app runs a TCP server on port **8765**. The Pi connects as a client and writes one event per line (newline-delimited JSON, the format above, `source` = `pi`). The phone app parses each line, validates `schema` and `hazard_type`, and sends the same broadcast, so the macro is unchanged. Both devices must be on the same network (phone hotspot works). Desktop equivalent: `python -m wazeomatic.run_video <clip> --sink tcp:<phone-ip>:8765 --event-source pi`.
+For the Pi variant the phone app runs a TCP server on port **8765**. The Pi connects as a client and writes one event per line (newline-delimited JSON, the format above, `source` = `pi`). The phone app parses each line, rejects an unknown `hazard_type` (the `schema` field is read but not checked), and sends the same broadcast with its own `dry_run` setting, so the macro is unchanged. Both devices must be on the same network (phone hotspot works). Desktop equivalent: `python -m wazeomatic.run_video <clip> --sink tcp:<phone-ip>:8765 --event-source pi`.
 
 ## Cooldown responsibilities
 
 | Rule | Where | Why |
 |------|-------|-----|
-| 3 hits in 10 frames, conf >= 0.45 | Pipeline | Ignore single-frame flicker |
-| Boxes touching the bottom 10 % of the frame ignored | Pipeline | The car's own bonnet reflection is not a pothole |
+| 3 hits in 10 frames, each with conf >= 0.40; a per-label floor can raise that (pothole 0.45) | Pipeline | Ignore single-frame flicker; potholes are the noisiest class |
+| Boxes whose bottom edge is in the hood zone ignored (learnt from the picture, at least the bottom 10 % of the frame) | Pipeline | The car's own bonnet or dashboard is not a pothole |
 | Same hazard type at most once per 60 s | Pipeline | Do not report one pothole repeatedly |
-| Any events at least 5 s apart | Pipeline | Give the macro time to finish a tap sequence |
+| Any two events at least 60 s apart | Pipeline | Match the macro's guard, so nothing is sent that the macro would drop |
 | One report per minute, Waze in foreground | Macro | Avoid Waze rate limits; never tap in another app |
+
+For a label with a floor the higher of the floor and the general 0.40 applies, so a floor can only raise the bar. The defaults are the same in `wazeomatic/report_manager.py` and the app's `ReportManager.kt`.
+
+The pipeline's global cooldown used to be 5 s. The macro files at most one report per minute in total, so a second hazard type that qualified inside that minute was broadcast and then dropped by the macro without a trace. The global cooldown is now 60 s, the same as the macro's guard: such a hazard is not sent, and it is counted instead (`held_back` in the `run_video` stats, `heldBack` in the app), once per hazard type per cooldown window.
 
 Both sides guard independently, so a fault on one side cannot cause a burst of reports.
 

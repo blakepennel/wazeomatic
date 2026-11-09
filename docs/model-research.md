@@ -4,10 +4,12 @@ Goal: a detector that runs on a Pixel 9 Pro alongside Waze, uses well under 1 GB
 
 ## Decision
 
-- **Model:** Ultralytics YOLO11n, fine-tuned on hazard classes, plus a stock COCO YOLO11n for vehicles and animals.
+- **Model:** Ultralytics YOLO11n, fine-tuned on six hazard classes (pothole, cone, construction_sign, delineator, barricade, worker), plus a stock COCO YOLO11n for vehicles and animals.
 - **Runtime:** ONNX Runtime everywhere. On Android, the XNNPACK execution provider on the CPU.
-- **Input size:** 416x416 on the phone, 320x320 as the fast option. Static shape export, opset 17, no NMS in the graph (NMS is done in our code).
-- **Precision:** fp32 plus a dynamically quantised int8 copy of each model.
+- **Input size:** 640 px for the hazard model, 416 px for the COCO model. The hazard model also runs on a zoom crop of the road ahead (two-pass zoom). Static shape export, opset 17, no NMS in the graph (NMS is done in our code).
+- **Precision:** fp32. The six-class model has no int8 copy and no 320 or 416 px export; the int8 and smaller files measured below belong to the earlier four-class models and the stock COCO model.
+
+The sections under "Measured results" are a dated record of how this was reached, starting from a 416 px four-class model. The current defaults are summarised at the [end of this page](#current-defaults-2026-11-09).
 
 ## Candidate models
 
@@ -53,7 +55,7 @@ Since the Report Manager needs 3 hits in 10 frames, even 3–5 inferences/s conf
 
 ## Datasets
 
-All datasets are stored on the lead's machine under `F:\dev\datasets` and are not committed.
+The datasets are not committed. Every tool resolves the datasets folder the same way (`wazeomatic/paths.py`): the `WAZEOMATIC_DATASETS` environment variable, else `datasets:` in `configs/local.yaml` (git-ignored), else `<repo>/datasets`. `python tools/fetch_datasets.py` downloads the archive-based sources (1 to 5 and 7 below) into the layout `tools/prepare_datasets.py` reads; `--list` shows each source's size, licence and whether it is already on disk. The complete RDD2022 pothole images and Argoverse 2 (6) are filtered while downloading and keep their own scripts (`tools/fetch_rdd2022_potholes.py`, `tools/fetch_argoverse_hazards.py`).
 
 | # | Dataset | Source | Licence | Size | Used for |
 |---|---------|--------|---------|------|----------|
@@ -67,7 +69,7 @@ All datasets are stored on the lead's machine under `F:\dev\datasets` and are no
 | - | UK Road DashCam | [aap9002/UK-Road-DashCam](https://huggingface.co/datasets/aap9002/UK-Road-DashCam) | MIT | 4K Nextbase front-camera clips, 3 min each; two converted to 1080p in `assets/videos/uk_dashcam_002_1080p.mp4` and `..._006_...` | hazard-free real footage for the false-report rate (overcast, suburban and rural, dashboard in the bottom 15 %) |
 | - | Argoverse 2 clips | as 6 | CC BY-NC-SA 4.0 | two full-rate (20 Hz) val logs encoded as video: `assets/videos/argo_02678d04_clean.mp4` (no hazards labelled) and `assets/videos/labelled/argo_2ff4f798_workzone.mp4` (120 cone/barrel tracks) | real-sequence false-report rate and a real work-zone event check |
 
-Gaps: **police** has no adequate open dataset (the only Hugging Face set found had 8 images), so it is deferred. **Crash** is deferred for the same reason. Pothole positives are mostly from dataset 1 (close-up, varied cameras); dataset 2 adds US street-level context but only 86 pothole boxes, so its value is mainly as negatives. Barrels (drums) have no labelled source yet; they will usually be picked up as `cone` or `delineator`, which map to the same Waze report.
+Gaps: **police** has no adequate open dataset (the only Hugging Face set found had 8 images), so it is deferred. **Crash** is deferred for the same reason. Pothole positives come from dataset 1 (close-up, varied cameras), from the pothole images of the complete RDD2022 release (7,440 images, 10,702 pothole boxes, added in the small-object pass below) and from dataset 7; dataset 2 adds US street-level context but only 86 pothole boxes, so its value is mainly as negatives. Barrels (drums) are labelled as `delineator` since the v3 set (ROADWork drums, Argoverse barrels).
 
 ## Class schema and Waze mapping
 
@@ -76,27 +78,34 @@ Defined in `wazeomatic/schema.py`; model classes in `configs/classes.yaml`.
 | Model class | Model | hazard_type | Waze path (schema.py) | Sprint 1 |
 |-------------|-------|-------------|------------------------|----------|
 | pothole | hazard | `HAZARD_ON_ROAD_POTHOLE` | Hazard > Pothole | yes |
-| cone, construction_sign, delineator | hazard | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction | yes |
+| cone, construction_sign, delineator, barricade, worker | hazard | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction | yes (barricade and worker since the v3 model) |
 | dog, horse, sheep, cow, bear | COCO | `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype; Waze removed Animals) | yes |
 | car, truck, bus + heuristic | COCO | `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder | experimental, off |
 | (none yet) | | `HAZARD_ON_ROAD_OBJECT` | Hazard > Object | no |
-| police_vehicle | hazard | `POLICE` | Police | deferred |
+| (none) | | `POLICE` | Police | deferred |
 | (none) | | `CRASH` | Crash | deferred |
+
+The hazard model has six classes, in the order pothole, cone, construction_sign, delineator, barricade, worker (`configs/classes.yaml`, `models/hazard_yolo11n.labels.txt`). No model has a police class; `schema.py` keeps a spare `police_vehicle` -> `POLICE` mapping for a future one.
 
 **Menu names:** since the 2024 redesign Waze lists the hazard subtypes Construction, Car on shoulder, Broken traffic light, Pothole and Object directly under Report > Hazard, with Hazard preselected ([Waze Help](https://support.google.com/waze/answer/13739290?hl=en)); Animals/Roadkill were removed, so animals go out as a plain Hazard. The `waze_subcategory` strings in `schema.py` follow this flat layout. The `hazard_type` keys are the contract and never change; the macro and the mock app tap by on-screen label.
 
-## Training and evaluation plan
+## Training and evaluation procedure
 
-1. `python tools/prepare_datasets.py`: convert VOC/parquet to YOLO txt using the class order in `configs/classes.yaml`, keep up to 1,500 crack-only RDD images with empty labels as hard negatives, downscale images to 1280 px, random 85/15 train/val split (StarLine keeps its own session-based split), write `F:\dev\datasets\wazeomatic_hazards\data.yaml`. `--check <source>` renders labelled samples to `runs/dataset_check/` to verify box conventions.
-2. `python tools/train.py`: fine-tune `yolo11n.pt` at 416 px (no vertical flips, mild rotation/shear, HSV jitter for exposure, mosaic off for the last 10 epochs, cosine LR).
-3. `python tools/export_onnx.py --weights runs/train/hazard/weights/best.pt --imgsz 416` (and `--imgsz 320`); `--coco` for the stock model.
-4. `python tools/quantize_onnx.py <model>`: ONNX Runtime dynamic int8 quantisation, written as `*.int8.onnx`.
-5. `python tools/bench_onnx.py <models...> --threads 4`: mean/p50/p90 ms per frame as a markdown table; `--compare <clip>` measures fp32 vs int8 agreement on real frames.
-6. Evaluate mAP50 per class on the held-out split, then run both test videos through `wazeomatic.run_video` and count events against a hand-labelled list of hazards in each clip.
+This is the procedure as the tools work now. Install the training dependencies first: `pip install -r requirements.txt -r requirements-train.txt -c constraints.txt` (`constraints.txt` holds the tested versions; training needs a CUDA build of torch, see the comment in `requirements-train.txt`).
 
-Acceptance for sprint 2: pothole and cone mAP50 >= 0.5, no more than one false event per test clip, phone latency under 100 ms per frame.
+1. **Fetch.** `python tools/fetch_datasets.py` downloads what is missing of the six archive-based sources (`pothole_ivcnz`, `rdd2022_us`, `cone_voc`, `starline`, `roadwork`, `pothole_ryukijano`; about 23 GB), `--only <source ...>` picks some, `--list` shows sizes, licences and what is on disk. Two sources have their own scripts: `python tools/fetch_rdd2022_potholes.py`, and for Argoverse 2 `python tools/fetch_argoverse_hazards.py --stage annotations`, `python tools/fetch_argoverse_hazards.py --stage images --logs 100 --every 4`, then `python tools/argoverse_to_yolo.py`.
+2. **Prepare.** `python tools/prepare_datasets.py` converts every source to YOLO txt using the class order in `configs/classes.yaml`, keeps up to 1,500 crack-only RDD images with empty labels as hard negatives, and makes a random 85/15 train/val split for sources without their own (StarLine keeps its session-based split, ROADWork its GPS-based split, Argoverse its log-level split). Output goes to `<datasets>/wazeomatic_hazards_v3` (`--out` and `--datasets` override). It stops when a source folder is missing; `--allow-missing` builds a smaller set from what is there. It writes `data.yaml`, plus `data_train.yaml` and `val_subset.txt`: the same set with a fixed 3,000-image subset of the val split for the check after every epoch. Without `--tile` large images are downscaled to 1280 px; the v3 set described below was tiled: `--tile 1024 --tile-sources starline roadwork argoverse --tile-size roadwork=1080 --tile-size argoverse=1280` (ROADWork and Argoverse also keep the downscaled full frame by default). `--check <source>` renders labelled samples to `runs/dataset_check/` to verify box conventions.
+3. **Train.** `python tools/train.py --name hazard_v3n` fine-tunes `yolo11n.pt` on `<datasets>/wazeomatic_hazards_v3/data_train.yaml` at 640 px for 40 epochs with batch 32 (no vertical flips, mild rotation/shear, HSV jitter for exposure, mosaic off for the last 10 epochs, cosine LR). The small model: `python tools/train.py --model yolo11s.pt --batch 24 --name hazard_v3s`. Keep the dataset on an SSD. The shipped nano was not trained from the COCO weights but continued from the earlier 640c checkpoint (`--model <640c best.pt> --lr0 0.005 --close-mosaic 8`, see below), so a run with the defaults will not reproduce its numbers exactly.
+4. **Export.** `python tools/export_onnx.py --weights runs/train/hazard_v3n/weights/best.pt --name hazard_yolo11n_v3 --ship` writes `models/hazard_yolo11n_v3.onnx` (640 px, opset 17, static shape, no NMS) and its labels file, and copies both to the stable name `models/hazard_yolo11n.onnx` that the desktop pipeline and the Android build load. Without `--ship` only `models/<name>.onnx` is written; without `--name` the name is `hazard_<arch>_<imgsz>` with the architecture read from the checkpoint (for example `hazard_yolo11s_640`). `--ship` refuses a checkpoint that is not a YOLO11n unless `--force` is given. The small model: `--weights runs/train/hazard_v3s/weights/best.pt --name hazard_yolo11s_v3`. The stock model: `python tools/export_onnx.py --coco` (416 px, refreshes `models/coco_yolo11n.onnx`).
+5. **Evaluate.** `python tools/eval_events.py` scores a model on the v3 val split by default (box AP by object size, report events on synthetic clips, false reports on the hazard-free clips in `assets/videos/`) with the shipped report floors; it takes the same detector flags as `run_video.py`. The v3 tables below used `--zoom-crop --limit 120 --frames 8 --seed 1`. Then replay the test videos with `python -m wazeomatic.run_video`.
+
+`tools/quantize_onnx.py` (ONNX Runtime dynamic int8) and `tools/bench_onnx.py` (mean/p50/p90 ms per frame, `--compare <clip>` for fp32 vs int8 agreement) produced the size and latency tables below. They are not part of the shipped path: no int8 copy of the six-class model is exported.
+
+The acceptance line written in sprint 1 for sprint 2 was: pothole and cone mAP50 >= 0.5, no more than one false event per test clip, phone latency under 100 ms per frame. Measured against the v3 nano on the v3 val subset (tables below): cone AP50 0.513, met; pothole AP50 0.394, not met (the first 416 px model reached 0.56 on its own, much smaller and easier validation split, so the two figures are not comparable); false events 0 across 5 clips and 12 minutes, met; phone latency not measured yet.
 
 ## Measured results
+
+The subsections below are in the order the work happened and are kept as a dated record. "Shipped", "default" and the thresholds named in each one are those of that date; where they differ from today, the [current defaults](#current-defaults-2026-11-09) at the end apply.
 
 Desktop numbers: AMD Ryzen 7 9800X3D, onnxruntime CPU provider, 4 intra-op threads (phone-like). Emulator and Pixel numbers come from the detector app's latency readout.
 
@@ -162,8 +171,8 @@ Why the first model missed cones: in the StarLine source the cones are a median 
 
 What changed:
 
-1. `prepare_datasets.py --tile 1024` cuts the StarLine frames into 1024 px tiles at native resolution (stride 896, boxes kept when 60 % visible, 8 % of empty tiles kept as negatives): cone boxes 8k -> 22.6k, delineator 13k -> 24k. Dataset `F:/dev/datasets/wazeomatic_hazards_640`, validation = StarLine test-session tiles plus the other sources' validation images (5,167 images).
-2. Training at 640 px (`train.py --imgsz 640 --batch 16`; about 1.2 min per epoch on the RTX 5070 Ti once the disk cache is warm). Run `hazard640` early-stopped at epoch 27; run `hazard640b` fine-tuned it for 25 epochs at lr0 0.002 with mosaic off for the last 8. `hazard640b` is the model shipped as `models/hazard_yolo11n.onnx`.
+1. `prepare_datasets.py --tile 1024` cuts the StarLine frames into 1024 px tiles at native resolution (stride 896, boxes kept when 60 % visible, 8 % of empty tiles kept as negatives): cone boxes 8k -> 22.6k, delineator 13k -> 24k. Dataset `<datasets>/wazeomatic_hazards_640`, validation = StarLine test-session tiles plus the other sources' validation images (5,167 images).
+2. Training at 640 px (`train.py --imgsz 640 --batch 16`; about 1.2 min per epoch on the RTX 5070 Ti once the disk cache is warm). Run `hazard640` early-stopped at epoch 27; run `hazard640b` fine-tuned it for 25 epochs at lr0 0.002 with mosaic off for the last 8. `hazard640b` was the model shipped as `models/hazard_yolo11n.onnx` at that point (kept as `models/hazard_yolo11n_640b.onnx`).
 3. The pothole images of the complete RDD2022 release (all six countries, 7,440 images, 10,702 pothole boxes, CC BY-SA 4.0, mirror dronefreak/RDD2022, `tools/fetch_rdd2022_potholes.py`) were added for a third run (`hazard640c`); see the note at the end of this section.
 4. Two-pass zoom inference (`ZoomDetector`, `run_video.py --zoom-crop`, `zoom_crop` launch extra of the Android app): each model runs on the full frame and again on the middle 50 % x 35-75 % of the frame (the road ahead, above the hood zone); boxes are mapped back and merged with per-class NMS. On a 1280x720 frame with a 640 px model the crop pass sees the road at full resolution, so a 20 px cone becomes 40 px to the network, for one extra inference per model and frame.
 
@@ -177,7 +186,7 @@ Box metrics on the tiled validation split (IoU 0.5, detector conf 0.25; `runs/ev
 | delineator | 0.09 | 0.21 |
 | all, boxes < 24 px | 0.10 | 0.13 (recall 0.30 vs 0.17) |
 
-Report events on synthetic 12-frame clips from the same images (Report Manager defaults: 3 hits in 10 frames, min confidence 0.45):
+Report events on synthetic 12-frame clips from the same images (Report Manager defaults at the time: 3 hits in 10 frames, min confidence 0.45):
 
 | Hazard type | 416 model P / R / F1 | 640b model P / R / F1 |
 |-------------|----------------------|------------------------|
@@ -188,7 +197,7 @@ Hazard-free clips (both models + COCO, every 3rd frame, clean and camera-degrade
 
 Cost: hazard model alone on the desktop 5.4 ms at 416 vs 11.3 ms at 640 (fp32, 4 threads). On the Pixel 9 Pro emulator in live camera mode (x86 host under load) the full stack was hazard 23 ms + zoom 24 ms + COCO 18 ms + zoom 13 ms at 4.4 FPS; the real phone number is still pending.
 
-Run `hazard640c` (fine-tune of 640b on the set with the full RDD2022 potholes, 30 epochs, lr0 0.005, mosaic off for the last 8) is the model shipped as `models/hazard_yolo11n.onnx` since 2026-11-06. Scored on the enlarged validation split (7,360 images, now including 2,193 RDD2022 pothole images; `runs/eval/stage2_640b_val2` vs `stage3_640c_val2`, same split for both):
+Run `hazard640c` (fine-tune of 640b on the set with the full RDD2022 potholes, 30 epochs, lr0 0.005, mosaic off for the last 8) was shipped as `models/hazard_yolo11n.onnx` on the morning of 2026-11-06, until the v3 model replaced it that afternoon. Scored on the enlarged validation split (7,360 images, now including 2,193 RDD2022 pothole images; `runs/eval/stage2_640b_val2` vs `stage3_640c_val2`, same split for both):
 
 | | 640b | 640c |
 |---|---|---|
@@ -229,7 +238,7 @@ Reading the numbers:
 
 #### Second and third batch: the 640c model, floors, zoom plus tracking, and the real clips
 
-Same subset and protocol as the table above (`runs/eval/ens_f*`, `ens_g*`); the pothole floor of 0.55 that now ships is applied in every `g` row. 640c is the model promoted to `models/hazard_yolo11n.onnx` on 2026-11-06 (RDD2022 potholes added to training).
+Same subset and protocol as the table above (`runs/eval/ens_f*`, `ens_g*`); the pothole floor of 0.55 that shipped with 640c is applied in every `g` row. 640c is the model promoted to `models/hazard_yolo11n.onnx` on the morning of 2026-11-06 (RDD2022 potholes added to training).
 
 | Stack | Report floor | Event P / R / F1 | Construction R (FP) | Pothole R (FP) | Model ms |
 |---|---|---|---|---|---|
@@ -262,7 +271,7 @@ What the clips taught us:
 - Report floor 0.35 is not safe on real footage even with the learnt hood zone (one false pothole at 99 s plus more cone hits); the floor stays at 0.45.
 - The two Commons clips are the same recording at two resolutions and encodings (identical dashboard, identical cone at 5.5 s), so the "4 x 120 s" above is really one two-minute drive, clean and degraded, twice. More and different footage is the most valuable thing the team can add before the real-phone drive.
 
-**Shipped operating point (2026-11-06):** 640c (`models/hazard_yolo11n.onnx`), zoom pass on, learnt hood zone on, detector threshold 0.35, report floor 0.45 with pothole 0.55, 3 hits in 10 frames, 60 s per-type and 5 s global cooldown, tracking off. On the desktop that is 29 ms of model time per frame. The phone app additionally fuses 640b (`hazard2.onnx`, WBF max) because the two run in parallel threads and the fused stack has the higher recall at the same false-event count; disable it with the `ensemble` setting on a phone where latency matters more than the extra recall. Spatial tracking stays available (`--track-iou`) but is off: it changed nothing on these clips because every false event came from one persistent object, which is exactly what tracking cannot reject.
+**Shipped operating point (2026-11-06, morning; superseded below):** 640c (`models/hazard_yolo11n.onnx`), zoom pass on, learnt hood zone on, detector threshold 0.35, report floor 0.45 with pothole 0.55, 3 hits in 10 frames, 60 s per-type and 5 s global cooldown, tracking off. On the desktop that is 29 ms of model time per frame. The phone app additionally fuses 640b (`hazard2.onnx`, WBF max) because the two run in parallel threads and the fused stack has the higher recall at the same false-event count; disable it with the `ensemble` setting on a phone where latency matters more than the extra recall. Spatial tracking stays available (`--track-iou`) but is off: it changed nothing on these clips because every false event came from one persistent object, which is exactly what tracking cannot reject.
 
 ### Data expansion and the v3 models (2026-11-06, afternoon)
 
@@ -345,9 +354,28 @@ the desktop pipeline takes it with `--hazard-model models/hazard_yolo11s_v3.onnx
 (alone). It is not the default because its Pixel 9 Pro latency is unmeasured; the nano with the zoom pass
 already costs two inferences per frame there.
 
-**Operating point after this pass:** v3 nano (`models/hazard_yolo11n.onnx` = `hazard_yolo11n_v3.onnx`,
+**Operating point after this pass (2026-11-06):** v3 nano (`models/hazard_yolo11n.onnx` = `hazard_yolo11n_v3.onnx`,
 six classes), zoom on, learnt hood zone, detector threshold 0.35, report floor **0.40** with pothole
 **0.45**, 3 hits in 10 frames, cooldowns 60 / 5 s. 0.35 was clean on the clips too, but twelve minutes of
 footage is a thin basis for the lowest setting; 0.40 keeps a margin and still lifts synthetic F1 above the
 0.45 point. The pothole floor comes down from 0.55 because the v3 model emits half as many weak pothole
 boxes on real roads and none of them survive three hits at 0.45.
+
+### Current defaults (2026-11-09)
+
+The same on the desktop (`ReportConfig`, `run_video.py`) and in the phone app (`Settings.kt`, `ReportManager.kt`) unless stated:
+
+| Setting | Value |
+|---|---|
+| Hazard model | v3 nano, `models/hazard_yolo11n.onnx` (a copy of `hazard_yolo11n_v3.onnx`), six classes, 640 px, fp32 |
+| COCO model | stock YOLO11n, `models/coco_yolo11n.onnx`, 416 px |
+| Zoom pass | on, crop `0.25,0.35,0.75,0.75`, hazard model only (`--zoom-coco` / `zoom_coco` adds the COCO model) |
+| Fusion | off: one hazard model ships. A second one (`--ensemble-model`, `-PhazardModel2=hazard_yolo11s_v3.onnx`) is fused with Weighted Boxes Fusion |
+| Hood zone | learnt from the picture, minimum 10 % of the frame height |
+| Detector box threshold | 0.35 on the desktop and in the app |
+| Report floor | 0.40; pothole 0.45 (the higher of the general floor and a label floor applies) |
+| Persistence | 3 hits in 10 inference frames |
+| Cooldowns | 60 s per hazard type and 60 s between any two events |
+| Spatial tracking | off (`track_iou` 0) |
+
+Two things changed after the 2026-11-06 pass. The global cooldown went from 5 s to 60 s so that it matches the macro's one report per minute; a hazard that qualifies during another report's cooldown is counted as held back instead of being sent and dropped by the macro ([pipeline-to-macro.md](pipeline-to-macro.md#cooldown-responsibilities)). And the pothole floor is now the default of the command-line tools as well as of the app (`--report-class-conf` defaults to `pothole=0.45`), so `run_video.py` and `tools/eval_events.py` run the shipped operating point without extra flags. The tables above were measured before these changes; the event tables use single-hazard synthetic clips and name their floors explicitly.

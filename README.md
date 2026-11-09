@@ -1,12 +1,14 @@
 <a name="top"></a>
 [![Wazeomatic: road hazards reported to Waze by your dashcam phone](docs/banner.svg)](#top)
 [![model](https://img.shields.io/badge/model-YOLO11n_%C2%B7_6_classes-B45309)](#numbers)
-[![runtime](https://img.shields.io/badge/runtime-ONNX_Runtime_1.20-005CED)](#phone)
+[![CI](https://github.com/blakepennel/wazeomatic/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blakepennel/wazeomatic/actions/workflows/ci.yml)
+[![runtime](https://img.shields.io/badge/runtime-ONNX_Runtime-005CED)](#phone)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776AB)](#desktop-simulator)
 [![android](https://img.shields.io/badge/android-Kotlin_%C2%B7_API_29%2B-3DDC84)](#phone)
-[![tests](https://img.shields.io/badge/tests-91_unit_%C2%B7_18_end--to--end-2EA043)](#development)
+[![tests](https://img.shields.io/badge/tests-154_unit_%C2%B7_21_end--to--end-2EA043)](#development)
 [![real Waze](https://img.shields.io/badge/real_Waze-dry_run_only-D73A49)](#safety)
 [![cloud](https://img.shields.io/badge/cloud-none-2EA043)](#safety)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **A phone mounted like a dashcam that watches the road, decides when it has really seen a pothole or a work
 zone, and taps through the Waze report menu for you. On-device detection, a report manager that wants proof
@@ -31,6 +33,7 @@ against a pixel-matched mock of Waze.**
 - [Layout](#layout)
 - [Development](#development)
 - [Documentation](#documentation)
+- [License](#license)
 
 ## About
 
@@ -42,8 +45,9 @@ that into the report:
   ahead for small distant hazards, and a hood zone that the app learns from the picture itself (the dashboard
   keeps sharp edges in a running average of the frames while the road blurs away). No server, no upload.
 - **It wants proof.** A hazard has to be seen in 3 of the last 10 inference frames above a per-class confidence
-  floor before it becomes an event, and each hazard type is reported at most once a minute. One event per real
-  hazard, none for a reflection in the windscreen.
+  floor before it becomes an event, and at most one report goes out per minute, the same limit the macro
+  enforces. A hazard that qualifies while another report holds that minute is counted as held back, not lost
+  without trace.
 - **The report is a broadcast.** The app sends `com.wazeomatic.HAZARD_DETECTED` with the Waze category and
   subtype as extras. A MacroDroid macro picks it up and presses the same tiles a person would.
 - **The desktop runs the same pipeline.** Box fusion, zoom, hood zone and the report manager exist once in Python
@@ -83,7 +87,7 @@ flowchart LR
     subgraph desk["Desktop"]
         SIM[run_video.py<br/><sub>the same pipeline in Python</sub>]
         EV[eval_events.py<br/><sub>box AP · event F1 · false reports on real clips</sub>]
-        EMU[Pixel 9 Pro emulator<br/><sub>mock Waze · 18 checks</sub>]
+        EMU[Pixel 9 Pro emulator<br/><sub>mock Waze · 21 checks</sub>]
     end
     CAM --> DET --> HOOD --> RM --> BC --> MD --> WZ
     SIM -. same code .- DET
@@ -110,22 +114,25 @@ the v3 small is one build flag away for a phone that can afford it.
 
 ## Desktop simulator
 
-Python 3.10 or newer:
+Python 3.10 or newer, and ffmpeg on the PATH for the clip download:
 
 ```powershell
 python -m venv .venv; .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-train.txt -c constraints.txt
 python tools/fetch_test_videos.py                      # CC0 dashcam clips into assets/videos/
 python tools/export_onnx.py --coco                     # the stock COCO model into models/
-python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --sink stdout --record runs/sim/out.mp4
+python -m wazeomatic.run_video assets/videos/dashcam_urban_1080p.mp4 --no-hazard --sink stdout --record runs/sim/out.mp4
 ```
 
-The hazard model is not committed: train it ([Training](#training)) or drop `hazard_yolo11n.onnx` and its
-`.labels.txt` into `models/`. Useful flags:
+That runs the whole pipeline with the stock COCO detector alone (`--no-hazard`). The hazard model's weights are
+not published, because two of its training sets do not allow it ([NOTICE.md](NOTICE.md)); build it with the
+steps under [Training](#training) and drop the `--no-hazard`. Without the flag a missing hazard model is an
+error, not a silent COCO-only run. `requirements.txt` alone is enough to run the pipeline and the tests once
+the models exist; the second file is needed for the export. Useful flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--sink adb --adb-dry-run` | Fire the broadcast on a connected phone or emulator with `dry_run=true` |
+| `--sink adb` | Fire the broadcast on a connected phone or emulator. It carries `dry_run=true` unless `--adb-live` is given |
 | `--sink tcp:<ip>:8765` | Feed events to the phone app over the network (the Raspberry Pi path) |
 | `--camera-sim` | Degrade frames to phone-camera quality before inference |
 | `--hazard-model models/hazard_yolo11s_v3.onnx` | Run the bigger model |
@@ -163,37 +170,49 @@ python tools/emulator/run_e2e.py --install --video-seconds 60
 ```
 
 Boots the emulator, installs both apps, rehearses the macro's taps, replays a clip through the detector and checks
-that every mock report traces back to a detector event: 18 checks. Setup and scripts are in
-[tools/emulator/README.md](tools/emulator/README.md).
+that every mock report traces back to a detector event: 21 checks. A check that could not run is a SKIP, and a
+run with a SKIP is INCOMPLETE rather than green. Setup, environment variables and the option that requires a
+real hazard class to cross the broadcast are in [tools/emulator/README.md](tools/emulator/README.md).
 
 ## Training
 
 ```powershell
-pip install -r requirements-train.txt                  # plus a CUDA build of torch
+pip install -r requirements.txt -r requirements-train.txt -c constraints.txt   # plus a CUDA build of torch to train
+$env:WAZEOMATIC_DATASETS = "D:\datasets"               # where 40 GB of data may live; default <repo>/datasets
+python tools/fetch_datasets.py --list                  # sources, sizes, licences, what is on disk
+python tools/fetch_datasets.py                         # the six archive-based sources (about 17 GB)
 python tools/fetch_rdd2022_potholes.py                 # RDD2022 potholes
 python tools/fetch_argoverse_hazards.py --stage annotations
 python tools/fetch_argoverse_hazards.py --stage images --logs 100 --every 4
 python tools/argoverse_to_yolo.py --check 6            # project the 3D cuboids, render a few frames to look at
-python tools/prepare_datasets.py --out C:/dev/datasets/wazeomatic_hazards_v3 --tile 1024 --tile-sources starline roadwork argoverse --tile-size roadwork=1080 --tile-size argoverse=1280
-python tools/train.py --data C:/dev/datasets/wazeomatic_hazards_v3/data_train.yaml --imgsz 640 --batch 32
-python tools/export_onnx.py --weights runs/train/hazard/weights/best.pt --imgsz 640
-python tools/eval_events.py --model models/hazard_yolo11n.onnx --data C:/dev/datasets/wazeomatic_hazards_v3 --limit 120 --zoom-crop --sweep
+python tools/prepare_datasets.py --tile 1024 --tile-sources starline roadwork argoverse --tile-size roadwork=1080 --tile-size argoverse=1280
+python tools/train.py --name hazard_v3n                # yolo11n, 640 px, 40 epochs
+python tools/export_onnx.py --weights runs/train/hazard_v3n/weights/best.pt --name hazard_yolo11n_v3 --ship
+python tools/eval_events.py --limit 120 --zoom-crop --sweep
 ```
 
-ROADWork and StarLine are downloaded by hand (the sources, licences and sizes are tabulated in
-[docs/model-research.md](docs/model-research.md)). Put the merged dataset on an SSD: from a hard disk the data
-loader starves the GPU.
+`prepare_datasets.py` stops if a source is missing rather than quietly building a smaller set. `--ship` is what
+makes an export the model the pipeline and the phone build load; without it only `models/<name>.onnx` is
+written. Sources, licences and sizes are tabulated in [docs/model-research.md](docs/model-research.md) and
+[NOTICE.md](NOTICE.md). Put the merged dataset on an SSD: from a hard disk the data loader starves the GPU.
 
 ## Safety
 
-- **Dry run by default.** The macro's `DRY_RUN` variable stops it one tap before Report, and the desktop and
-  emulator sinks send `dry_run=true`. The mock Waze exists so that the whole loop can be tested without the real app.
+- **Dry run by default, on every sender.** The macro's `DRY_RUN` variable stops it one tap before Report. The
+  phone app and the desktop adb sink both send `dry_run=true` unless told otherwise, and either switch alone is
+  enough to stop a live report. The mock Waze exists so that the whole loop can be tested without the real app.
 - **Nothing leaves the phone.** Inference, the report manager and the broadcast are local. There is no account,
   no server and no telemetry in this repository.
-- **Reports are rate limited twice.** Once per hazard type per minute in the report manager, and again by the
-  macro's own one-per-minute rule.
+- **Reports are rate limited twice, by the same rule.** One report a minute in the report manager, and the
+  macro's own one-per-minute guard behind it.
+- **A run that dies says so.** A dead camera, a decoder error or a missing model ends the run with an error and
+  a non-zero exit instead of looking like quiet road. On the phone the status line shows a stalled pipeline and
+  a battery restriction.
+- **Measured in daylight only.** Night, rain and wet roads are unmeasured, and the pin lands where the phone is
+  when the sheet sends, not where the hazard was. Both are spelled out in
+  [docs/responsible-use.md](docs/responsible-use.md).
 - **What is not handled yet.** The report manager has no notion of place: a cone in a parking garage is still a
-  cone. That, and a real drive with the phone, are the open items in [docs/sprint1.md](docs/sprint1.md).
+  cone. That, and a real drive with the phone, lead the plan in [docs/sprint2.md](docs/sprint2.md).
 
 ## Layout
 
@@ -202,7 +221,7 @@ loader starves the GPU.
 | `wazeomatic/` | Desktop pipeline: schema, ONNX detectors, box fusion, hood estimator, report manager, video runner |
 | `android/detector/` | Phone app: CameraX, video or TCP source; the same pipeline in Kotlin; broadcast sender |
 | `android/mockwaze/` | Mock Waze with the 2024 report flow and an auto-macro service, for tests only |
-| `tools/` | Dataset fetchers and builder, training, ONNX export and quantisation, benchmarks, event-level evaluation |
+| `tools/` | Dataset fetchers and builder, training, ONNX export and quantisation, benchmarks, event-level evaluation, macro self-test |
 | `tools/emulator/` | Pixel 9 Pro emulator scripts and the end-to-end suite |
 | `configs/` | Class schema and the mapping to Waze report types |
 | `android_setup/` | MacroDroid macro guide |
@@ -213,12 +232,15 @@ loader starves the GPU.
 ## Development
 
 ```powershell
-pip install -r requirements.txt -r requirements-train.txt
-python -m pytest -q tests                              # 51 tests
-cd android/detector; .\gradlew.bat testDebugUnitTest   # 40 tests, the Kotlin twins of the Python ones
+pip install -r requirements.txt -c constraints.txt
+python -m pytest -q tests                                          # 62 tests
+python -m unittest discover -s tools/emulator -p "test_*.py"       # 38 tests of the suite's own logic
+cd android/detector; .\gradlew.bat testDebugUnitTest               # 54 tests, the Kotlin twins of the Python ones
 ```
 
-The emulator suite above is the integration test. Everything a model decision rests on is a run folder under
+The same three run in CI on every push ([.github/workflows/ci.yml](.github/workflows/ci.yml)), on Linux and
+Windows, together with a debug build of both apps. The emulator suite above is the integration test and runs
+on a developer machine. Everything a model decision rests on is a run folder under
 `runs/eval/` with a `results.md`, and `tools/summarize_evals.py` tabulates them.
 
 ## Documentation
@@ -229,7 +251,16 @@ The emulator suite above is the integration test. Everything a model decision re
 | [model-research.md](docs/model-research.md) | Models, datasets and licences, class schema, every measured result |
 | [pipeline-to-macro.md](docs/pipeline-to-macro.md) | Event JSON, Intent contract, MacroDroid setup, fallbacks |
 | [simulation.md](docs/simulation.md) | Desktop simulator flags, emulator suite, dry-run testing |
-| [sprint1.md](docs/sprint1.md) | Sprint goals, what was delivered, what is open |
+| [sprint1.md](docs/sprint1.md) | Sprint 1 goals and what was delivered |
+| [sprint2.md](docs/sprint2.md) | Sprint 2 goal, backlog with acceptance criteria, risks |
+| [responsible-use.md](docs/responsible-use.md) | Dry-run rules, the Waze terms, what a wrong report costs, known limits |
+| [macro guide](android_setup/macro_setup_guide.md) | The MacroDroid macro, its trigger contract and the self-test |
+| [NOTICE.md](NOTICE.md) | Third-party software, dataset licences, why no weights are distributed |
 | [user-stories.md](docs/user-stories.md) | User stories with story points |
+
+## License
+
+The source code is under the [MIT licence](LICENSE). Models trained with it, the datasets and the tools it
+builds on keep their own terms, some of them non-commercial or copyleft: see [NOTICE.md](NOTICE.md).
 
 <p align="right"><a href="#top">Back to top</a></p>

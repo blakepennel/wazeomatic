@@ -1,7 +1,7 @@
 sequenceDiagram
     autonumber
     participant Src as Camera / video
-    participant Det as OnnxDetector (hazard + COCO)
+    participant Det as Detectors (hazard + COCO)
     participant RM as ReportManager
     participant App as Detector app
     participant MD as MacroDroid macro
@@ -9,12 +9,12 @@ sequenceDiagram
 
     loop every inference frame
         Src->>Det: frame (BGR)
-        Det->>Det: letterbox, ONNX Runtime, NMS
+        Det->>Det: letterbox, ONNX Runtime, NMS<br/>hazard model: full frame + zoom crop
         Det->>RM: detections (label, conf, bbox)
-        RM->>RM: map label to hazard_type, count hits in last 10 frames
+        RM->>RM: drop boxes in the hood zone, map label to hazard_type,<br/>count hits in last 10 frames
     end
 
-    alt 3+ hits at conf >= 0.45 and no cooldown active
+    alt 3+ hits at conf >= 0.40 (pothole 0.45) and no cooldown active
         RM->>App: HazardEvent (JSON)
         Note over RM,App: On phone: in-process. Pi variant: NDJSON over TCP :8765
         App->>MD: broadcast com.wazeomatic.HAZARD_DETECTED<br/>extras: hazard_type, confidence, ts, source, dry_run
@@ -30,5 +30,5 @@ sequenceDiagram
             end
         end
     else otherwise
-        RM->>RM: keep counting (per-type 60 s, global 5 s cooldown)
+        RM->>RM: keep counting (per-type 60 s, global 60 s cooldown)<br/>qualified during another report's cooldown: counted as held back
     end

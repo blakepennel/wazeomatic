@@ -20,3 +20,44 @@ any clicks.
 ## Usage:
 ***
 The Macro is performed automatically when it is called from the CV pipeline.
+
+## Trigger contract and self-test
+***
+The macro is started by a broadcast from the detector. The contract is fixed and specified in
+[docs/pipeline-to-macro.md](../docs/pipeline-to-macro.md); the parts the macro has to implement are:
+
+| Item | Value |
+|---|---|
+| Trigger | *Intent Received*, action `com.wazeomatic.HAZARD_DETECTED` |
+| Extras to save | `hazard_type` into the local variable ```hazard_type```, `dry_run` into ```dry_run_extra``` |
+| Global variable | boolean ```DRY_RUN```, default `true` |
+| Dry-run rule | if ```DRY_RUN``` is true **or** ```dry_run_extra``` is `true`: stop at the confirm sheet and tap Cancel, never Report |
+| Constraints | Waze in the foreground; at most one real report per minute |
+
+`hazard_type` values and the tiles they map to:
+
+| `hazard_type` | Taps after the report button |
+|---|---|
+| `HAZARD_ON_ROAD_POTHOLE` | Hazard, Pothole |
+| `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard, Construction |
+| `HAZARD_ON_ROAD_OBJECT` | Hazard, Object |
+| `HAZARD_SHOULDER_CAR_STOPPED` | Hazard, Car on shoulder |
+| `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype) |
+| `POLICE` | Police |
+| `CRASH` | Crash |
+
+The detector's six model classes (pothole, cone, construction sign, delineator, barricade, worker)
+only ever produce the first two values, so those two branches are the ones that matter first.
+
+To check the branches, open Waze with the phone connected over adb and run
+
+```
+python tools/macro_selftest.py
+```
+
+It sends every `hazard_type` in turn with `dry_run=true`, prints what the macro should do for each,
+and waits so the taps can be watched. It cannot send a live broadcast.
+
+Export the macro from MacroDroid (macro menu, *Share macro*, as a `.macro` file) and commit it here
+as `android_setup/wazeomatic.macro` whenever it changes, so that it can be imported, reviewed and
+compared against the contract. It is not in the repository yet.

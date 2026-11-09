@@ -8,14 +8,19 @@ flowchart LR
 
     subgraph Pipeline["Detection pipeline (phone app, desktop sim or Pi)"]
         direction TB
-        Prep["«component»<br/>Letterbox preprocessor<br/>416x416 RGB float"]
-        Hazard["«component»<br/>Hazard model<br/>YOLO11n ONNX"]
-        Coco["«component»<br/>COCO model<br/>YOLO11n ONNX"]
+        Prep["«component»<br/>Letterbox preprocessor<br/>to each model's input size"]
+        Hazard["«component»<br/>Hazard model, YOLO11n ONNX<br/>640 px, six classes<br/>full frame + zoom crop of the road ahead"]
+        Fuse["«optional»<br/>Weighted Boxes Fusion<br/>only with a second hazard model"]
+        Coco["«component»<br/>COCO model, YOLO11n ONNX<br/>416 px, full frame"]
+        Hood["«component»<br/>Hood zone estimator<br/>learnt dashboard band, min 10 %"]
         RM["«component»<br/>Report Manager<br/>persistence, cooldown, heuristics"]
         Prep --> Hazard
         Prep --> Coco
         Hazard --> RM
+        Hazard -. second model .-> Fuse
+        Fuse -.-> RM
         Coco --> RM
+        Hood -->|hood zone| RM
     end
 
     subgraph Delivery["Event delivery"]
@@ -36,6 +41,8 @@ flowchart LR
     Cam --> Prep
     Vid --> Prep
     PiCam -. Pi variant .-> Prep
+    Cam --> Hood
+    Vid --> Hood
     RM -->|HazardEvent| Bcast
     RM -. Pi variant .-> Tcp
     Tcp -->|forwarded by phone app| Bcast
@@ -46,8 +53,10 @@ flowchart LR
     Macro -.->|emulator tests| Mock
 
     classDef component fill:#edf4fc,stroke:#35577d,color:#142a42,stroke-width:1.5px;
+    classDef optional fill:#f7f7f7,stroke:#8a8a8a,color:#333333,stroke-dasharray: 4 3;
     classDef transport fill:#f5f0e6,stroke:#92754f,color:#453623;
     classDef external fill:#e9f5ef,stroke:#36755b,color:#173e2c;
-    class Cam,Vid,PiCam,Prep,Hazard,Coco,RM,Macro component;
+    class Cam,Vid,PiCam,Prep,Hazard,Coco,Hood,RM,Macro component;
+    class Fuse optional;
     class Bcast,Tcp,Hook transport;
     class Waze,Mock external;

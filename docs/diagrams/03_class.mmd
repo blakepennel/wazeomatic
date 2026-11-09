@@ -6,13 +6,28 @@ classDiagram
         +nextFrame() Frame
     }
     class CameraSource
-    class VideoFileSource
+    class VideoSource
     class OnnxDetector {
         +labels: List~String~
+        +size: Int
         +conf_thres: Float
         +iou_thres: Float
         +last_ms: Float
         +detect(frame) List~Detection~
+    }
+    class ZoomDetector {
+        +crop = 0.25, 0.35, 0.75, 0.75
+        +detect(frame) List~Detection~
+    }
+    class EnsembleDetector {
+        +fusion = wbf
+        +weights: List~Float~
+        +detect(frame) List~Detection~
+    }
+    class HoodEstimator {
+        +min_frac = 0.10
+        +max_frac = 0.40
+        +update(frame) Float
     }
     class Detection {
         +label: String
@@ -20,15 +35,24 @@ classDiagram
         +bbox: xywh normalized
         +model: String
     }
+    class Pipeline {
+        +process(frame) List~HazardEvent~
+        +run(source) PipelineStats
+    }
     class ReportConfig {
         +window = 10
         +min_hits = 3
-        +min_confidence = 0.45
+        +min_confidence = 0.40
+        +min_confidence_by_label = pothole 0.45
+        +hood_frac = 0.10
         +cooldown_s = 60
-        +global_cooldown_s = 5
+        +global_cooldown_s = 60
+        +track_iou = 0
         +stopped_vehicle_enabled = false
     }
     class ReportManager {
+        +held_back: Int
+        +set_hood_frac(frac)
         +update(detections, frame_index) List~HazardEvent~
     }
     class HazardType {
@@ -47,12 +71,14 @@ classDiagram
     }
     class EventSink {
         <<interface>>
-        +emit(event) void
+        +send(event) void
     }
     class BroadcastSink
     class TcpSink
     class StdoutSink
-    class AdbSink
+    class AdbBroadcastSink {
+        +dry_run = true
+    }
     class MacroDroidMacro {
         <<external>>
         +hazard_type: String
@@ -60,9 +86,16 @@ classDiagram
     }
 
     CameraSource ..|> FrameSource
-    VideoFileSource ..|> FrameSource
-    OnnxDetector --> FrameSource : reads
+    VideoSource ..|> FrameSource
+    Pipeline --> FrameSource : reads
+    Pipeline --> OnnxDetector : runs
+    Pipeline --> HoodEstimator
+    Pipeline --> ReportManager
+    Pipeline --> EventSink : sends
+    ZoomDetector --> OnnxDetector : full frame + crop
+    EnsembleDetector --> ZoomDetector : optional second hazard model
     OnnxDetector ..> Detection : creates
+    HoodEstimator ..> ReportManager : hood zone
     ReportManager --> ReportConfig
     ReportManager --> Detection : consumes
     ReportManager ..> HazardEvent : creates
@@ -70,6 +103,5 @@ classDiagram
     BroadcastSink ..|> EventSink
     TcpSink ..|> EventSink
     StdoutSink ..|> EventSink
-    AdbSink ..|> EventSink
-    ReportManager --> EventSink : emits
+    AdbBroadcastSink ..|> EventSink
     BroadcastSink ..> MacroDroidMacro : Intent
