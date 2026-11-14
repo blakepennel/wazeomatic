@@ -3,6 +3,7 @@
     python tools/eval_vehicle.py crops --model models/vehicle_cls.onnx
     python tools/eval_vehicle.py clips --model models/vehicle_cls.onnx --clips F:/dev/datasets/commons_videos
     python tools/eval_vehicle.py clips --clips assets/videos --expect none          # false reports on clean drives
+    python tools/eval_vehicle.py clips --hazard --clips F:/dev/datasets/argoverse2/clips   # every event type
 
 **crops** - precision / recall per class on ``<datasets>/vehicle_crops/val``, and for police the score
 threshold that keeps the civilian false-positive rate at 1 %, 0.3 % and 0.1 % of crops, with the police recall
@@ -66,6 +67,7 @@ def eval_crops(args) -> dict:
 
 def eval_clips(args) -> tuple[dict, int]:
     from wazeomatic.build import DetectorSpec, add_detector_args, add_scene_args, build_detectors, build_second_stage
+    from wazeomatic.hood import HoodEstimator
     from wazeomatic.pipeline import Pipeline
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import load_class_to_hazard
@@ -74,7 +76,8 @@ def eval_clips(args) -> tuple[dict, int]:
     ap = argparse.ArgumentParser()
     add_detector_args(ap)
     add_scene_args(ap)
-    dargs = ap.parse_args(["--no-hazard"] + (["--vehicle-model", args.model] if args.model else []) + args.extra)
+    dargs = ap.parse_args(([] if args.hazard else ["--no-hazard"]) +
+                          (["--vehicle-model", args.model] if args.model else []) + args.extra)
     spec = DetectorSpec.from_args(dargs)
     folder = Path(args.clips)
     clips = sorted(p for p in folder.rglob("*") if p.suffix.lower() in VIDEO_EXT)
@@ -96,8 +99,9 @@ def eval_clips(args) -> tuple[dict, int]:
         except Exception as e:  # noqa: BLE001
             results[clip.name] = {"error": str(e)}
             continue
+        # the learnt hood zone, as in run_video.py and the app: without it a dashboard vent can pass as a pothole
         pipe = Pipeline(dets, mgr, [], on_frame=on_frame, vehicle_classifier=vehicle, scene_classifier=weather,
-                        scene=scene)
+                        scene=scene, hood=HoodEstimator(min_frac=mgr.cfg.hood_frac))
         events = []
         mgr_update = mgr.update
 
@@ -121,7 +125,13 @@ def eval_clips(args) -> tuple[dict, int]:
         print(clip.name, json.dumps(results[clip.name]), flush=True)
     n = len([r for r in results.values() if "error" not in r])
     hit = sum(1 for r in results.values() if any(t.startswith(("POLICE", "CRASH")) for t in r.get("events", [])))
-    return {"clips": n, "clips_with_police_or_crash": hit, "per_clip": results}, bad
+    by_type: dict[str, int] = {}
+    for r in results.values():
+        for t in r.get("events", []):
+            by_type[t] = by_type.get(t, 0) + 1
+    minutes = round(sum(r.get("seconds", 0.0) for r in results.values()) / 60.0, 1)
+    return {"clips": n, "minutes": minutes, "clips_with_police_or_crash": hit, "events_by_type": by_type,
+            "per_clip": results}, bad
 
 
 def main() -> None:
@@ -131,11 +141,14 @@ def main() -> None:
     ap.add_argument("--data", help="crops: val folder")
     ap.add_argument("--clips", help="clips: folder of videos (searched recursively)")
     ap.add_argument("--step", type=int, default=3)
+    ap.add_argument("--hazard", action="store_true", help="clips: run the hazard model too (all scene rules)")
     ap.add_argument("--expect", choices=["none", "any"], help="clips: fail on any / on no police-crash event")
     ap.add_argument("--out", help="write the JSON result here")
-    ap.add_argument("extra", nargs=argparse.REMAINDER, help="clips: extra pipeline flags after --")
-    args = ap.parse_args()
-    args.extra = [a for a in args.extra if a != "--"]
+    argv = sys.argv[1:]
+    # pipeline flags go after a bare "--"; a REMAINDER positional would swallow --model and the rest too
+    extra = argv[argv.index("--") + 1:] if "--" in argv else []
+    args = ap.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
+    args.extra = extra
     if args.mode == "crops":
         args.model = args.model or "models/vehicle_cls.onnx"
         res, bad = eval_crops(args), 0

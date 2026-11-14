@@ -10,6 +10,8 @@ Sources (all under the datasets root):
   (largest box at least ``--dominant`` times the next one), so a line-up of cars cannot put a civilian car
   into the police folder.
 * ``openimages/Ambulance`` (tools/fetch_openimages.py): the annotated boxes themselves.
+* ``openimages/{Car,Taxi,Van}``: hand-held photos of ordinary vehicles as civilian, so that photo style alone
+  says nothing about the class.
 * ``bdd100k_weather`` (US dashcam frames): every vehicle the detector finds, as civilian negatives. A few of
   them are police cars; ``--exclude`` takes a list of crop names checked by hand and moved out of civilian
   (``tools/mine_vehicle_crops.py`` writes it).
@@ -38,7 +40,7 @@ from wazeomatic.paths import datasets_root  # noqa: E402
 
 VEHICLE_COCO = {2: "car", 5: "bus", 7: "truck"}
 CLASSES = ("civilian", "police", "ambulance", "fire")
-SOURCES = ("police", "ambulance", "fire", "civilian_hard", "openimages", "bdd", "mined")
+SOURCES = ("police", "ambulance", "fire", "civilian_hard", "openimages", "oi_civilian", "bdd", "mined")
 
 
 def split_of(key: str, val_frac: float) -> str:
@@ -110,6 +112,7 @@ def main() -> None:
     ap.add_argument("--degrade", type=int, default=2, help="degraded copies per train positive")
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--exclude", help="text file of civilian crop names to leave out (hand-checked police)")
+    ap.add_argument("--mined-repeat", type=int, default=6, help="extra copies of each hand-confirmed train crop")
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--sources", nargs="+", default=list(SOURCES), choices=list(SOURCES),
@@ -178,10 +181,43 @@ def main() -> None:
                 n += 1
         print(f"[openimages/{split_dir.name}] {n} ambulance boxes")
 
+    # ------------------------------------------------------------------ Open Images civilian photos
+    # Hand-held photos of ordinary cars, taxis and vans. Without them nearly every photo-style crop is an
+    # emergency vehicle and every dashcam crop civilian, and the classifier learns the camera, not the livery.
+    for oi_cls in ("Car", "Taxi", "Van") if "oi_civilian" in args.sources else ():
+        for split_dir in sorted((root / "openimages" / oi_cls).glob("*")):
+            bj = split_dir / "boxes.jsonl"
+            if not bj.exists():
+                continue
+            n = 0
+            for line in bj.read_text(encoding="utf-8").splitlines():
+                rec = json.loads(line)
+                big = [b for b in rec["boxes"] if not (b["group"] or b["depiction"])
+                       and (b["box"][2] - b["box"][0]) * (b["box"][3] - b["box"][1]) >= 0.02]
+                if not big:
+                    continue
+                im = cv2.imread(str(split_dir / rec["image"]))
+                if im is None:
+                    continue
+                big.sort(key=lambda b: -(b["box"][2] - b["box"][0]) * (b["box"][3] - b["box"][1]))
+                split = split_of(rec["image"], args.val_frac)
+                for k, b in enumerate(big[:2]):
+                    x1, y1, x2, y2 = b["box"]
+                    crop = square_crop(im, ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1), size=args.size)
+                    name = f"oc_{Path(rec['image']).stem}_{k}"
+                    wr.put(split, "civilian", name, crop)
+                    if split == "train" and k == 0:
+                        wr.put(split, "civilian", f"{name}_d0", degrade(crop, rng))
+                    n += 1
+            print(f"[openimages/{oi_cls}/{split_dir.name}] {n} civilian boxes")
+
     # ------------------------------------------------------------------ dashcam negatives
+    # exclude.txt lists hand-confirmed crops as bdd_<frame>_<k>; the k of the miner is not the k used here (the
+    # boxes are shuffled), so a whole frame with a confirmed police car / ambulance gives no civilian crops
     exclude = set()
     if args.exclude and Path(args.exclude).exists():
-        exclude = {ln.strip() for ln in Path(args.exclude).read_text(encoding="utf-8").splitlines() if ln.strip()}
+        exclude = {ln.strip().rsplit("_", 1)[0] for ln in Path(args.exclude).read_text(encoding="utf-8").splitlines()
+                   if ln.strip()}
     bdd = sorted((root / "bdd100k_weather" / "data" / "images").rglob("*.jpg")) if "bdd" in args.sources else []
     rng.shuffle(bdd)
     taken = 0
@@ -190,13 +226,13 @@ def main() -> None:
     for p, im, boxes in detect_vehicles(model, bdd, args.batch, 0.4):
         if taken >= args.negatives:
             break
+        if f"bdd_{p.stem}" in exclude:
+            continue
         h, w = im.shape[:2]
         boxes = [b for b in boxes if min(b[2] - b[0], b[3] - b[1]) >= args.neg_min_px]
         rng.shuffle(boxes)
         for k, b in enumerate(boxes[:per_frame]):
             name = f"bdd_{p.stem}_{k}"
-            if name in exclude:
-                continue
             crop = square_crop(im, to_xywhn(*b[:4], w, h), size=args.size)
             wr.put(split_of(p.stem, args.val_frac), "civilian", name, crop)
             taken += 1
@@ -212,6 +248,19 @@ def main() -> None:
             im = cv2.resize(im, (args.size, args.size))
             split = split_of(p.stem, args.val_frac)
             wr.put(split, cls, f"mn_{p.stem}", im)
+            if split == "train":
+                # few but in-domain: repeat them (degraded) so they weigh against thousands of photos
+                for k in range(args.mined_repeat):
+                    wr.put(split, cls, f"mn_{p.stem}_d{k}", degrade(im, rng) if k % 2 else cv2.flip(im, 1))
+    if "mined" in args.sources and exclude:
+        # BDD civilian crops already written from frames whose vehicle was confirmed by hand as police etc.
+        gone = 0
+        for split in ("train", "val"):
+            for f in (out / split / "civilian").glob("bdd_*.jpg"):
+                if f.stem.rsplit("_", 1)[0] in exclude:
+                    f.unlink()
+                    gone += 1
+        print(f"[mined] removed {gone} civilian crops from hand-confirmed frames")
     counts = {f"{s}/{c}": len(list((out / s / c).glob("*.jpg"))) for s in ("train", "val") for c in CLASSES}
     (out / "counts.json").write_text(json.dumps(counts, indent=1), encoding="utf-8")
     print(json.dumps({f"{s}/{c}": n for (s, c), n in sorted(wr.counts.items())}, indent=1))

@@ -1,6 +1,7 @@
 """Find police cars, ambulances and fire engines in dashcam frames for review by hand.
 
     python tools/mine_vehicle_crops.py scan --model models/vehicle_n.onnx        # score every BDD100K vehicle
+    python tools/mine_vehicle_crops.py rescore --model models/vehicle_v2.onnx      # re-rank with a newer model
     python tools/mine_vehicle_crops.py sheets --cls police --top 600              # numbered contact sheets
     python tools/mine_vehicle_crops.py label --cls police --yes 3,17,40-44 --sheet-range 0-599
 
@@ -81,6 +82,26 @@ def scan(args, root: Path, work: Path) -> None:
         print(f"[{c}] {len(v)} crops at or above {args.min_score}")
 
 
+def rescore(args, work: Path) -> None:
+    """Score the saved crops again with a newer classifier and re-sort every class list by it."""
+    clf = OnnxClassifier(args.model, threads=8)
+    for c in [c for c in clf.labels if c != "civilian"]:
+        f = work / f"{c}.json"
+        if not f.exists():
+            continue
+        items = json.loads(f.read_text(encoding="utf-8"))
+        for i in range(0, len(items), 128):
+            chunk = items[i:i + 128]
+            ims = [cv2.imread(str(work / "crops" / f"{it['name']}.jpg")) for it in chunk]
+            ok = [(it, im) for it, im in zip(chunk, ims) if im is not None]
+            probs = clf.predict([cv2.resize(im, (clf.size, clf.size), interpolation=cv2.INTER_AREA) for _, im in ok])
+            for (it, _), pr in zip(ok, probs):
+                it["score"] = float(pr[clf.labels.index(c)])
+        items.sort(key=lambda x: -x["score"])
+        f.write_text(json.dumps(items, indent=0), encoding="utf-8")
+        print(f"[{c}] {len(items)} crops rescored; {sum(it['score'] >= 0.5 for it in items)} at or above 0.5")
+
+
 def sheets(args, work: Path) -> None:
     items = json.loads((work / f"{args.cls}.json").read_text(encoding="utf-8"))[: args.top]
     cols, rows, cell = 8, 6, 160
@@ -105,6 +126,7 @@ def sheets(args, work: Path) -> None:
 def label(args, root: Path, work: Path) -> None:
     items = json.loads((work / f"{args.cls}.json").read_text(encoding="utf-8"))
     yes = parse_ranges(args.yes or "")
+    skip = parse_ranges(args.skip or "")
     lo, hi = (int(v) for v in args.sheet_range.split("-"))
     dst_yes = root / "mined_vehicles" / args.cls
     dst_no = root / "mined_vehicles" / "civilian"
@@ -116,7 +138,7 @@ def label(args, root: Path, work: Path) -> None:
     for i in range(lo, min(hi, len(items) - 1) + 1):
         it = items[i]
         src = work / "crops" / f"{it['name']}.jpg"
-        if not src.exists():
+        if not src.exists() or i in skip:
             continue
         if i in yes:
             (dst_yes / src.name).write_bytes(src.read_bytes())
@@ -131,7 +153,7 @@ def label(args, root: Path, work: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["scan", "sheets", "label"])
+    ap.add_argument("cmd", choices=["scan", "rescore", "sheets", "label"])
     ap.add_argument("--datasets")
     ap.add_argument("--work", help="default <datasets>/mining")
     ap.add_argument("--model", default="models/vehicle_cls.onnx")
@@ -145,11 +167,13 @@ def main() -> None:
     ap.add_argument("--yes", help="indices that ARE the class, e.g. 3,17,40-44")
     ap.add_argument("--sheet-range", default="0-479", help="indices reviewed; the rest of them become negatives")
     ap.add_argument("--only-yes", action="store_true", help="file only the confirmed ones")
+    ap.add_argument("--skip", help="indices too unclear to file either way")
     args = ap.parse_args()
     root = Path(args.datasets) if args.datasets else datasets_root()
     work = Path(args.work) if args.work else root / "mining"
     work.mkdir(parents=True, exist_ok=True)
-    {"scan": lambda: scan(args, root, work), "sheets": lambda: sheets(args, work),
+    {"scan": lambda: scan(args, root, work), "rescore": lambda: rescore(args, work),
+     "sheets": lambda: sheets(args, work),
      "label": lambda: label(args, root, work)}[args.cmd]()
 
 

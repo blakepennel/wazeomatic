@@ -1,0 +1,4 @@
+clear
+fog
+rain
+snow

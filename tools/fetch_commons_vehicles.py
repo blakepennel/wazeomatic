@@ -51,6 +51,13 @@ CLASSES: dict[str, list[tuple[str, int]]] = {
     "ambulance": [
         ("Ambulances in the United States", 4),
         ("Ambulances in Canada", 3),
+        # other countries' liveries: Battenberg and box-bodied ambulances were called police until these joined
+        ("Ambulances in the United Kingdom", 3),
+        ("Ambulances in Japan", 2),
+        ("Ambulances in Germany", 2),
+        ("Ambulances in France", 2),
+        ("Ambulances in Australia", 2),
+        ("Ambulances in the Netherlands", 2),
     ],
     "fire": [
         ("Fire engines of the United States", 4),
