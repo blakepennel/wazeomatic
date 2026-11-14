@@ -117,7 +117,8 @@ v4 at 128 px / v5 + v6 at 128 px / v5 + v6 at 160 px with two hits (ships):
 | Commons videos of other responders and emergency lighting (11 clips) | | 3 / 3 / 1 clips | 7 / 6 / 5 clips |
 
 The Police report among the other responders is "Toronto Police responding", a real police car. The two
-ambulance clips that get one (Edinburgh and Sendai) peak at 0.89 and 0.86, just over the floor.
+ambulance clips that get one are false: the box is a taxi in both, a dark Edinburgh private-hire car with a
+door badge (0.89) and a white Japanese taxi in Sendai (0.86).
 
 The police clips that stay silent show unmarked cars (a diplomatic convoy, black saloons), a car far away, or
 only a light bar at night. The CRASH events on the Commons clips are responders driving towards a camera that
