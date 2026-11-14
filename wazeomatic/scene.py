@@ -51,8 +51,8 @@ SCENE_COOLDOWNS: dict[str, float] = {
 
 # classifier class -> (scene label, probability threshold, hold seconds). Weather classes are bare (fog, rain,
 # snow), road-surface classes carry a ``surface_`` prefix (classifiers.RoadSurface). A key "a&b|c" is the
-# smaller of a and (b + c): rain falling AND the road wet or slushy. Classes no loaded model has are ignored,
-# so without the surface model the surface rules simply never fire.
+# smaller of a and (b + c): rain falling AND the road wet or slushy. A term whose classes no loaded model has
+# is left out, so without the surface model the surface rules never fire and Slippery road rests on rain alone.
 DEFAULT_WEATHER_RULES: dict[str, tuple[str, float, float]] = {
     "fog": ("scene_fog", 0.70, 20.0),
     "surface_water": ("scene_flood", 0.85, 8.0),
@@ -502,9 +502,11 @@ class SceneAnalyzer:
                 self._weather_since.pop(cls, None)
 
     def _rule_value(self, key: str) -> float:
-        def term(part: str) -> float:
-            return sum(self._weather.get(k, 0.0) for k in part.split("|"))
-        return min(term(p) for p in key.split("&"))
+        # a term none of whose classes any loaded model has is left out: without the road-surface model,
+        # Slippery road rests on rain alone. A rule with no term left never fires.
+        terms = [sum(self._weather.get(k, 0.0) for k in part.split("|")) for part in key.split("&")
+                 if any(k in self._weather for k in part.split("|"))]
+        return min(terms) if terms else 0.0
 
     def _weather_labels(self, t: float) -> list[Detection]:
         out = []

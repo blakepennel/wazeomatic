@@ -313,6 +313,12 @@ class SceneAnalyzerTest {
         val cfg = SceneConfig(enabled = setOf("weather"))
         assertTrue("scene_slippery" in runScene(cfg, 140, { emptyList() }, both).last())
         for (fn in listOf(rainOnly, wetOnly)) assertTrue(runScene(cfg, 140, { emptyList() }, fn).none { "scene_slippery" in it })
+        // no road-surface model loaded: rain alone, held, is Slippery road; the surface-only rules stay silent
+        val noSurface = runScene(cfg, 140, { emptyList() }, { _: Double -> mapOf("rain" to 0.9f, "clear" to 0.1f) })
+        assertTrue("scene_slippery" in noSurface.last())
+        assertTrue(noSurface.none { "scene_flood" in it })
+        assertTrue(runScene(cfg, 140, { emptyList() }, { _: Double -> mapOf("clear" to 0.95f, "rain" to 0.05f) })
+            .none { "scene_slippery" in it })
     }
 
     @Test

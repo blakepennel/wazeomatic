@@ -488,8 +488,13 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         }
     }
 
-    private fun ruleValue(key: String): Double =
-        key.split('&').minOf { part -> part.split('|').sumOf { weatherEma[it] ?: 0.0 } }
+    // a term none of whose classes any loaded model has is left out: without the road-surface model, Slippery
+    // road rests on rain alone. A rule with no term left never fires.
+    private fun ruleValue(key: String): Double {
+        val terms = key.split('&').filter { part -> part.split('|').any { it in weatherEma } }
+            .map { part -> part.split('|').sumOf { weatherEma[it] ?: 0.0 } }
+        return terms.minOrNull() ?: 0.0
+    }
 
     private fun weatherLabels(t: Double): List<Detection> {
         val out = ArrayList<Detection>()

@@ -240,6 +240,11 @@ def test_slippery_needs_rain_and_wet_road():
     assert "scene_slippery" in run_scene(cfg, 140, lambda t: [], both)[-1]
     for fn in (rain_only, wet_only):
         assert all("scene_slippery" not in s for s in run_scene(cfg, 140, lambda t: [], fn))
+    # no road-surface model loaded: rain alone, held, is Slippery road; the surface-only rules stay silent
+    no_surface = lambda t: {"rain": 0.9, "clear": 0.1}
+    labels = run_scene(cfg, 140, lambda t: [], no_surface)
+    assert "scene_slippery" in labels[-1] and all("scene_flood" not in s for s in labels)
+    assert all("scene_slippery" not in s for s in run_scene(cfg, 140, lambda t: [], lambda t: {"clear": 0.95, "rain": 0.05}))
 
 
 def test_ground_point_inverts_the_camera_model():
