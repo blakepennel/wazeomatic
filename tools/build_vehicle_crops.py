@@ -5,7 +5,8 @@
 
 Sources (all under the datasets root):
 
-* ``commons_vehicles/{police,ambulance,fire}`` (tools/fetch_commons_vehicles.py): one photo per vehicle. A
+* ``commons_vehicles/{police,ambulance,fire}`` (tools/fetch_commons_vehicles.py): one photo per vehicle;
+  ``civilian_hard`` and ``civilian_taxi`` are look-alikes (patrol-car models, tow trucks, taxis) as civilian. A
   large detector finds the vehicles; the photo is used only when one car, truck or bus clearly dominates it
   (largest box at least ``--dominant`` times the next one), so a line-up of cars cannot put a civilian car
   into the police folder.
@@ -40,7 +41,8 @@ from wazeomatic.paths import datasets_root  # noqa: E402
 
 VEHICLE_COCO = {2: "car", 5: "bus", 7: "truck"}
 CLASSES = ("civilian", "police", "ambulance", "fire")
-SOURCES = ("police", "ambulance", "fire", "civilian_hard", "openimages", "oi_civilian", "bdd", "mined")
+SOURCES = ("police", "ambulance", "fire", "civilian_hard", "civilian_taxi", "openimages", "oi_civilian", "bdd",
+           "mined")
 
 
 def split_of(key: str, val_frac: float) -> str:
@@ -128,8 +130,9 @@ def main() -> None:
     manifest = []
 
     # ------------------------------------------------------------------ Commons photos
-    for src in [s for s in ("police", "ambulance", "fire", "civilian_hard") if s in args.sources]:
-        cls = "civilian" if src == "civilian_hard" else src
+    for src in [s for s in ("police", "ambulance", "fire", "civilian_hard", "civilian_taxi") if s in args.sources]:
+        cls = "civilian" if src.startswith("civilian") else src
+        tag = "tx" if src == "civilian_taxi" else "cm"           # tx: the eval reports taxis on their own
         folder = root / "commons_vehicles" / src
         paths = sorted(p for p in folder.glob("*.jpg")) if folder.exists() else []
         used = 0
@@ -146,10 +149,10 @@ def main() -> None:
             bb = to_xywhn(*boxes[0][:4], w, h)
             crop = square_crop(im, bb, size=args.size)
             split = split_of(p.stem, args.val_frac)
-            wr.put(split, cls, f"cm_{p.stem[:80]}", crop)
+            wr.put(split, cls, f"{tag}_{p.stem[:80]}", crop)
             if split == "train":
                 for k in range(args.degrade):
-                    wr.put(split, cls, f"cm_{p.stem[:80]}_d{k}", degrade(crop, rng))
+                    wr.put(split, cls, f"{tag}_{p.stem[:80]}_d{k}", degrade(crop, rng))
             manifest.append({"src": str(p), "cls": cls, "split": split})
             used += 1
         print(f"[commons/{cls}] {used} used")

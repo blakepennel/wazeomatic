@@ -79,10 +79,26 @@ CLASSES: dict[str, list[tuple[str, int]]] = {
         ("School buses in the United States", 1),
         ("Security vehicles", 1),
     ],
+    # taxis and private-hire cars of other countries: a roof sign reads like a light bar, and they were the
+    # two false Police reports on the Commons clips (docs/waze-coverage.md)
+    "civilian_taxi": [
+        ("Taxis in Japan", 2),
+        ("Taxis in the United Kingdom", 2),
+        ("Taxis in Canada", 2),
+        ("Taxis in Germany", 1),
+        ("Taxis in France", 1),
+        ("Taxis in Australia", 1),
+        ("Taxis in New York City", 1),
+    ],
 }
 # extra subcategory filter per class: the look-alike models have police subcategories of their own
-CLASS_SKIP = {"civilian_hard": re.compile(r"police|sheriff|patrol|trooper|law enforcement|interceptor|emergency|"
-                                          r"ambulance|fire", re.I)}
+_NOT_CIVILIAN = re.compile(r"police|sheriff|patrol|trooper|law enforcement|interceptor|emergency|ambulance|fire",
+                           re.I)
+# a taxi walk also reaches water taxis, rickshaws, protests, ranks and views out of a taxi (which may show a
+# police car ahead): none of them is a taxi on the road
+_NOT_A_TAXI = re.compile(_NOT_CIVILIAN.pattern + r"|water|ferry|rickshaw|cycle|protest|views from|drivers|memorial|"
+                         r"road signs|offices|ranks|stands|race|zusatzzeichen|electrobat", re.I)
+CLASS_SKIP = {"civilian_hard": _NOT_CIVILIAN, "civilian_taxi": _NOT_A_TAXI}
 
 # Subcategories whose name matches this are not road vehicles a dashcam meets, or not real ones.
 SKIP_CAT = re.compile(
@@ -149,7 +165,8 @@ def walk(roots: list[tuple[str, int]], extra_skip=None) -> tuple[list[str], list
         if depth > 0:
             for sub in members(cat, "subcat"):
                 name = sub.split(":", 1)[1]
-                if not SKIP_CAT.search(name) and name not in seen_cats and                         not (extra_skip is not None and extra_skip.search(name)):
+                if not SKIP_CAT.search(name) and name not in seen_cats and \
+                        not (extra_skip is not None and extra_skip.search(name)):
                     queue.append((name, depth - 1))
     return sorted(set(files)), sorted(seen_cats)
 
