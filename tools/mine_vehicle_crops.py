@@ -4,6 +4,7 @@
     python tools/mine_vehicle_crops.py rescore --model models/vehicle_v2.onnx      # re-rank with a newer model
     python tools/mine_vehicle_crops.py sheets --cls police --top 600              # numbered contact sheets
     python tools/mine_vehicle_crops.py label --cls police --yes 3,17,40-44 --sheet-range 0-599
+    python tools/mine_vehicle_crops.py scan --clips <datasets>/argoverse2/clips --clip-half 0 --work <datasets>/mining_argo
 
 The first classifier is trained on photos; the frames it will see are dashcam frames. ``scan`` runs the
 detector and the classifier over the BDD100K frames and keeps the best-scoring crops per class. ``sheets``
@@ -15,6 +16,7 @@ draws them as numbered grids. A person looks at the grids and ``label`` files th
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -40,12 +42,43 @@ def parse_ranges(spec: str) -> set[int]:
     return out
 
 
+def clip_half(stem: str) -> int:
+    """0 or 1 by a hash of the clip name: mine one half of a clip folder, evaluate on the other."""
+    return int(hashlib.md5(stem.encode("utf-8")).hexdigest()[:8], 16) % 2
+
+
+def clip_frames(folder: Path, every: int, half: int) -> list[str]:
+    """Frame references ``<clip path>#<index>`` for every ``every``-th frame of the clips in one half."""
+    out = []
+    for clip in sorted(folder.glob("*.mp4")):
+        if clip_half(clip.stem) != half:
+            continue
+        n = int(cv2.VideoCapture(str(clip)).get(cv2.CAP_PROP_FRAME_COUNT))
+        out += [f"{clip}#{i}" for i in range(0, n, every)]
+    return out
+
+
+def load_frame(ref) -> np.ndarray | None:
+    ref = str(ref)
+    if "#" not in ref:
+        return cv2.imread(ref)
+    path, idx = ref.rsplit("#", 1)
+    cap = cv2.VideoCapture(path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+    ok, im = cap.read()
+    cap.release()
+    return im if ok else None
+
+
 def scan(args, root: Path, work: Path) -> None:
     from ultralytics import YOLO
 
     det = YOLO(args.detector)
     clf = OnnxClassifier(args.model, threads=4)
-    frames = sorted((root / "bdd100k_weather" / "data" / "images").rglob("*.jpg"))
+    if args.clips:
+        frames = clip_frames(Path(args.clips), args.every, args.clip_half)
+    else:
+        frames = sorted((root / "bdd100k_weather" / "data" / "images").rglob("*.jpg"))
     if args.limit:
         frames = frames[: args.limit]
     keep: dict[str, list] = {c: [] for c in clf.labels if c != "civilian"}
@@ -53,7 +86,7 @@ def scan(args, root: Path, work: Path) -> None:
     crops_dir.mkdir(parents=True, exist_ok=True)
     for i in range(0, len(frames), args.batch):
         chunk = frames[i:i + args.batch]
-        imgs = [cv2.imread(str(p)) for p in chunk]
+        imgs = [load_frame(p) for p in chunk]
         res = det.predict([im for im in imgs if im is not None], conf=0.4, classes=list(VEHICLE_COCO),
                           verbose=False, imgsz=640, half=True)
         for p, im, r in zip([p for p, im in zip(chunk, imgs) if im is not None], [im for im in imgs if im is not None], res):
@@ -68,7 +101,9 @@ def scan(args, root: Path, work: Path) -> None:
                 for c in keep:
                     s = float(pr[clf.labels.index(c)])
                     if s >= args.min_score:
-                        name = f"bdd_{p.stem}_{k}"
+                        ref = str(p)
+                        stem = (Path(ref.rsplit("#", 1)[0]).stem + "_f" + ref.rsplit("#", 1)[1]) if "#" in ref                             else Path(ref).stem
+                        name = f"{'av' if args.clips else 'bdd'}_{stem}_{k}"
                         big = square_crop(im, ((b[0] + b[2]) / 2 / w, (b[1] + b[3]) / 2 / h, (b[2] - b[0]) / w,
                                                (b[3] - b[1]) / h), size=192)
                         cv2.imwrite(str(crops_dir / f"{name}.jpg"), big)
@@ -159,6 +194,10 @@ def main() -> None:
     ap.add_argument("--model", default="models/vehicle_cls.onnx")
     ap.add_argument("--detector", default="yolo11l.pt")
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--clips", help="scan: a folder of .mp4 clips instead of the BDD100K frames")
+    ap.add_argument("--every", type=int, default=5, help="scan --clips: every n-th frame")
+    ap.add_argument("--clip-half", type=int, default=0, choices=[0, 1],
+                    help="scan --clips: which half of the clips (by name hash) to mine; keep the other for testing")
     ap.add_argument("--min-px", type=int, default=28)
     ap.add_argument("--min-score", type=float, default=0.15)
     ap.add_argument("--limit", type=int)

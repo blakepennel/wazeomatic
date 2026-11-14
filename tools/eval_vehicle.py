@@ -4,6 +4,7 @@
     python tools/eval_vehicle.py clips --model models/vehicle_cls.onnx --clips F:/dev/datasets/commons_videos
     python tools/eval_vehicle.py clips --clips assets/videos --expect none          # false reports on clean drives
     python tools/eval_vehicle.py clips --hazard --clips F:/dev/datasets/argoverse2/clips   # every event type
+    python tools/eval_vehicle.py clips --clips F:/dev/datasets/argoverse2/clips --clip-half 1 --step 1
 
 **crops** - precision / recall per class on ``<datasets>/vehicle_crops/val``, and for police the score
 threshold that keeps the civilian false-positive rate at 1 %, 0.3 % and 0.1 % of crops, with the police recall
@@ -99,6 +100,10 @@ def eval_clips(args) -> tuple[dict, int]:
     spec = DetectorSpec.from_args(dargs)
     folder = Path(args.clips)
     clips = sorted(p for p in folder.rglob("*") if p.suffix.lower() in VIDEO_EXT)
+    if args.clip_half is not None:
+        # the half that tools/mine_vehicle_crops.py --clip-half did not mine
+        from mine_vehicle_crops import clip_half
+        clips = [p for p in clips if clip_half(p.stem) == args.clip_half]
     results, bad = {}, 0
     for clip in clips:
         dets = build_detectors(spec)
@@ -158,6 +163,8 @@ def main() -> None:
     ap.add_argument("--model", help="vehicle classifier ONNX (default models/vehicle_cls.onnx)")
     ap.add_argument("--data", help="crops: val folder")
     ap.add_argument("--clips", help="clips: folder of videos (searched recursively)")
+    ap.add_argument("--clip-half", type=int, choices=[0, 1],
+                    help="clips: only this half of the folder (split as tools/mine_vehicle_crops.py does)")
     ap.add_argument("--step", type=int, default=3)
     ap.add_argument("--hazard", action="store_true", help="clips: run the hazard model too (all scene rules)")
     ap.add_argument("--expect", choices=["none", "any"], help="clips: fail on any / on no police-crash event")
