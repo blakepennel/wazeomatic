@@ -11,3 +11,9 @@ f3cd0d0d  # Metropolitan Police (DC) sedan ahead at dusk, rear
 f3cc42c7  # Metropolitan Police (DC) SUV, side
 f61bcee1  # black-and-white police sedan, side and rear
 ff8e7fdb  # Metropolitan Police (DC) sedan, front three-quarter
+# added 2026-11-14 after vehicle v8 reported them (none of the earlier models scored them 0.2, see above):
+2ff4f798  # police sedan with the light bar on, parked at a work zone, rear
+dc9077b9  # police sedan with the light bar on and a bike rack, rear
+eb222d5d  # Metropolitan Police (DC) SUV, front three-quarter
+ad870270  # Miami police SUV, rear, half out of the frame at the left edge
+# 7f7e4709 may show a far white police sedan with a door badge; too small to tell, so not listed
