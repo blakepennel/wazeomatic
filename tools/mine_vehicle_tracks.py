@@ -231,7 +231,7 @@ def main() -> None:
     ap.add_argument("--work", required=True, help="folder for scan.json, tracks.json and the sheets")
     ap.add_argument("--clips", help="scan: folder of clips (searched recursively)")
     ap.add_argument("--clip-half", type=int, choices=[0, 1], help="scan: only this half (as mine_vehicle_crops)")
-    ap.add_argument("--models", nargs="+", default=["models/vehicle_cls.onnx", "models/vehicle_cls2.onnx"])
+    ap.add_argument("--models", nargs="+", default=["models/vehicle_cls.onnx"], help="scan: classifiers to average")
     ap.add_argument("--cls", default="police")
     ap.add_argument("--min-score", type=float, default=0.3, help="sheets: show tracks with a frame this high")
     ap.add_argument("--min-len", type=int, default=3, help="sheets: frames a track needs")

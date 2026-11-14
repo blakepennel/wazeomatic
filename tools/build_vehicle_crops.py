@@ -18,7 +18,8 @@ Sources (all under the datasets root):
   (``tools/mine_vehicle_crops.py`` writes it).
 * ``mined/<class>`` (optional): crops from dashcam frames confirmed by hand, the in-domain positives.
 * ``mined_tracks/<class>/<track>/`` (optional, tools/mine_vehicle_tracks.py): every frame of a vehicle track
-  confirmed by hand, near and far, front and rear. A track stays on one side of the split (crops ``mt_*``).
+  confirmed by hand, near and far, front and rear. All tracks of one clip stay on one side of the split (crops
+  ``mt_*``): the tracker can cut one car into several tracks. Vehicle v8 was built when the split went by track.
 
 Crops are cut with ``wazeomatic.classifiers.square_crop`` (box grown 12 % per side, letterboxed), the rule the
 pipeline uses at run time. Photos of a vehicle filling the frame do not look like a car 40 m ahead, so every
@@ -262,7 +263,7 @@ def main() -> None:
     tracks = root / "mined_tracks"
     for cls in CLASSES if "tracks" in args.sources else ():
         for d in sorted(p for p in (tracks / cls).iterdir() if p.is_dir()) if (tracks / cls).exists() else []:
-            split = split_of(d.name, args.val_frac)
+            split = split_of(d.name.rsplit("_t", 1)[0], args.val_frac)    # <clip>_t<k>: split by clip
             for p in sorted(d.glob("*.jpg")):
                 im = cv2.imread(str(p))
                 if im is None:
