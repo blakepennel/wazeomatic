@@ -136,6 +136,18 @@ def test_hood_zone_keeps_close_vehicles():
     assert rm2.update([Detection("police_vehicle", 0.95, (0.5, 0.96, 0.4, 0.05), model="vehicle")]) == []
 
 
+def test_barricade_on_a_van_is_livery():
+    rm, _ = make(window=10, min_hits=1)
+    van = Detection("truck", 0.6, (0.26, 0.52, 0.19, 0.26), model="coco")
+    chevrons = Detection("barricade", 0.6, (0.215, 0.53, 0.10, 0.17), model="hazard")
+    assert rm.update([van, chevrons]) == []
+    # the same barricade on its own, or only partly behind a car, is on the road
+    assert len(rm.update([chevrons])) == 1
+    rm2, _ = make(window=10, min_hits=1)
+    car = Detection("car", 0.6, (0.40, 0.53, 0.19, 0.20), model="coco")
+    assert len(rm2.update([car, chevrons])) == 1
+
+
 def test_default_pothole_floor_is_045():
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import Detection

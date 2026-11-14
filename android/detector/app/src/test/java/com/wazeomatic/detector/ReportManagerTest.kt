@@ -182,6 +182,18 @@ class ReportManagerTest {
     }
 
     @Test
+    fun barricadeOnAVanIsLivery() {
+        val van = Detection("truck", 0.6f, BBox(0.26f, 0.52f, 0.19f, 0.26f), "coco")
+        val chevrons = Detection("barricade", 0.6f, BBox(0.215f, 0.53f, 0.10f, 0.17f), "hazard")
+        val m = rm(ReportConfig(minHits = 1))
+        assertTrue(m.update(listOf(van, chevrons)).isEmpty())
+        // the same barricade on its own, or only partly behind a car, is on the road
+        assertEquals(1, m.update(listOf(chevrons)).size)
+        val car = Detection("car", 0.6f, BBox(0.40f, 0.53f, 0.19f, 0.20f), "coco")
+        assertEquals(1, rm(ReportConfig(minHits = 1)).update(listOf(car, chevrons)).size)
+    }
+
+    @Test
     fun trackingRejectsSpatiallyInconsistentHits() {
         val m = rm(ReportConfig(trackIou = 0.3f, globalCooldownS = 0.0))
         val spots = listOf(0.1f to 0.1f, 0.9f to 0.1f, 0.5f to 0.8f)

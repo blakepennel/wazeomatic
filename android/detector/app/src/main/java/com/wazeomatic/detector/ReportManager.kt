@@ -35,6 +35,10 @@ data class ReportConfig(
     val shoulderXMin: Float = 0.62f,
     val shoulderYMin: Float = 0.40f,
     val vehicleLabels: Set<String> = setOf("car", "truck", "bus"),
+    // red-and-white chevrons on the back of a works van look like a barricade; a box of these labels that lies
+    // almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
+    val liveryLabels: Set<String> = setOf("barricade"),
+    val liveryInside: Float = 0.8f,
     val vehicleMinArea: Float = 0.02f,
     val vehicleMinGrowth: Float = 1.35f,
 )
@@ -126,11 +130,14 @@ class ReportManager(
         val now = clock()
         val best = LinkedHashMap<String, Detection>()
         val accepted = LinkedHashMap<String, ArrayList<Detection>>()
-        for (d in detections) {
+        val all = detections.toList()
+        val vehicles = all.filter { it.label in cfg.vehicleLabels }.map { it.bbox }
+        for (d in all) {
             val hazard = hazardFor(d) ?: continue
             if (d.confidence < minConf(d.label)) continue
             // scene labels are whole-frame boxes, the hood zone does not apply to them
             if (d.model != "scene" && inHoodZone(d)) continue
+            if (d.label in cfg.liveryLabels && vehicles.any { inside(d.bbox, it) >= cfg.liveryInside }) continue
             accepted.getOrPut(hazard) { ArrayList() }.add(d)
             val prev = best[hazard]
             if (prev == null || d.confidence > prev.confidence) best[hazard] = d
@@ -199,6 +206,13 @@ class ReportManager(
     /** A per-label floor can only raise the bar above minConfidence, never lower it. */
     private fun minConf(label: String): Float =
         maxOf(cfg.minConfidence, cfg.minConfidenceByLabel[label] ?: 0f)
+
+    /** Fraction of box [a] that lies inside box [b]. */
+    private fun inside(a: BBox, b: BBox): Float {
+        val ix = maxOf(0f, minOf(a.cx + a.w / 2, b.cx + b.w / 2) - maxOf(a.cx - a.w / 2, b.cx - b.w / 2))
+        val iy = maxOf(0f, minOf(a.cy + a.h / 2, b.cy + b.h / 2) - maxOf(a.cy - a.h / 2, b.cy - b.h / 2))
+        return ix * iy / maxOf(a.w * a.h, 1e-9f)
+    }
 
     private fun inHoodZone(d: Detection): Boolean {
         val hood = hoodFrac

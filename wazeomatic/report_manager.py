@@ -71,6 +71,10 @@ class ReportConfig:
     shoulder_x_min: float = 0.62     # right-hand shoulder region of interest (normalized)
     shoulder_y_min: float = 0.40
     vehicle_labels: tuple[str, ...] = ("car", "truck", "bus")
+    # red-and-white chevrons on the back of a works van look like a barricade; a box of these labels that lies
+    # almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
+    livery_labels: tuple[str, ...] = ("barricade",)
+    livery_inside: float = 0.8
     vehicle_min_area: float = 0.02   # bbox area fraction - close enough to matter
     vehicle_min_growth: float = 1.35 # area must grow by this factor across the window
 
@@ -108,6 +112,13 @@ def _associated(a: tuple, b: tuple, iou_thr: float, grow: float) -> bool:
     return dist <= grow * max(a[2], a[3], b[2], b[3])
 
 
+def _inside(a, b) -> float:
+    """Fraction of box ``a`` (normalised xywh) that lies inside box ``b``."""
+    ix = max(0.0, min(a[0] + a[2] / 2, b[0] + b[2] / 2) - max(a[0] - a[2] / 2, b[0] - b[2] / 2))
+    iy = max(0.0, min(a[1] + a[3] / 2, b[1] + b[3] / 2) - max(a[1] - a[3] / 2, b[1] - b[3] / 2))
+    return ix * iy / max(a[2] * a[3], 1e-9)
+
+
 class ReportManager:
     def __init__(self, config: ReportConfig | None = None, source: str = "sim",
                  clock: Callable[[], float] | None = None, waze=None):
@@ -138,11 +149,16 @@ class ReportManager:
         now = self.clock()
         best: dict[str, Detection] = {}
         accepted: dict[str, list[Detection]] = defaultdict(list)
+        detections = list(detections)
+        vehicles = [d.bbox for d in detections if d.label in self.cfg.vehicle_labels]
         for d in detections:
             hazard = self._hazard_for(d)
             if hazard is None or d.confidence < self._min_conf(d.label):
                 continue
             if d.model != "scene" and self._in_hood_zone(d):
+                continue
+            if d.label in self.cfg.livery_labels and any(_inside(d.bbox, v) >= self.cfg.livery_inside
+                                                         for v in vehicles):
                 continue
             accepted[hazard].append(d)
             if hazard not in best or d.confidence > best[hazard].confidence:
