@@ -59,6 +59,9 @@ Stage B stops before it starts and says so. `--stage a` needs no clip.
 # (the CC0 clips contain no real hazard; the class_map extra makes the detector treat COCO cars as a hazard so the whole chain is exercised)
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video assets/videos/labelled/argo_2ff4f798_workzone.mp4 --expect-hazard HAZARD_ON_ROAD_CONSTRUCTION --detector-extras "--ez dry_run false"
 # (a real work-zone clip through the shipped hazard model, no class_map; the clip is a local file, it is not in the repo)
+.venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video assets/videos/labelled/argo_2ff4f798_workzone.mp4 --stage-b-wait 90 --detector-extras "--es class_conf cone=1.01,construction_sign=1.01,delineator=1.01,barricade=1.01,worker=1.01,pothole=1.01,debris=1.01"
+# (the same clip with every hazard-model class muted: the parked police car goes through the vehicle classifier to a
+#  Police dry run. Unmuted, the work zone holds each minute's report and the car, in view two seconds a loop, is held back)
 ```
 
 If `adb install` of the detector fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the APK already on the emulator was signed with a different debug keystore (another PC or user). Run `adb -s emulator-5554 uninstall com.wazeomatic.detector` once and install again.

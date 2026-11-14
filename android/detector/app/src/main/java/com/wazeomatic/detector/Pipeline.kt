@@ -196,6 +196,12 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             vehicle?.let { v ->
                 dets.addAll(v(img, dets))
                 if (v.lastMs > 0) lat["vehicle"] = v.lastMs
+                // emergency-class scores worth a look, so a missed or false Police report can be traced on the phone
+                for ((d, p) in v.lastProbs) {
+                    val top = p.filterKeys { it != "civilian" }.maxByOrNull { it.value } ?: continue
+                    if (top.value >= 0.3f) Log.d(VEHICLE_TAG, String.format(Locale.US, "frame=%d %s=%.2f box=%.3f,%.3f,%.3f,%.3f",
+                        frameIndex, top.key, top.value, d.bbox.cx, d.bbox.cy, d.bbox.w, d.bbox.h))
+                }
             }
             val weather = sceneClassifiers?.let { c -> c(img, ts, dets).also { if (c.lastMs > 0) lat["weather"] = c.lastMs } }
             scene?.let { s ->
@@ -280,6 +286,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     companion object {
         private const val TAG = "Wazeomatic"
         const val PERF_TAG = "WazeomaticPerf"
+        const val VEHICLE_TAG = "WazeomaticVehicle"
 
         fun readAsset(ctx: Context, name: String): ByteArray? = try {
             ctx.assets.open(name).use { it.readBytes() }
