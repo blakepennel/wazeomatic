@@ -212,6 +212,10 @@ def build_second_stage(args):
     from .scene import SceneAnalyzer, SceneConfig
 
     vehicle = weather = scene = None
+    geo = {}
+    if getattr(args, "camera_geometry", None):
+        hfov, height, horizon = (float(v) for v in args.camera_geometry.split(","))
+        geo = {"hfov_deg": hfov, "cam_height_m": height, "horizon_y": horizon}
     if not getattr(args, "no_vehicle", False) and not getattr(args, "no_coco", False):
         p = _optional_model(getattr(args, "vehicle_model", None), DEFAULT_VEHICLE_MODEL, "vehicle classifier")
         if p is not None:
@@ -219,7 +223,13 @@ def build_second_stage(args):
     if not getattr(args, "no_weather", False):
         p = _optional_model(getattr(args, "weather_model", None), DEFAULT_WEATHER_MODEL, "weather classifier")
         q = _optional_model(getattr(args, "surface_model", None), DEFAULT_SURFACE_MODEL, "road-surface classifier")
-        parts = [SceneClassifier(p) if p is not None else None, RoadSurface(q) if q is not None else None]
+        surface = None
+        if q is not None:
+            surface = RoadSurface(q)
+            if "damp" in surface.clf.labels:       # a RoadSaW / RoadSC model: it wants the bird's-eye patch
+                cfg = SceneConfig(**geo)
+                surface.topview = (cfg.hfov_deg, cfg.cam_height_m, cfg.horizon_y)
+        parts = [SceneClassifier(p) if p is not None else None, surface]
         if any(parts):
             weather = SceneClassifiers(*parts)
     if not getattr(args, "no_scene", False):
@@ -227,10 +237,6 @@ def build_second_stage(args):
         unknown = [f for f in feats if f not in SCENE_FEATURES]
         if unknown:
             raise SystemExit(f"unknown --scene-features {unknown}; choose from {SCENE_FEATURES}")
-        geo = {}
-        if getattr(args, "camera_geometry", None):
-            hfov, height, horizon = (float(v) for v in args.camera_geometry.split(","))
-            geo = {"hfov_deg": hfov, "cam_height_m": height, "horizon_y": horizon}
         scene = SceneAnalyzer(SceneConfig(enabled=feats, drive_side=getattr(args, "drive_side", "right"),
                                           police_other_side=bool(getattr(args, "police_other_side", False)), **geo))
     return vehicle, weather, scene

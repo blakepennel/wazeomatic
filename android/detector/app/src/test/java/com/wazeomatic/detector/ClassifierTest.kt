@@ -147,4 +147,56 @@ class ClassifierTest {
         // bottom 0.68, top max(0.45, 0.68 - 0.26) = 0.45
         assertArrayEquals(intArrayOf(512, 324, 768, 489), rs.region(720, 1280))
     }
+
+    /** 320 x 180, r = (37x + 11y) % 256, g = (7x + 53y) % 256, b = (x^2 + 3y) % 256. */
+    private fun bigPattern(): RgbImage = RgbImage(320, 180, IntArray(320 * 180) { i ->
+        val x = i % 320
+        val y = i / 320
+        RgbImage.pack((x * 37 + y * 11) % 256, (x * 7 + y * 53) % 256, (x * x + y * 3) % 256)
+    })
+
+    @Test
+    fun topViewWarpMatchesOpenCv() {
+        // classifiers.topview_quad(320, 180, 70, 1.3, 0.5, 7.5, 3.6) and cv2.warpPerspective to 32 x 32
+        val q = RoadSurface.topviewQuad(320, 180, 70.0, 1.3, 0.5, 7.5, 3.6)
+        val ref = arrayOf(doubleArrayOf(115.773, 121.941), doubleArrayOf(204.227, 121.941),
+            doubleArrayOf(232.159, 142.115), doubleArrayOf(87.841, 142.115))
+        for (i in 0..3) assertArrayEquals(ref[i], q[i], 1e-3)
+        val out = RoadSurface.warpToSquare(bigPattern(), q, 32)
+        assertEquals(32, out.width)
+        // OpenCV interpolates on a 1/32 pixel grid, so compare sums, not single pixels
+        assertSumsNear(longArrayOf(129852, 131239, 130851), sums(out), 700)
+    }
+
+    @Test
+    fun topViewSkipsACoveredRoadAndTheHood() {
+        val fake = FakeClassifier(listOf("damp", "dry", "slush", "snow", "wet"), 32) { floatArrayOf(0f, 1f, 0f, 0f, 0f) }
+        val rs = RoadSurface(fake)
+        assertTrue(rs.isTopView)
+        rs.topview = doubleArrayOf(70.0, 1.3, 0.5)
+        val img = RgbImage.filled(1280, 720, 90, 90, 90)
+        // a car right ahead covers the square 15 m ahead (rows ~0.59-0.63, columns ~0.42-0.58)
+        val car = Detection("car", 0.9f, BBox(0.5f, 0.6f, 0.3f, 0.2f), model = "coco")
+        assertNull(rs(img, 0.0, listOf(car)))
+        assertEquals(1, rs.skipped)
+        // a car in the next lane does not
+        val side = Detection("car", 0.9f, BBox(0.85f, 0.6f, 0.2f, 0.2f), model = "coco")
+        assertEquals(1f, rs(img, 0.1, listOf(side))!!["surface_dry"])
+        assertTrue(fake.seen.last().width == 32)
+        // a mount so low on the frame that the square falls into the hood zone is skipped too
+        rs.topview = doubleArrayOf(70.0, 1.3, 0.85)
+        assertNull(rs(img, 1.0, emptyList()))
+        assertEquals(2, rs.skipped)
+    }
+
+    @Test
+    fun cameraGeometrySettingReachesTheSceneRules() {
+        val g = Settings(cameraGeometry = "47.2,1.44,0.53").sceneConfigOrNull()!!
+        assertEquals(47.2, g.hfovDeg, 0.0)
+        assertEquals(1.44, g.camHeightM, 0.0)
+        assertEquals(0.53, g.horizonY, 0.0)
+        // malformed or out of range -> the default 70,1.3,0.5
+        assertArrayEquals(doubleArrayOf(70.0, 1.3, 0.5), Settings(cameraGeometry = "70,1.3").geometry, 0.0)
+        assertArrayEquals(doubleArrayOf(70.0, 1.3, 0.5), Settings(cameraGeometry = "70,13,0.5").geometry, 0.0)
+    }
 }

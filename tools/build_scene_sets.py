@@ -2,6 +2,7 @@
 
     python tools/build_scene_sets.py weather        # <datasets>/scene_weather/{train,val}/{clear,rain,snow,fog}
     python tools/build_scene_sets.py surface        # <datasets>/scene_surface/{train,val}/{dry,wet,water,slush,snow,ice}
+    python tools/build_scene_sets.py topview        # <datasets>/scene_surface_topview/{train,val}/{dry,damp,wet,snow,slush}
 
 **weather** - BDD100K frames (US dashcam) by their weather attribute: clear, partly cloudy and overcast are
 ``clear``; rainy, snowy and foggy are ``rain``, ``snow`` and ``fog``. Real fog is rare in BDD100K (about 140
@@ -12,7 +13,14 @@ squashed to a square, the way ``SceneClassifier`` feeds the whole frame.
 
 **surface** - RSCD road-surface images grouped into dry, wet, water (standing water), slush (melted snow),
 snow (fresh snow) and ice. At run time ``RoadSurface`` (wazeomatic/classifiers.py) classifies the patch of
-road just above the hood.
+road just above the hood. These are close-ups from above, and the model does not carry over to a dashcam
+(docs/waze-coverage.md, "Road surface").
+
+**topview** - RoadSaW and RoadSC (VISCODA, CC BY-NC-SA 4.0; the zips under ``<datasets>/roadsaw``): road
+patches seen from a car and warped to a bird's-eye view, 7.5-30 m ahead. Their classes fold into dry, damp,
+wet (wet and very wet), snow (fresh and fully packed) and slush (partially covered); their own train /
+validation split is kept. At run time ``RoadSurface`` with ``topview`` warps the 3.6 m square 15 m ahead
+with the flat-road camera model (``--camera-geometry``), so the patch looks like these.
 """
 from __future__ import annotations
 
@@ -135,9 +143,47 @@ def build_surface(root: Path, out: Path, size: int, cap: int, val_frac: float) -
     return counts
 
 
+# RoadSaW wetness levels and RoadSC snow cover -> the classes of the top-view surface model. RoadSaW's "wet" and
+# "very wet" both mean a water film a tyre notices; "damp" stays apart so the model can say "not quite".
+TOPVIEW = {"dry": "dry", "damp": "damp", "wet": "wet", "verywet": "wet",
+           "fresh_snow": "snow", "fully_packed": "snow", "partially_covered": "slush"}
+
+
+def build_topview(root: Path, out: Path, size: int) -> Counter:
+    """RoadSaW (150_l) and RoadSC (balanced to RoadSaW, 150_l) straight from their zip files: bird's-eye road
+    patches 3.6 m square, 15 m ahead of a car or truck camera. Their own train / validation splits are kept
+    (validation becomes val, test is left out for a final check)."""
+    import zipfile
+    counts: Counter = Counter()
+    zips = [root / "roadsaw" / "RoadSaW-150_l.zip", root / "roadsaw" / "RoadSC-balanced_to_RoadSaW12-150_l.zip"]
+    for z in zips:
+        with zipfile.ZipFile(z) as zf:
+            for name in zf.namelist():
+                parts = name.split("/")
+                if len(parts) < 4 or not parts[-1].lower().endswith((".png", ".jpg")):
+                    continue
+                split = {"train": "train", "validation": "val"}.get(parts[1])
+                folder = parts[2]
+                cond = folder.split("_", 1)[1] if folder.split("_", 1)[0] in ("asphalt", "cobble", "concrete")                     else folder
+                cls = TOPVIEW.get(cond)
+                if split is None or cls is None:
+                    continue
+                img = cv2.imdecode(np.frombuffer(zf.read(name), np.uint8), cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+                d = out / split / cls
+                d.mkdir(parents=True, exist_ok=True)
+                stem = f"{folder}_{Path(parts[-1]).stem}"
+                cv2.imwrite(str(d / f"{stem}.jpg"), cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA),
+                            [cv2.IMWRITE_JPEG_QUALITY, 90])
+                counts[(split, cls)] += 1
+        print(f"[{z.name}] {sum(counts.values())} patches so far", flush=True)
+    return counts
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("which", choices=["weather", "surface"])
+    ap.add_argument("which", choices=["weather", "surface", "topview"])
     ap.add_argument("--datasets")
     ap.add_argument("--out")
     ap.add_argument("--size", type=int, default=224)
@@ -150,6 +196,9 @@ def main() -> None:
     if args.which == "weather":
         out = Path(args.out) if args.out else root / "scene_weather"
         c = build_weather(root, out, args.size, {"clear": args.clear_cap}, args.fog_synth, args.val_frac)
+    elif args.which == "topview":
+        out = Path(args.out) if args.out else root / "scene_surface_topview"
+        c = build_topview(root, out, args.size)
     else:
         out = Path(args.out) if args.out else root / "scene_surface"
         c = build_surface(root, out, args.size, args.surface_cap, args.val_frac)

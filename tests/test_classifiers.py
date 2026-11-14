@@ -82,7 +82,8 @@ def scene_part(cls, labels, probs):
     p.clf = FakeClf(labels, probs)
     p.every_s, p._last_t, p.last, p.last_ms = 0.5, -1e9, {}, 0.0
     if cls is RoadSurface:
-        p.patch, p.hood_frac = (0.40, 0.60, 0.60, 0.86), 0.0
+        p.patch, p.hood_frac, p.topview, p.skipped = (0.40, 0.60, 0.60, 0.86), 0.0, None, 0
+        p.dist_m, p.size_m, p.max_occlusion = 15.0, 3.6, 0.10
     return p
 
 
@@ -112,3 +113,25 @@ def test_scene_classifiers_merge_and_prefix():
     r = both(np.zeros((90, 160, 3), np.uint8), 0.0)
     assert set(r) == {"clear", "rain", "surface_dry", "surface_wet"}
     assert both.last_ms == 2.0
+
+
+def test_topview_quad_matches_the_camera_model():
+    from wazeomatic.classifiers import topview_quad
+    q = topview_quad(1280, 720, 70.0, 1.3, 0.5, 15.0, 3.6)
+    # far edge above the near edge, symmetric about the centre, narrower far away
+    assert q[0, 1] < q[3, 1] and abs((q[0, 0] + q[1, 0]) / 2 - 640) < 1e-3
+    assert (q[1, 0] - q[0, 0]) < (q[2, 0] - q[3, 0])
+    # the near edge sits where the blocked-lane rule puts a point 13.2 m ahead
+    from wazeomatic.scene import SceneAnalyzer, SceneConfig
+    sa = SceneAnalyzer(SceneConfig(hfov_deg=70.0, cam_height_m=1.3, horizon_y=0.5))
+    d, _ = sa.ground_point((0.5, q[3, 1] / 720, 0.0, 0.0), 1280 / 720)
+    assert abs(d - 13.2) < 0.05
+
+
+def test_topview_skips_a_covered_road():
+    s = scene_part(RoadSurface, ["dry", "wet"], [0.4, 0.6])
+    s.topview = (70.0, 1.3, 0.5)
+    img = np.zeros((720, 1280, 3), np.uint8)
+    car = Detection("car", 0.9, (0.5, 0.6, 0.3, 0.2))
+    assert s(img, 0.0, [car]) is None and s.skipped == 1
+    assert s(img, 0.1, []) == {"surface_dry": np.float32(0.4), "surface_wet": np.float32(0.6)}

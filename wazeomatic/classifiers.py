@@ -14,6 +14,7 @@ The Kotlin twins are ``VehicleClassifier.kt`` and ``SceneClassifier.kt``; keep t
 """
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Optional, Sequence
@@ -171,24 +172,63 @@ class SceneClassifier:
 ROAD_PATCH = (0.40, 0.60, 0.60, 0.86)     # x1, y1, x2, y2 as fractions of the frame
 
 
-class RoadSurface:
-    """Road-surface classifier (dry, wet, water, slush, snow, ice) on the patch of road ahead.
+# boxes that hide the road: a top-view patch they overlap is not classified
+OCCLUDERS = ("car", "truck", "bus", "motorcycle", "bicycle", "person")
 
-    Trained on RSCD, whose pictures are close views of the road from a car. The patch is moved up when the
-    learnt hood zone is taller than the default, so the classifier never looks at the dashboard. Class names
-    come back prefixed ``surface_`` so they cannot collide with the weather classes."""
+
+def topview_quad(w: int, h: int, hfov_deg: float, height_m: float, horizon_y: float, dist_m: float,
+                 size_m: float) -> np.ndarray:
+    """Image corners (far left, far right, near right, near left; pixels) of a ``size_m`` square of flat road
+    centred ``dist_m`` ahead of the camera: the same pinhole model as the blocked-lane rule (scene.py)."""
+    fx = 0.5 / math.tan(math.radians(hfov_deg) / 2)
+    fy = fx * w / h
+    near, far, half = dist_m - size_m / 2, dist_m + size_m / 2, size_m / 2
+
+    def px(x: float, z: float) -> list[float]:
+        return [(0.5 + fx * x / z) * w, (horizon_y + fy * height_m / z) * h]
+    return np.float32([px(-half, far), px(half, far), px(half, near), px(-half, near)])
+
+
+class RoadSurface:
+    """Road-surface classifier on the road ahead. Class names come back prefixed ``surface_`` so they cannot
+    collide with the weather classes.
+
+    Two kinds of model. A **top-view** model (``topview=(hfov, height, horizon)``; trained on RoadSaW / RoadSC,
+    classes dry, damp, wet, snow, slush) sees the road the way those datasets were made: a 3.6 m square 15 m
+    ahead, warped to a bird's-eye patch with the flat-road camera model. A frame where a vehicle or a person
+    covers that square is skipped. Otherwise (RSCD-style models) the classifier gets a fixed patch of the frame
+    just above the hood zone, which is moved up when the learnt hood zone is taller than the default."""
 
     name = "surface"
 
     def __init__(self, model_path: str | Path, every_s: float = 0.5, threads: int = 1,
-                 patch: tuple[float, float, float, float] = ROAD_PATCH):
+                 patch: tuple[float, float, float, float] = ROAD_PATCH,
+                 topview: Optional[tuple[float, float, float]] = None, dist_m: float = 15.0, size_m: float = 3.6,
+                 max_occlusion: float = 0.10):
         self.clf = OnnxClassifier(model_path, threads=threads)
         self.every_s = every_s
         self.patch = patch
+        self.topview = topview
+        self.dist_m, self.size_m, self.max_occlusion = dist_m, size_m, max_occlusion
         self.hood_frac = 0.0
         self._last_t = -1e9
         self.last: dict[str, float] = {}
         self.last_ms = 0.0
+        self.skipped = 0
+
+    def occluded(self, quad: np.ndarray, w: int, h: int, dets: Sequence[Detection]) -> bool:
+        x1, y1 = quad[:, 0].min() / w, quad[:, 1].min() / h
+        x2, y2 = quad[:, 0].max() / w, quad[:, 1].max() / h
+        area = max((x2 - x1) * (y2 - y1), 1e-9)
+        for d in dets:
+            if d.label not in OCCLUDERS:
+                continue
+            cx, cy, bw, bh = d.bbox
+            ix = max(0.0, min(x2, cx + bw / 2) - max(x1, cx - bw / 2))
+            iy = max(0.0, min(y2, cy + bh / 2) - max(y1, cy - bh / 2))
+            if ix * iy / area > self.max_occlusion:
+                return True
+        return False
 
     def region(self, h: int, w: int) -> tuple[int, int, int, int]:
         x1, y1, x2, y2 = self.patch
@@ -196,15 +236,24 @@ class RoadSurface:
         top = max(0.45, bottom - (y2 - y1))
         return int(x1 * w), int(top * h), int(x2 * w), int(bottom * h)
 
-    def __call__(self, image: np.ndarray, t: float) -> Optional[dict[str, float]]:
+    def __call__(self, image: np.ndarray, t: float, dets: Sequence[Detection] = ()) -> Optional[dict[str, float]]:
         if t - self._last_t < self.every_s:
             self.last_ms = 0.0
             return None
-        self._last_t = t
         h, w = image.shape[:2]
-        x1, y1, x2, y2 = self.region(h, w)
         s = self.clf.size
-        img = cv2.resize(image[y1:y2, x1:x2], (s, s), interpolation=cv2.INTER_AREA)
+        if self.topview is not None:
+            quad = topview_quad(w, h, *self.topview, self.dist_m, self.size_m)
+            if quad[:, 1].max() > (1.0 - max(self.hood_frac, 0.10)) * h or self.occluded(quad, w, h, dets):
+                self.last_ms = 0.0
+                self.skipped += 1
+                return None                   # try again on the next frame
+            m = cv2.getPerspectiveTransform(quad, np.float32([[0, 0], [s, 0], [s, s], [0, s]]))
+            img = cv2.warpPerspective(image, m, (s, s), flags=cv2.INTER_LINEAR)
+        else:
+            x1, y1, x2, y2 = self.region(h, w)
+            img = cv2.resize(image[y1:y2, x1:x2], (s, s), interpolation=cv2.INTER_AREA)
+        self._last_t = t
         p = self.clf.predict([img])[0]
         self.last_ms = self.clf.last_ms
         self.last = {f"surface_{lab}": float(v) for lab, v in zip(self.clf.labels, p)}
@@ -227,11 +276,11 @@ class SceneClassifiers:
             if hasattr(p, "hood_frac"):
                 p.hood_frac = frac
 
-    def __call__(self, image: np.ndarray, t: float) -> Optional[dict[str, float]]:
+    def __call__(self, image: np.ndarray, t: float, dets: Sequence[Detection] = ()) -> Optional[dict[str, float]]:
         merged: dict[str, float] = {}
         ms = 0.0
         for p in self.parts:
-            r = p(image, t)
+            r = p(image, t, dets) if isinstance(p, RoadSurface) else p(image, t)
             ms += p.last_ms
             if r:
                 merged.update(r)

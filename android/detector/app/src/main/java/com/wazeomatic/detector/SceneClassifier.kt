@@ -1,9 +1,12 @@
 package com.wazeomatic.detector
 
-/** One part of the scene classifiers: (image, t) -> class probabilities, or null when it did not run. */
+/**
+ * One part of the scene classifiers: (image, t, detections) -> class probabilities, or null when it did not run.
+ * The detections are the frame's boxes; the top-view road surface skips a frame whose road patch they cover.
+ */
 interface ScenePart : java.io.Closeable {
     val lastMs: Double
-    operator fun invoke(image: RgbImage, t: Double): Map<String, Float>?
+    operator fun invoke(image: RgbImage, t: Double, dets: List<Detection> = emptyList()): Map<String, Float>?
     fun setHoodFrac(frac: Double) {}
     override fun close() {}
 }
@@ -19,7 +22,7 @@ class SceneClassifier(val clf: ImageClassifier, val everyS: Double = 0.5) : Scen
     override var lastMs = 0.0
         private set
 
-    override fun invoke(image: RgbImage, t: Double): Map<String, Float>? {
+    override fun invoke(image: RgbImage, t: Double, dets: List<Detection>): Map<String, Float>? {
         if (t - lastT < everyS) {
             lastMs = 0.0
             return null
@@ -43,11 +46,11 @@ class SceneClassifiers(parts: List<ScenePart?>) : java.io.Closeable {
 
     fun setHoodFrac(frac: Double) = parts.forEach { it.setHoodFrac(frac) }
 
-    operator fun invoke(image: RgbImage, t: Double): Map<String, Float>? {
+    operator fun invoke(image: RgbImage, t: Double, dets: List<Detection> = emptyList()): Map<String, Float>? {
         val merged = LinkedHashMap<String, Float>()
         var ms = 0.0
         for (p in parts) {
-            val r = p(image, t)
+            val r = p(image, t, dets)
             ms += p.lastMs
             if (!r.isNullOrEmpty()) merged.putAll(r)
         }

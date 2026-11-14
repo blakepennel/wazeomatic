@@ -143,7 +143,7 @@ class Pipeline:
             ms += self.vehicle_classifier.last_ms
         weather = None
         if self.scene_classifier is not None:
-            weather = self.scene_classifier(frame.image, frame.ts)
+            weather = self.scene_classifier(frame.image, frame.ts, dets)
             ms += self.scene_classifier.last_ms
         if self.scene is not None:
             dets.extend(self.scene.update(frame.ts, frame.image, dets, weather))

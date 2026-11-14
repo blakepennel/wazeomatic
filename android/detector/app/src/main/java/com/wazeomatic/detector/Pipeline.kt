@@ -98,6 +98,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         sceneClassifiers = if (!settings.weather) null else {
             val w = loadClassifier(ctx, env, "weather_cls", "weather", notes, threads = 1)?.let { SceneClassifier(it) }
             val r = loadClassifier(ctx, env, "surface_cls", "surface", notes, threads = 1)?.let { RoadSurface(it) }
+            // a RoadSaW / RoadSC model wants the bird's-eye patch, warped with the mount's camera geometry
+            if (r != null && r.isTopView) {
+                r.topview = settings.geometry
+                notes.add("surface top view")
+            }
             if (w == null && r == null) null else SceneClassifiers(listOf(w, r))
         }
         notes.add(scene?.let { s -> "scene " + (s.cfg.enabled.joinToString(",").ifEmpty { "lights only" }) +
@@ -188,7 +193,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
                 dets.addAll(v(img, dets))
                 if (v.lastMs > 0) lat["vehicle"] = v.lastMs
             }
-            val weather = sceneClassifiers?.let { c -> c(img, ts).also { if (c.lastMs > 0) lat["weather"] = c.lastMs } }
+            val weather = sceneClassifiers?.let { c -> c(img, ts, dets).also { if (c.lastMs > 0) lat["weather"] = c.lastMs } }
             scene?.let { s ->
                 val t0 = System.nanoTime()
                 dets.addAll(s.update(ts, img, dets, weather))

@@ -47,15 +47,23 @@ data class Settings(
     val policeOtherSide: Boolean = false,   // report a police car far on the opposite side as Police > Other side
     val driveSide: String = "right",        // right | left (which side the far carriageway is on)
     val useGpsSpeed: Boolean = false,       // feed the GPS speed into the ego-motion estimate (asks for location)
+    val cameraGeometry: String = "70,1.3,0.5", // HFOV deg, mount height m, horizon row (fraction), like --camera-geometry
 ) {
+    /** Camera geometry (hfov degrees, height metres, horizon fraction); the default when the string is malformed. */
+    val geometry: DoubleArray get() = parseGeometry(cameraGeometry) ?: parseGeometry(Settings().cameraGeometry)!!
+
     /** Scene analyzer config, or null when the scene layer is off. */
     fun sceneConfigOrNull(): SceneConfig? {
         val raw = sceneFeatures.trim().lowercase()
         if (raw == "none" || raw == "off") return null
+        val g = geometry
         return SceneConfig(
             enabled = SceneConfig.parseFeatures(raw),
             driveSide = if (driveSide == "left") "left" else "right",
             policeOtherSide = policeOtherSide,
+            hfovDeg = g[0],
+            camHeightM = g[1],
+            horizonY = g[2],
         )
     }
 
@@ -120,6 +128,7 @@ data class Settings(
             .putBoolean("police_other_side", policeOtherSide)
             .putString("drive_side", driveSide)
             .putBoolean("use_gps_speed", useGpsSpeed)
+            .putString("camera_geometry", cameraGeometry)
             .apply()
     }
 
@@ -172,6 +181,7 @@ data class Settings(
             policeOtherSide = z("police_other_side", policeOtherSide),
             driveSide = str("drive_side")?.trim()?.lowercase() ?: driveSide,
             useGpsSpeed = z("use_gps_speed", useGpsSpeed),
+            cameraGeometry = str("camera_geometry")?.trim() ?: cameraGeometry,
         )
     }
 
@@ -182,8 +192,17 @@ data class Settings(
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
             "zoom_coco", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
-            "scene_features", "police_other_side", "drive_side", "use_gps_speed",
+            "scene_features", "police_other_side", "drive_side", "use_gps_speed", "camera_geometry",
         )
+
+        /** "70,1.3,0.5" -> [hfov, height, horizon], or null unless all three are numbers in a sane range. */
+        fun parseGeometry(s: String): DoubleArray? {
+            val v = s.split(',').map { it.trim().toDoubleOrNull() ?: return null }
+            if (v.size != 3) return null
+            val (hfov, height, horizon) = v
+            if (hfov !in 20.0..170.0 || height !in 0.3..5.0 || horizon !in 0.0..1.0) return null
+            return v.toDoubleArray()
+        }
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
         fun parseClassMap(s: String): Map<String, String> = s.split(',', ';')
@@ -238,6 +257,7 @@ data class Settings(
                 policeOtherSide = p.getBoolean("police_other_side", d.policeOtherSide),
                 driveSide = p.getString("drive_side", d.driveSide) ?: d.driveSide,
                 useGpsSpeed = p.getBoolean("use_gps_speed", d.useGpsSpeed),
+                cameraGeometry = p.getString("camera_geometry", d.cameraGeometry) ?: d.cameraGeometry,
             )
         }
     }
