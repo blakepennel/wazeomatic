@@ -13,7 +13,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 |---|---|---|---|
 | Hazard > Pothole | `HAZARD_ON_ROAD_POTHOLE` | hazard model, class pothole, floor 0.45 | on |
 | Hazard > Construction | `HAZARD_ON_ROAD_CONSTRUCTION` | hazard model: cone, sign, delineator, barricade, worker (a worker needs 0.6) | on |
-| Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris, when the model has it | on if the model has the class |
+| Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris (0.5), lying on the road: the box reaches below the horizon less 0.15 and is not mostly inside a person or vehicle box | on |
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
 | Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe. A dog or cat beside a person on the same ground line is a pet on a walk and does not count | on |
@@ -120,6 +120,15 @@ The Police report among the other responders is "Toronto Police responding", a r
 ambulance clips that get one are false: the box is a taxi in both, a dark Edinburgh private-hire car with a
 door badge (0.89) and a white Japanese taxi in Sendai (0.86).
 
+Taxis also lead the civilian photos called police at the crop level: the pair calls 8.9 % of 303 held-out
+Commons taxi photos (Japan, UK, Canada, Germany, France, Australia, New York) police at 0.85. A v7 trained with
+1,894 of those photos as civilian, and with softened copies of half the crops (`--res-jitter 0.5`), brings that
+to 1.3 % and, averaged with v5 and v6, takes the Commons ambulance and lighting clips to no Police report; but
+on the held-out Argoverse clips it finds 6 of 9 police cars, alone or averaged, against 7 of 9 for the pair,
+and the Commons police clips from 10 to 8. The pair stays; for US driving it has no false report on these
+clips. The cached scores behind these counts are per-frame classifier scores on the pipeline's own vehicle
+boxes, run through the two-hit rule.
+
 The police clips that stay silent show unmarked cars (a diplomatic convoy, black saloons), a car far away, or
 only a light bar at night. The CRASH events on the Commons clips are responders driving towards a camera that
 pans with them: to the rule that looks like approaching a scene. A dashcam meets that only with an oncoming
@@ -161,8 +170,9 @@ are left out.
 
 | Report | Result |
 |---|---|
-| Construction | 81 of 86 work-zone clips reported (recall 0.94); 3 of the 17 clips without a work zone get one (precision 0.96) |
+| Construction | 85 of 86 work-zone clips reported (recall 0.99); 3 of the 17 clips without a work zone get one (precision 0.97). The v3 model: 81 of 86, the same 3 false |
 | Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
+| Object | none (two false ones before the debris road rules: a vent on a building front and the legs of a man crossing) |
 | Pothole, Broken traffic light, Crash, Traffic | none (Argoverse has no pothole labels, so this only says there was no false one) |
 | Police | 7 of 9, none false (the table above) |
 
@@ -173,6 +183,13 @@ the two apart needs the text). A fourth, a pedestrian in an orange T-shirt taken
 worker box now needs 0.6 to count: replayed on cached detections (`tools/cache_detections.py --clip-half 1`)
 that drops it and no work-zone clip, and on the val clips of `tools/eval_events.py` (1,201 clips, `--zoom-crop
 --limit 120 --frames 8 --seed 1`) it keeps all 310 Construction events and drops one false one.
+
+These rows are the shipped hazard model v4 (`runs/eval/argo_h1_hazard_v4b.json`). Object on the road is also
+measured on Lost and Found, frames of small obstacles on German roads (boxes, tyres, crates, bins) from a
+camera like a dashcam: with `--data <datasets>/laf_yolo` on 120 frames with an obstacle and 120 without (8
+jittered frames each), 66 of 120 obstacles are reported and 8 of the 120 frames without one get a report
+(recall 0.55, precision 0.89). The debris floor of 0.5 is chosen on these frames (0.4: 0.59 / 0.84; 0.6: 0.50 /
+0.92), so they are in-sample for it; how v4 compares with v3 is in [model-research.md](model-research.md#hazard-v4-debris-2026-11-14).
 
 ### Weather
 

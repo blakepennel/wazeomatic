@@ -16,7 +16,7 @@ flowchart LR
     subgraph Pipeline["Detection pipeline (phone app, desktop sim or Pi)"]
         direction TB
         Prep["«component»<br/>Letterbox preprocessor<br/>to each model's input size"]
-        Hazard["«component»<br/>Hazard model, YOLO11n ONNX<br/>640 px, six classes<br/>full frame + zoom crop of the road ahead"]
+        Hazard["«component»<br/>Hazard model, YOLO11n ONNX<br/>640 px, seven classes<br/>full frame + zoom crop of the road ahead"]
         Fuse["«optional»<br/>Weighted Boxes Fusion<br/>only with a second hazard model"]
         Coco["«component»<br/>COCO model, YOLO11n ONNX<br/>416 px, full frame"]
         Hood["«component»<br/>Hood zone estimator<br/>learnt dashboard band, min 10 %"]
@@ -90,7 +90,7 @@ Files: [01_component.mmd](diagrams/01_component.mmd), [02_sequence.mmd](diagrams
 |-----------|-------|----------------|
 | Frame source | `android/detector`, `wazeomatic/run_video.py` | Camera frames, an MP4 file, or the emulator webcam. Samples frames at the rate inference can keep up with. |
 | Preprocessor | `wazeomatic/detector.py` (`letterbox`, `to_input_tensor`), Kotlin mirror in the app | Aspect-preserving resize and pad to the model's input size (grey 114), BGR to RGB, scale to [0, 1], NCHW float32. The size is read from each model's input shape: 640 px for the hazard model, 416 px for the COCO model. |
-| Detectors | `OnnxDetector` | Two YOLO11n ONNX models: the fine-tuned six-class hazard model (pothole, cone, construction_sign, delineator, barricade, worker) and stock COCO (vehicles, people, animals). Decodes `[1, 4+nc, N]` output, per-class NMS, returns normalised boxes. The two models run side by side on their own threads. |
+| Detectors | `OnnxDetector` | Two YOLO11n ONNX models: the fine-tuned seven-class hazard model (pothole, cone, construction_sign, delineator, barricade, worker, debris) and stock COCO (vehicles, people, animals). Decodes `[1, 4+nc, N]` output, per-class NMS, returns normalised boxes. The two models run side by side on their own threads. |
 | Two-pass zoom | `ZoomDetector` in `wazeomatic/detector.py`, `ZoomCrop.kt` | Runs the hazard model a second time on a crop of the road ahead (default `0.25,0.35,0.75,0.75` as frame fractions), maps the boxes back and merges both passes with per-class NMS. On by default in `run_video.py` and the app. The COCO model is not zoomed unless `--zoom-coco` / `zoom_coco` is set. |
 | Fusion (optional) | `wazeomatic/fusion.py`, `EnsembleDetector`, `BoxFusion.kt` | Weighted Boxes Fusion (or NMS) across hazard models when a second one is configured (`--ensemble-model`, `-PhazardModel2` in the app build). Off by default: one hazard model ships. |
 | Hood zone | `wazeomatic/hood.py`, `HoodEstimator.kt` | Learns from the picture how much of the bottom of the frame is the car's own dashboard or bonnet (never less than 10 %). The Report Manager ignores boxes whose bottom edge is inside that band. |
@@ -189,7 +189,7 @@ The contract between steps 7 and 8 is specified in [pipeline-to-macro.md](pipeli
 | Waze UI | MacroDroid on the same phone | MacroDroid on the phone (unchanged) |
 | Main limit | Thermal and battery while also running Waze | CPU latency on the Pi |
 
-The same fp32 640 px hazard ONNX file runs everywhere, so the desktop numbers, emulator runs and on-device runs all test the same model and the same post-processing. An int8 copy and smaller input sizes are not exported for the six-class model; the int8 and 320/416 px hazard files in `models/` are older four-class models kept for comparison ([models/README.md](../models/README.md)).
+The same fp32 640 px hazard ONNX file runs everywhere, so the desktop numbers, emulator runs and on-device runs all test the same model and the same post-processing. An int8 copy and smaller input sizes are not exported for the seven-class model; the int8 and 320/416 px hazard files in `models/` are older four-class models kept for comparison ([models/README.md](../models/README.md)).
 
 ## Safety design
 

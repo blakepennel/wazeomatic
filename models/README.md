@@ -6,12 +6,13 @@ published](#why-the-weights-are-not-published). Build them locally with the step
 
 | File | What |
 |------|------|
-| `hazard_yolo11n.onnx` | The shipped hazard detector: YOLO11n, 640 px input, fp32, six classes (pothole, cone, construction_sign, delineator, barricade, worker). A copy of `hazard_yolo11n_v3.onnx`; the desktop pipeline and the Android build load this name. |
-| `hazard_yolo11n_v3.onnx` | The same model under its versioned name. |
+| `hazard_yolo11n.onnx` | The shipped hazard detector: YOLO11n, 640 px input, fp32, seven classes (pothole, cone, construction_sign, delineator, barricade, worker, debris). A copy of `hazard_yolo11n_v4.onnx`; the desktop pipeline and the Android build load this name. |
+| `hazard_yolo11n_v4.onnx` | The same model under its versioned name: the v3 set plus Lost and Found road obstacles as `debris`. |
+| `hazard_yolo11n_v3.onnx` | The previous shipped model, six classes (no debris). Kept for comparison. |
 | `hazard_yolo11s_v3.onnx` | YOLO11s trained on the same v3 set, 640 px, six classes. Not the default: about 3x the compute of the nano. Use it with `--hazard-model` on the desktop or `-PhazardModel` / `-PhazardModel2` in the Android build. |
 | `coco_yolo11n.onnx` | Stock COCO YOLO11n, 416 px, used for vehicles, people and animals. |
 | `vehicle_cls.onnx`, `vehicle_cls2.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px (the pipeline reads the size from the export's `imgsz` metadata, since the input is dynamic), four classes (ambulance, civilian, fire, police). Copies of `vehicle_v6.onnx` and `vehicle_v5.onnx`; when `vehicle_cls2` is present (desktop and app) the two are averaged per class. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
-| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v6.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v5 and v6 are loaded. |
+| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v7.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v5 and v6 are loaded. |
 | `weather_cls.onnx` | Whole-frame weather: YOLO11n-cls, 224 px, four classes (clear, fog, rain, snow). A copy of `weather_yolo11n.onnx`. Feeds the Fog and Slippery road rules. |
 | `surface_cls.onnx` (optional) | Road-surface patch classifier (dry, wet, water, slush, snow, ice) for Flood, Icy road, Unplowed road and Slippery road. Without it those rules stay silent. |
 
@@ -43,9 +44,27 @@ missing (`--allow-missing` builds a smaller, different set). `export_onnx.py` wr
 checkpoint that is not a YOLO11n unless `--force` is given. Without `--name` the file is called
 `hazard_<arch>_<imgsz>.onnx`, for example `hazard_yolo11n_640.onnx`.
 
-The nano that ships was continued from an earlier checkpoint rather than trained from the COCO
-weights (`docs/model-research.md`, data expansion section), so a run with the defaults above gives
-a model of the same kind, not the identical weights.
+The v3 nano was continued from an earlier checkpoint rather than trained from the COCO weights
+(`docs/model-research.md`, data expansion section), so a run with the defaults above gives a model
+of the same kind, not the identical weights.
+
+The shipped v4 adds a seventh class, `debris`, from Lost and Found (`tools/laf_to_yolo.py --class-id
+6`), continued from the v3 weights at a low learning rate. Its data file lists the v3 train images
+once and the Lost and Found train tiles twice (to lift their share), and the two val subsets; the
+class names are the six above plus `debris`:
+
+```yaml
+train: [<datasets>/wazeomatic_hazards_v3/images/train, <datasets>/laf_yolo/images/train, <datasets>/laf_yolo/images/train]
+val: [<datasets>/wazeomatic_hazards_v3/val_subset.txt, <datasets>/laf_yolo/val_subset.txt]
+names: {0: pothole, 1: cone, 2: construction_sign, 3: delineator, 4: barricade, 5: worker, 6: debris}
+```
+
+```powershell
+python tools/train.py --data <datasets>/hazard_v4.yaml --model runs/train/hazard_v3n/weights/best.pt --epochs 25 --lr0 0.002 --warmup 1 --name hazard_v4n
+python tools/export_onnx.py --weights runs/train/hazard_v4n/weights/best.pt --name hazard_yolo11n_v4 --ship
+```
+
+How v4 compares with v3 is in `docs/model-research.md` (hazard v4).
 
 Small model:
 
@@ -98,6 +117,14 @@ crops (before the pipeline read the trained input size from the export). At the 
 two hits in ten frames, the pair finds 7 of 9 with no false report. A YOLO11s-cls at 192 px (`vehicle_s192`)
 was not better than either. Measured numbers are in
 [docs/waze-coverage.md](../docs/waze-coverage.md#measured).
+
+v7 (not loaded) tried two fixes at once: 1,894 taxi and private-hire photos from Japan, the UK, Canada,
+Germany, France, Australia and New York as civilian (`fetch_commons_vehicles.py --only civilian_taxi`, crops
+named `tx_*`), because taxis were the false Police reports on the Commons clips, and `--res-jitter 0.5`,
+because the two police cars missed on Argoverse score lower on larger, sharper crops. Taxis called police
+dropped from 8.9 % (v5 + v6) to 1.3 %, but on the held-out Argoverse clips v7 found 6 of 9 police cars, alone
+or averaged with v5 and v6, against 7 of 9 for the pair, and still missed the same two. The taxi crops stay in
+the set for the next round.
 
 ## Retired files
 

@@ -66,7 +66,7 @@ its thresholds and how well it is measured, is [docs/waze-coverage.md](docs/waze
 | --- | --- | --- |
 | Cones, drums, temporary signs, barricades, workers in hi-vis | hazard model | Hazard › Construction |
 | A pothole in the lane ahead | hazard model | Hazard › Pothole |
-| Debris on the road (with the v4 model) | hazard model | Hazard › Object |
+| Debris lying on the road | hazard model | Hazard › Object |
 | An animal on or near the road | COCO model | Hazard (no animal subtype since 2024) |
 | A stopped car on the right shoulder (off by default) | COCO model + box growth | Hazard › Car on shoulder |
 | Two or more signal heads ahead, none lit | COCO model + lamp check | Hazard › Broken traffic light |
@@ -119,17 +119,23 @@ flowchart LR
 Measured on the same 1,201 held-out images and the same five real clips; every run is in
 [docs/model-research.md](docs/model-research.md).
 
-| | sprint-1 model | current (v3 nano) | v3 small |
-| --- | --- | --- | --- |
-| Box AP50, all classes | 0.16 | 0.39 | 0.42 |
-| Construction event recall | 0.55 | 0.85 | 0.89 |
-| Overall event F1 | 0.66 | 0.82 | 0.85 |
-| False reports on 12 min of real footage | 0 | 0 | 0 |
-| Model time per frame, desktop CPU, zoom on | 29 ms | 25 ms | 86 ms |
+| | sprint-1 model | v3 nano | v3 small | v4 nano (ships) |
+| --- | --- | --- | --- | --- |
+| Box AP50, all classes | 0.16 | 0.39 | 0.42 | 0.38 |
+| Construction event recall | 0.55 | 0.85 | 0.89 | 0.85 |
+| Overall event F1 | 0.66 | 0.82 | 0.85 | 0.80 |
+| False reports on 12 min of real footage | 0 | 0 | 0 | see below |
+| Model time per frame, desktop CPU, zoom on | 29 ms | 25 ms | 86 ms | 25 ms (same network) |
+
+v4 is the v3 nano trained on with Lost and Found road obstacles as a seventh class, debris, for Hazard ›
+Object. On these synthetic clips it is a little behind v3 on the classes they share; on real city driving
+(the held-out Argoverse clips below) it finds 85 of 86 work zones against 81 for v3, with the same three false
+reports, so it ships. On the 14.6 minutes of hazard-free drives of the current harness, run with and without
+the camera simulation, v4 makes 6 reports and v3 4 ([model-research.md](docs/model-research.md#hazard-v4-debris-2026-11-14)).
 
 The v3 models were trained on 45,855 images from seven sources: StarLine road-work frames, CMU ROADWork, Argoverse
-2 front-camera logs with the 3D labels projected into the image, RDD2022 and three pothole sets. The v3 nano ships;
-the v3 small is one build flag away for a phone that can afford it.
+2 front-camera logs with the 3D labels projected into the image, RDD2022 and three pothole sets. The v3 small is
+one build flag away for a phone that can afford it (it has no debris class).
 
 The second stage and the scene rules are measured separately, each on data it was not tuned on unless
 [docs/waze-coverage.md](docs/waze-coverage.md) says so:
@@ -138,9 +144,10 @@ The second stage and the scene rules are measured separately, each on data it wa
 | --- | --- | --- |
 | Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 7 of 9 police clips reported; no false Police report in the 154 clips without police |
 | Police, Crash | 14.6 min of dashcam drives without responders | 0 false reports |
-| Construction | 163 held-out Argoverse 2 city clips scored against their 3D cone, drum and flagger labels | recall 0.94, precision 0.96 (two of the three false reports are, on review, work zones the labels call bollards) |
+| Construction | 163 held-out Argoverse 2 city clips scored against their 3D cone, drum and flagger labels | recall 0.99, precision 0.97 (two of the three false reports are, on review, work zones the labels call bollards) |
+| Object on the road | Lost and Found val frames (120 with a small obstacle, 120 without) | recall 0.55, precision 0.89; no report on the 163 held-out Argoverse clips |
 | Blocked lane | 100 Argoverse 2 logs scored against their 3D cone and drum labels | precision 0.77, recall 0.77, side right on 80 % of hits; no false report on 109 logs never used for tuning |
-| Animal, Pothole, Broken traffic light, Crash, Traffic | the same 163 held-out clips (38 min of city driving) | no report |
+| Animal, Pothole, Object, Broken traffic light, Crash, Traffic | the same 163 held-out clips (38 min of city driving) | no report |
 | Fog / Slippery road | 2,425 held-out BDD100K frames, one frame at a time | fog threshold met on no clear frame, rain threshold on 1.5 % of clear and 70 % of rainy frames |
 
 ## Desktop simulator

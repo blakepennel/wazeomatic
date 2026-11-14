@@ -4,10 +4,10 @@ Goal: a detector that runs on a Pixel 9 Pro alongside Waze, uses well under 1 GB
 
 ## Decision
 
-- **Model:** Ultralytics YOLO11n, fine-tuned on six hazard classes (pothole, cone, construction_sign, delineator, barricade, worker), plus a stock COCO YOLO11n for vehicles and animals.
+- **Model:** Ultralytics YOLO11n, fine-tuned on seven hazard classes (pothole, cone, construction_sign, delineator, barricade, worker, debris), plus a stock COCO YOLO11n for vehicles and animals.
 - **Runtime:** ONNX Runtime everywhere. On Android, the XNNPACK execution provider on the CPU.
 - **Input size:** 640 px for the hazard model, 416 px for the COCO model. The hazard model also runs on a zoom crop of the road ahead (two-pass zoom). Static shape export, opset 17, no NMS in the graph (NMS is done in our code).
-- **Precision:** fp32. The six-class model has no int8 copy and no 320 or 416 px export; the int8 and smaller files measured below belong to the earlier four-class models and the stock COCO model.
+- **Precision:** fp32. The seven-class model has no int8 copy and no 320 or 416 px export; the int8 and smaller files measured below belong to the earlier four-class models and the stock COCO model.
 
 The sections under "Measured results" are a dated record of how this was reached, starting from a 416 px four-class model. The current defaults are summarised at the [end of this page](#current-defaults-2026-11-09).
 
@@ -87,8 +87,8 @@ Defined in `wazeomatic/schema.py`; model classes in `configs/classes.yaml`.
 
 The table shows the sprint 1 view; the complete list of the 20 report types, including the scene rules for
 traffic, weather, blocked lanes and dark signals, is [waze-coverage.md](waze-coverage.md). The shipped hazard
-model has six classes, in the order pothole, cone, construction_sign, delineator, barricade, worker
-(`configs/classes.yaml`, `models/hazard_yolo11n.labels.txt`).
+model (v4) has seven classes, in the order pothole, cone, construction_sign, delineator, barricade, worker,
+debris (`configs/classes.yaml`, `models/hazard_yolo11n.labels.txt`).
 
 **Menu names:** since the 2024 redesign Waze lists the hazard subtypes Construction, Car on shoulder, Broken traffic light, Pothole and Object directly under Report > Hazard, with Hazard preselected ([Waze Help](https://support.google.com/waze/answer/13739290?hl=en)); Animals/Roadkill were removed, so animals go out as a plain Hazard. The `waze_subcategory` strings in `schema.py` follow this flat layout. The `hazard_type` keys are the contract and never change; the macro and the mock app tap by on-screen label.
 
@@ -102,7 +102,7 @@ This is the procedure as the tools work now. Install the training dependencies f
 4. **Export.** `python tools/export_onnx.py --weights runs/train/hazard_v3n/weights/best.pt --name hazard_yolo11n_v3 --ship` writes `models/hazard_yolo11n_v3.onnx` (640 px, opset 17, static shape, no NMS) and its labels file, and copies both to the stable name `models/hazard_yolo11n.onnx` that the desktop pipeline and the Android build load. Without `--ship` only `models/<name>.onnx` is written; without `--name` the name is `hazard_<arch>_<imgsz>` with the architecture read from the checkpoint (for example `hazard_yolo11s_640`). `--ship` refuses a checkpoint that is not a YOLO11n unless `--force` is given. The small model: `--weights runs/train/hazard_v3s/weights/best.pt --name hazard_yolo11s_v3`. The stock model: `python tools/export_onnx.py --coco` (416 px, refreshes `models/coco_yolo11n.onnx`).
 5. **Evaluate.** `python tools/eval_events.py` scores a model on the v3 val split by default (box AP by object size, report events on synthetic clips, false reports on the hazard-free clips in `assets/videos/`) with the shipped report floors; it takes the same detector flags as `run_video.py`. The v3 tables below used `--zoom-crop --limit 120 --frames 8 --seed 1`. Then replay the test videos with `python -m wazeomatic.run_video`.
 
-`tools/quantize_onnx.py` (ONNX Runtime dynamic int8) and `tools/bench_onnx.py` (mean/p50/p90 ms per frame, `--compare <clip>` for fp32 vs int8 agreement) produced the size and latency tables below. They are not part of the shipped path: no int8 copy of the six-class model is exported.
+`tools/quantize_onnx.py` (ONNX Runtime dynamic int8) and `tools/bench_onnx.py` (mean/p50/p90 ms per frame, `--compare <clip>` for fp32 vs int8 agreement) produced the size and latency tables below. They are not part of the shipped path: no int8 copy of the seven-class model is exported.
 
 The acceptance line written in sprint 1 for sprint 2 was: pothole and cone mAP50 >= 0.5, no more than one false event per test clip, phone latency under 100 ms per frame. Measured against the v3 nano on the v3 val subset (tables below): cone AP50 0.513, met; pothole AP50 0.394, not met (the first 416 px model reached 0.56 on its own, much smaller and easier validation split, so the two figures are not comparable); false events 0 across 5 clips and 12 minutes, met; phone latency not measured yet.
 
@@ -364,19 +364,43 @@ footage is a thin basis for the lowest setting; 0.40 keeps a margin and still li
 0.45 point. The pothole floor comes down from 0.55 because the v3 model emits half as many weak pothole
 boxes on real roads and none of them survive three hits at 0.45.
 
-### Current defaults (2026-11-09)
+### Hazard v4: debris (2026-11-14)
+
+The v4 nano is the v3 nano trained on for 25 more epochs (learning rate 0.002) on the v3 set plus Lost and
+Found road obstacles as a seventh class, `debris` (models/README.md has the data file). It is the first model
+with the class behind Hazard > Object. Measured against v3 with the shipped report settings:
+
+| | v3 | v4 |
+|---|---|---|
+| boxes on the v3 val subset (1,201 images): AP50, all six shared classes | 0.392 | 0.381 |
+| events on the same images as 8-frame clips (`tools/eval_events.py --zoom-crop --limit 120 --frames 8 --seed 1`): F1 | 0.817 | 0.802 |
+| Construction events on those clips: found / false | 310 / 24 | 312 / 31 |
+| Pothole events on those clips: found / false | 229 / 5 | 215 / 3 |
+| reports on the hazard-free clips (14.6 min, each clip with and without the camera simulation) | 4 | 6 |
+| Construction on the 163 held-out Argoverse clips (3D labels): recall / precision | 0.94 / 0.96 | 0.99 / 0.97 |
+| Object on Lost and Found val (120 frames with an obstacle, 120 without; debris floor 0.5): recall / precision | no class | 0.55 / 0.89 |
+
+On the synthetic clips v4 is a little worse than v3 on the classes they share; on real city driving it finds
+more work zones with no more false reports, and it adds Object. It ships. On Lost and Found the debris floor
+trades precision for recall: 0.4 gives 0.59 / 0.84, 0.5 gives 0.55 / 0.89, 0.6 gives 0.50 / 0.92. Before the
+road rules the held-out Argoverse clips got two Object reports, both false: a vent on a building front (0.80)
+and the trouser legs of a man crossing (0.59). A debris box now has to reach below `road_top` (the horizon of
+the camera geometry less 0.15; 0.35 by default) and must not lie mostly inside a person or vehicle box;
+replayed, that cost 2 of 73 Object events on Lost and Found.
+
+### Current defaults (2026-11-14)
 
 The same on the desktop (`ReportConfig`, `run_video.py`) and in the phone app (`Settings.kt`, `ReportManager.kt`) unless stated:
 
 | Setting | Value |
 |---|---|
-| Hazard model | v3 nano, `models/hazard_yolo11n.onnx` (a copy of `hazard_yolo11n_v3.onnx`), six classes, 640 px, fp32 |
+| Hazard model | v4 nano, `models/hazard_yolo11n.onnx` (a copy of `hazard_yolo11n_v4.onnx`), seven classes, 640 px, fp32 |
 | COCO model | stock YOLO11n, `models/coco_yolo11n.onnx`, 416 px |
 | Zoom pass | on, crop `0.25,0.35,0.75,0.75`, hazard model only (`--zoom-coco` / `zoom_coco` adds the COCO model) |
 | Fusion | off: one hazard model ships. A second one (`--ensemble-model`, `-PhazardModel2=hazard_yolo11s_v3.onnx`) is fused with Weighted Boxes Fusion |
 | Hood zone | learnt from the picture, minimum 10 % of the frame height |
 | Detector box threshold | 0.35 on the desktop and in the app |
-| Report floor | 0.40; pothole 0.45 (the higher of the general floor and a label floor applies) |
+| Report floor | 0.40; pothole 0.45, police_vehicle 0.85, worker 0.6, debris 0.5 (the higher of the general floor and a label floor applies) |
 | Persistence | 3 hits in 10 inference frames (Police 2) |
 | Cooldowns | 60 s per hazard type and 60 s between any two events |
 | Spatial tracking | off (`track_iou` 0) |

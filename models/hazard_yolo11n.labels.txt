@@ -4,3 +4,4 @@ construction_sign
 delineator
 barricade
 worker
+debris
