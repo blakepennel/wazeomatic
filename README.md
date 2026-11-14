@@ -59,13 +59,27 @@ that into the report:
 
 ## What it reports
 
-| What the camera sees | Model classes | Event | Waze menu |
-| --- | --- | --- | --- |
-| Cones, drums, tubular markers, vertical panels | `cone`, `delineator` | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard › Construction |
-| Temporary traffic signs, arrow and message boards | `construction_sign` | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard › Construction |
-| Barricades, barriers, workers in hi-vis | `barricade`, `worker` | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard › Construction |
-| A pothole in the lane ahead | `pothole` | `HAZARD_ON_ROAD_POTHOLE` | Hazard › Pothole |
-| An animal on or near the road (stock COCO model) | `dog`, `horse`, `cow`, ... | `HAZARD_SHOULDER_ANIMALS` | Hazard |
+Every hazard type on the Waze report menu that a camera can see. The full table, with what fires each report,
+its thresholds and how well it is measured, is [docs/waze-coverage.md](docs/waze-coverage.md).
+
+| What the camera sees | Comes from | Waze menu |
+| --- | --- | --- |
+| Cones, drums, temporary signs, barricades, workers in hi-vis | hazard model | Hazard › Construction |
+| A pothole in the lane ahead | hazard model | Hazard › Pothole |
+| Debris on the road (with the v4 model) | hazard model | Hazard › Object |
+| An animal on or near the road | COCO model | Hazard (no animal subtype since 2024) |
+| A stopped car on the right shoulder (off by default) | COCO model + box growth | Hazard › Car on shoulder |
+| Two or more signal heads ahead, none lit | COCO model + lamp check | Hazard › Broken traffic light |
+| A police car | COCO vehicle + vehicle classifier | Police (› Other side, off by default) |
+| An ambulance or fire engine with flashing lights, at the scene | vehicle classifier + light flicker + ego motion | Crash (› Other side) |
+| Stop-and-go or standing traffic for minutes | ego motion + COCO vehicles | Traffic › Heavy / Standstill |
+| Fog, steady rain | weather classifier | Bad weather › Fog / Slippery road |
+| Standing water, ice, snow on the road (off: no road-surface model good enough to ship yet) | road-surface classifier | Bad weather › Flood / Icy road / Unplowed road |
+| Cones placed in our lane, left, centre or right | hazard model + flat-road camera model | Blocked lane › Left / Center / Right |
+
+Before it reports, the app reads the alerts Waze already shows (an accessibility service with no rights to tap,
+`WazeWatcherService.kt`; `wazeomatic/waze_reader.py` over adb on the desktop). A hazard Waze already shows
+close ahead is logged as a confirmation instead of being reported twice.
 
 The class schema and the mapping live in [configs/classes.yaml](configs/classes.yaml) and
 [wazeomatic/schema.py](wazeomatic/schema.py); the event JSON and Intent contract are in
@@ -79,6 +93,9 @@ flowchart LR
         CAM[CameraX<br/><sub>or a video file, or a Pi over TCP</sub>]
         DET[ONNX Runtime<br/><sub>hazard YOLO11n 640 + zoom pass<br/>COCO YOLO11n 416</sub>]
         HOOD[learnt hood zone]
+        CLS[second stage<br/><sub>vehicle classifier · weather · road surface</sub>]
+        SCN[scene rules<br/><sub>crash · traffic · blocked lane · dark signal · weather</sub>]
+        WR[Waze reader<br/><sub>alerts already on the map</sub>]
         RM[ReportManager<br/><sub>3 of 10 frames · floors · cooldowns</sub>]
         BC[/broadcast<br/>com.wazeomatic.HAZARD_DETECTED/]
         MD[MacroDroid macro]
@@ -90,6 +107,8 @@ flowchart LR
         EMU[Pixel 9 Pro emulator<br/><sub>mock Waze · 21 checks</sub>]
     end
     CAM --> DET --> HOOD --> RM --> BC --> MD --> WZ
+    DET --> CLS --> SCN --> RM
+    WZ -. read only .-> WR --> RM
     SIM -. same code .- DET
     SIM --> EV
     BC -. adb .-> EMU

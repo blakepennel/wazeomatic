@@ -69,7 +69,7 @@ The datasets are not committed. Every tool resolves the datasets folder the same
 | - | UK Road DashCam | [aap9002/UK-Road-DashCam](https://huggingface.co/datasets/aap9002/UK-Road-DashCam) | MIT | 4K Nextbase front-camera clips, 3 min each; two converted to 1080p in `assets/videos/uk_dashcam_002_1080p.mp4` and `..._006_...` | hazard-free real footage for the false-report rate (overcast, suburban and rural, dashboard in the bottom 15 %) |
 | - | Argoverse 2 clips | as 6 | CC BY-NC-SA 4.0 | two full-rate (20 Hz) val logs encoded as video: `assets/videos/argo_02678d04_clean.mp4` (no hazards labelled) and `assets/videos/labelled/argo_2ff4f798_workzone.mp4` (120 cone/barrel tracks) | real-sequence false-report rate and a real work-zone event check |
 
-Gaps: **police** has no adequate open dataset (the only Hugging Face set found had 8 images), so it is deferred. **Crash** is deferred for the same reason. Pothole positives come from dataset 1 (close-up, varied cameras), from the pothole images of the complete RDD2022 release (7,440 images, 10,702 pothole boxes, added in the small-object pass below) and from dataset 7; dataset 2 adds US street-level context but only 86 pothole boxes, so its value is mainly as negatives. Barrels (drums) are labelled as `delineator` since the v3 set (ROADWork drums, Argoverse barrels).
+Gaps at sprint 1: **police** had no adequate open dataset (the only Hugging Face set found had 8 images) and **crash** neither. Both were added later without a detector class: a classifier on the COCO vehicle boxes (Wikimedia Commons photos, Open Images and hand-checked dashcam crops, `models/README.md`) and scene rules on top of it ([waze-coverage.md](waze-coverage.md)). Pothole positives come from dataset 1 (close-up, varied cameras), from the pothole images of the complete RDD2022 release (7,440 images, 10,702 pothole boxes, added in the small-object pass below) and from dataset 7; dataset 2 adds US street-level context but only 86 pothole boxes, so its value is mainly as negatives. Barrels (drums) are labelled as `delineator` since the v3 set (ROADWork drums, Argoverse barrels).
 
 ## Class schema and Waze mapping
 
@@ -81,11 +81,14 @@ Defined in `wazeomatic/schema.py`; model classes in `configs/classes.yaml`.
 | cone, construction_sign, delineator, barricade, worker | hazard | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction | yes (barricade and worker since the v3 model) |
 | dog, horse, sheep, cow, bear | COCO | `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype; Waze removed Animals) | yes |
 | car, truck, bus + heuristic | COCO | `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder | experimental, off |
-| (none yet) | | `HAZARD_ON_ROAD_OBJECT` | Hazard > Object | no |
-| (none) | | `POLICE` | Police | deferred |
-| (none) | | `CRASH` | Crash | deferred |
+| debris (v4 model) | hazard | `HAZARD_ON_ROAD_OBJECT` | Hazard > Object | added later |
+| police_vehicle | vehicle classifier on COCO boxes | `POLICE` | Police | added later |
+| ambulance, fire_truck + flashing lights | vehicle classifier + scene rule | `CRASH` | Crash | added later |
 
-The hazard model has six classes, in the order pothole, cone, construction_sign, delineator, barricade, worker (`configs/classes.yaml`, `models/hazard_yolo11n.labels.txt`). No model has a police class; `schema.py` keeps a spare `police_vehicle` -> `POLICE` mapping for a future one.
+The table shows the sprint 1 view; the complete list of the 20 report types, including the scene rules for
+traffic, weather, blocked lanes and dark signals, is [waze-coverage.md](waze-coverage.md). The shipped hazard
+model has six classes, in the order pothole, cone, construction_sign, delineator, barricade, worker
+(`configs/classes.yaml`, `models/hazard_yolo11n.labels.txt`).
 
 **Menu names:** since the 2024 redesign Waze lists the hazard subtypes Construction, Car on shoulder, Broken traffic light, Pothole and Object directly under Report > Hazard, with Hazard preselected ([Waze Help](https://support.google.com/waze/answer/13739290?hl=en)); Animals/Roadkill were removed, so animals go out as a plain Hazard. The `waze_subcategory` strings in `schema.py` follow this flat layout. The `hazard_type` keys are the contract and never change; the macro and the mock app tap by on-screen label.
 

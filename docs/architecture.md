@@ -20,15 +20,28 @@ flowchart LR
         Fuse["«optional»<br/>Weighted Boxes Fusion<br/>only with a second hazard model"]
         Coco["«component»<br/>COCO model, YOLO11n ONNX<br/>416 px, full frame"]
         Hood["«component»<br/>Hood zone estimator<br/>learnt dashboard band, min 10 %"]
-        RM["«component»<br/>Report Manager<br/>persistence, cooldown, heuristics"]
+        Veh["«component»<br/>Vehicle classifier, YOLO11n-cls<br/>civilian / police / ambulance / fire<br/>on the largest car, truck, bus boxes"]
+        Wx["«component»<br/>Weather + road-surface classifiers<br/>whole frame / road patch, 2 Hz"]
+        Scene["«component»<br/>Scene analyzer<br/>ego motion, flashing lights, traffic,<br/>crash, blocked lanes, dark signals, weather"]
+        RM["«component»<br/>Report Manager<br/>persistence, cooldowns, already-in-Waze check"]
         Prep --> Hazard
         Prep --> Coco
+        Prep --> Wx
         Hazard --> RM
         Hazard -. second model .-> Fuse
         Fuse -.-> RM
         Coco --> RM
+        Coco --> Veh
+        Veh --> RM
+        Veh --> Scene
+        Coco --> Scene
+        Hazard --> Scene
+        Wx --> Scene
+        Scene -->|scene_* labels| RM
         Hood -->|hood zone| RM
     end
+
+    Reader["«component»<br/>Waze reader, read only<br/>accessibility service / uiautomator<br/>alert cards ahead"]
 
     subgraph Delivery["Event delivery"]
         direction TB
@@ -58,12 +71,14 @@ flowchart LR
     Hook -.-> Macro
     Macro -.->|taps report menu| Waze
     Macro -.->|emulator tests| Mock
+    Waze -.->|on-screen alerts| Reader
+    Reader -->|reports Waze already has| RM
 
     classDef component fill:#edf4fc,stroke:#35577d,color:#142a42,stroke-width:1.5px;
     classDef optional fill:#f7f7f7,stroke:#8a8a8a,color:#333333,stroke-dasharray: 4 3;
     classDef transport fill:#f5f0e6,stroke:#92754f,color:#453623;
     classDef external fill:#e9f5ef,stroke:#36755b,color:#173e2c;
-    class Cam,Vid,PiCam,Prep,Hazard,Coco,Hood,RM,Macro component;
+    class Cam,Vid,PiCam,Prep,Hazard,Coco,Hood,Veh,Wx,Scene,RM,Reader,Macro component;
     class Fuse optional;
     class Bcast,Tcp,Hook transport;
     class Waze,Mock external;
@@ -79,6 +94,10 @@ Files: [01_component.mmd](diagrams/01_component.mmd), [02_sequence.mmd](diagrams
 | Two-pass zoom | `ZoomDetector` in `wazeomatic/detector.py`, `ZoomCrop.kt` | Runs the hazard model a second time on a crop of the road ahead (default `0.25,0.35,0.75,0.75` as frame fractions), maps the boxes back and merges both passes with per-class NMS. On by default in `run_video.py` and the app. The COCO model is not zoomed unless `--zoom-coco` / `zoom_coco` is set. |
 | Fusion (optional) | `wazeomatic/fusion.py`, `EnsembleDetector`, `BoxFusion.kt` | Weighted Boxes Fusion (or NMS) across hazard models when a second one is configured (`--ensemble-model`, `-PhazardModel2` in the app build). Off by default: one hazard model ships. |
 | Hood zone | `wazeomatic/hood.py`, `HoodEstimator.kt` | Learns from the picture how much of the bottom of the frame is the car's own dashboard or bonnet (never less than 10 %). The Report Manager ignores boxes whose bottom edge is inside that band. |
+| Vehicle classifier | `wazeomatic/classifiers.py` (`VehicleClassifier`), `VehicleClassifier.kt` | A YOLO11n-cls model on square crops (box grown 12 %, letterboxed) of the four largest COCO cars, trucks and buses. Emits `police_vehicle`, `ambulance` and `fire_truck` detections with the vehicle's box; police goes to the Report Manager like any hazard class, the responders feed the crash rule. |
+| Weather and surface classifiers | `SceneClassifier`, `RoadSurface` (`classifiers.py`, `SceneClassifier.kt`, `RoadSurface.kt`) | Twice a second: clear / rain / snow / fog on the whole frame, and the road surface either on the patch of road just above the hood zone (RSCD-style model) or on a bird's-eye patch 15 m ahead warped with the camera geometry (RoadSaW-style model, skipped while a vehicle covers it). No road-surface model ships yet ([waze-coverage.md](waze-coverage.md), "Road surface"). |
+| Scene analyzer | `wazeomatic/scene.py`, `SceneAnalyzer.kt` | Rules over time that no single box shows: ego motion from frame differences (or GPS speed), flashing red and blue lights, traffic standstill and heavy traffic, crash (lit responders that we approach or stand by), blocked lanes from cone lines, dark traffic signals, weather and road surface held for seconds. Emits `scene_*` detections, each with its own per-type cooldown ([waze-coverage.md](waze-coverage.md)). |
+| Waze reader | `wazeomatic/waze_reader.py` (adb, desktop), `WazeWatcherService.kt` (accessibility, phone) | Reads Waze's alert cards, never taps. An event Waze already shows nearby is logged as a confirmation instead of being sent. |
 | Report Manager | `wazeomatic/report_manager.py`, Kotlin mirror | Turns per-frame detections into rare events. See below. |
 | Hazard schema | `wazeomatic/schema.py` | Hazard keys, Waze menu mapping, model-class mapping, event JSON and Intent extras. Single source of truth. |
 | Sinks | detector app, `run_video --sink` | Broadcast Intent (phone), TCP (Pi to phone), stdout, JSON lines file, adb and HTTP (desktop testing). |

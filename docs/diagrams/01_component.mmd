@@ -13,15 +13,28 @@ flowchart LR
         Fuse["«optional»<br/>Weighted Boxes Fusion<br/>only with a second hazard model"]
         Coco["«component»<br/>COCO model, YOLO11n ONNX<br/>416 px, full frame"]
         Hood["«component»<br/>Hood zone estimator<br/>learnt dashboard band, min 10 %"]
-        RM["«component»<br/>Report Manager<br/>persistence, cooldown, heuristics"]
+        Veh["«component»<br/>Vehicle classifier, YOLO11n-cls<br/>civilian / police / ambulance / fire<br/>on the largest car, truck, bus boxes"]
+        Wx["«component»<br/>Weather + road-surface classifiers<br/>whole frame / road patch, 2 Hz"]
+        Scene["«component»<br/>Scene analyzer<br/>ego motion, flashing lights, traffic,<br/>crash, blocked lanes, dark signals, weather"]
+        RM["«component»<br/>Report Manager<br/>persistence, cooldowns, already-in-Waze check"]
         Prep --> Hazard
         Prep --> Coco
+        Prep --> Wx
         Hazard --> RM
         Hazard -. second model .-> Fuse
         Fuse -.-> RM
         Coco --> RM
+        Coco --> Veh
+        Veh --> RM
+        Veh --> Scene
+        Coco --> Scene
+        Hazard --> Scene
+        Wx --> Scene
+        Scene -->|scene_* labels| RM
         Hood -->|hood zone| RM
     end
+
+    Reader["«component»<br/>Waze reader, read only<br/>accessibility service / uiautomator<br/>alert cards ahead"]
 
     subgraph Delivery["Event delivery"]
         direction TB
@@ -51,12 +64,14 @@ flowchart LR
     Hook -.-> Macro
     Macro -.->|taps report menu| Waze
     Macro -.->|emulator tests| Mock
+    Waze -.->|on-screen alerts| Reader
+    Reader -->|reports Waze already has| RM
 
     classDef component fill:#edf4fc,stroke:#35577d,color:#142a42,stroke-width:1.5px;
     classDef optional fill:#f7f7f7,stroke:#8a8a8a,color:#333333,stroke-dasharray: 4 3;
     classDef transport fill:#f5f0e6,stroke:#92754f,color:#453623;
     classDef external fill:#e9f5ef,stroke:#36755b,color:#173e2c;
-    class Cam,Vid,PiCam,Prep,Hazard,Coco,Hood,RM,Macro component;
+    class Cam,Vid,PiCam,Prep,Hazard,Coco,Hood,Veh,Wx,Scene,RM,Reader,Macro component;
     class Fuse optional;
     class Bcast,Tcp,Hook transport;
     class Waze,Mock external;

@@ -100,8 +100,8 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
-| `report_class_conf` | pothole=0.45 | per-label hit floors inside the Report Manager; the higher of the floor and `conf` applies, so a floor can raise the bar for a label but never lower it (same as `_min_conf` in `wazeomatic/report_manager.py`); the pothole floor is the shipped default on both the phone and the desktop pipeline |
-| `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored |
+| `report_class_conf` | pothole=0.45,police_vehicle=0.85 | per-label hit floors inside the Report Manager; the higher of the floor and `conf` applies, so a floor can raise the bar for a label but never lower it (same as `_min_conf` in `wazeomatic/report_manager.py`); both floors are the shipped default on the phone and the desktop pipeline. The police floor puts the vehicle classifier between its 0.8 and 0.9 operating points: 0.03-0.12 % of dashcam civilian vehicles called police (see `docs/waze-coverage.md`) |
+| `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored, except police / ambulance / fire boxes, which are ignored only when they lie wholly inside it (a police car close beside us reaches the bottom of the frame) |
 | `auto_hood` | true | grow the hood zone from the picture itself (`HoodEstimator.kt`): the dashboard keeps sharp edges in a running average of the frames while the road blurs away; on the test clips this finds a 22 % dashboard that the fixed 10 % missed (an air vent was reported as a pothole) |
 | `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |
 | `dry_run` | true | passed to the macro |
@@ -113,6 +113,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `scene_features` | traffic,crash,lanes,signals,weather | scene rules to run, a comma list like `--scene-features`; `none` switches the scene layer off (`--no-scene`), an empty list keeps only ego motion and the emergency-light check |
 | `police_other_side` | false | a police car far on the opposite side becomes Police > Other side (`--police-other-side`) |
 | `drive_side` | right | `left` mirrors the side rules for left-hand traffic (`--drive-side`) |
+| `camera_geometry` | 70,1.3,0.5 | horizontal field of view (degrees), mount height (metres) and horizon row (fraction of the height) for the flat-road camera model of the blocked-lane rule and a top-view road-surface model (`--camera-geometry`); a malformed value falls back to the default |
 | `use_gps_speed` | false | camera source: feed the GPS speed into the stopped / moving estimate. Only with this on does the app ask for location; the speed is used on the phone and no position is stored or sent |
 
 ## Second stage and scene layer

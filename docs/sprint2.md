@@ -44,6 +44,10 @@ Points use the scale of [user-stories.md](user-stories.md).
 | 7 | Night and rain envelope | A measured false-report rate on night and wet-road footage, or a written decision that the app is daylight only with a guard that says so in the status line | Footage | Blake | 5 |
 | 8 | Pothole accuracy | Pothole box AP50 >= 0.5 on the held-out subset, or a documented reason it cannot be reached with public data; candidates: own labelled frames from item 6, the small model if item 3 allows | Items 3 and 6 | Blake | 8 |
 | 9 | Loss accounting on the phone | The app shows events emitted, held back and broadcast; after a drive the three numbers explain every report and every non-report | Item 2 | Blake | 3 |
+| 14 | Every report type on real Waze | The macro taps all 20 `hazard_type` keys of [pipeline-to-macro.md](pipeline-to-macro.md) to the confirm sheet on the installed Waze (`tools/macro_selftest.py`), and the sub-tile labels in [waze-coverage.md](waze-coverage.md) are checked against it | Item 1 | Drew | 5 |
+| 15 | Waze reader on real Waze | `WazeWatcherService` reads the alert cards of the installed Waze during item 4; every alert logged as "unknown" is turned into a pattern; at least one hazard counted as confirmed instead of reported | Item 4 | Blake | 3 |
+| 16 | Camera geometry in the mount | Mount height, field of view and horizon row of the Pixel in the car measured and set (`--camera-geometry` / settings), so the blocked-lane rule places cones in the right lane | Item 2 | Blake | 2 |
+| 17 | Police and crash on own footage | The vehicle classifier and the crash rule run over the drive of item 4 and item 6; every POLICE and CRASH event checked by eye; the police floor confirmed or raised | Items 4 and 6 | Both | 3 |
 
 ### Could have
 
@@ -56,8 +60,9 @@ Points use the scale of [user-stories.md](user-stories.md).
 
 ### Not in this sprint
 
-Police and crash detection (no adequate open dataset), live reports of any kind (see
-[responsible-use.md](responsible-use.md)), an iOS version.
+Live reports of any kind (see [responsible-use.md](responsible-use.md)), an iOS version. Police, crash,
+traffic, weather and blocked-lane reports were added after this plan was first written; what fires each one
+and how well it is measured is in [waze-coverage.md](waze-coverage.md).
 
 ## What the report offset is made of
 
