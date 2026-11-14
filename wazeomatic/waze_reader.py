@@ -16,7 +16,9 @@ What it is used for:
    the status line and the logs.
 
 The strings below are the ones Waze shows in English (alert cards, the "Still there?" prompt, the list of
-reports on the route). They have been checked against the mock app only: the real app's wording changes
+reports on the route). They have been checked against the mock app and against the few real-app phrases
+quoted in press reports ("Police reported ahead", "Car on shoulder reported ahead", "Are they still there?" with
+"Not there"; tests/test_waze_reader.py), not against a live session of the real app: its wording changes
 between versions and languages, so every pattern is data, and an unknown text is kept as an alert of unknown
 type rather than dropped (``hazard_type`` None) so a log shows what to add.
 """

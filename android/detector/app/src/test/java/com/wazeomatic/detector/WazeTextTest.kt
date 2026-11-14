@@ -36,6 +36,17 @@ class WazeTextTest {
     }
 
     @Test
+    fun wordingSeenInTheRealApp() {
+        // phrases quoted in press reports of the real app (2024-2026), not only the mock
+        assertEquals("HAZARD_SHOULDER_CAR_STOPPED", WazeText.classifyText("Car on shoulder reported ahead"))
+        val alerts = WazeText.parseCards(
+            listOf(listOf("Police reported ahead", "0.3 mi", "Are they still there?", "Not there")), now = 0.0
+        )
+        assertEquals("POLICE", alerts[0].hazardType)
+        assertEquals("still_there", alerts[0].kind)
+    }
+
+    @Test
     fun cardsNeedAlertContext() {
         // a report-sheet tile named Police is not an alert; an alert card is
         val alerts = WazeText.parseCards(listOf(listOf("Police"), listOf("Police", "0.4 mi", "Reported 3 min ago")), now = 10.0)

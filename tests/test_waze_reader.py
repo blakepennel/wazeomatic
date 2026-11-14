@@ -26,6 +26,15 @@ def test_classify_known_wording():
         assert key in HAZARD_TYPES
 
 
+def test_wording_seen_in_the_real_app():
+    # phrases quoted in press reports of the real app (2024-2026), not only the mock: the alert banner and the
+    # prompt that asks whether a report is still there
+    assert classify_text("Car on shoulder reported ahead") == "HAZARD_SHOULDER_CAR_STOPPED"
+    assert classify_text("Police reported ahead") == "POLICE"
+    (a,) = parse_cards([["Police reported ahead", "0.3 mi", "Are they still there?", "Not there"]])
+    assert (a.hazard_type, a.kind) == ("POLICE", "still_there")
+
+
 def test_cards_need_alert_context():
     # a report-sheet tile named Police is not an alert; an alert card is
     cards = [["Police"], ["Police", "0.4 mi", "Reported 3 min ago"]]
