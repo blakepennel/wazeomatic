@@ -127,7 +127,7 @@ def test_hood_zone_ignored():
 
 
 def test_hood_zone_keeps_close_vehicles():
-    rm, _ = make(window=10, min_hits=1)
+    rm, _ = make(window=10, min_hits=1, min_hits_by_hazard={})
     # a police car beside us reaches the bottom edge of the frame: still a police car
     close = Detection("police_vehicle", 0.95, (0.7, 0.78, 0.4, 0.43), model="vehicle")
     assert len(rm.update([close])) == 1
@@ -167,3 +167,12 @@ def test_default_pothole_floor_is_045():
     # the default dict is copied per config, not shared
     cfg.min_confidence_by_label["cone"] = 0.9
     assert "cone" not in ReportConfig().min_confidence_by_label
+
+
+def test_police_needs_two_hits_by_default():
+    rm, _ = make(window=10)
+    cop = Detection("police_vehicle", 0.9, (0.5, 0.5, 0.2, 0.2), model="vehicle")
+    cone = Detection("cone", 0.9, (0.5, 0.6, 0.05, 0.05))
+    assert rm.update([cop, cone]) == []
+    out = rm.update([cop, cone])
+    assert [e.hazard_type for e in out] == ["POLICE"]          # the cone still needs its third hit

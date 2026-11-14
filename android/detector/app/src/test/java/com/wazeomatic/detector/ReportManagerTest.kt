@@ -174,11 +174,22 @@ class ReportManagerTest {
     @Test
     fun hoodZoneKeepsCloseVehicles() {
         // a police car beside us reaches the bottom edge of the frame: still a police car
-        val m = rm(ReportConfig(minHits = 1))
+        val m = rm(ReportConfig(minHits = 1, minHitsByHazard = emptyMap()))
         assertEquals(1, m.update(listOf(Detection("police_vehicle", 0.95f, BBox(0.7f, 0.78f, 0.4f, 0.43f), "vehicle"))).size)
         // a vehicle box wholly inside the hood zone is our own bonnet
         val m2 = rm(ReportConfig(minHits = 1))
         assertTrue(m2.update(listOf(Detection("police_vehicle", 0.95f, BBox(0.5f, 0.96f, 0.4f, 0.05f), "vehicle"))).isEmpty())
+    }
+
+    @Test
+    fun policeNeedsTwoHitsByDefault() {
+        // same rule as DEFAULT_MIN_HITS_BY_HAZARD in report_manager.py
+        assertEquals(mapOf("POLICE" to 2), ReportConfig().minHitsByHazard)
+        val m = rm()
+        val cop = Detection("police_vehicle", 0.9f, BBox(0.5f, 0.5f, 0.2f, 0.2f), "vehicle")
+        assertTrue(m.update(listOf(cop, det("cone", 0.9f))).isEmpty())
+        // the cone still needs its third hit
+        assertEquals(listOf("POLICE"), m.update(listOf(cop, det("cone", 0.9f))).map { it.hazardType })
     }
 
     @Test

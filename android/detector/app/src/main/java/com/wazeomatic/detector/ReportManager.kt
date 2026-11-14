@@ -12,6 +12,8 @@ import kotlin.math.sqrt
 data class ReportConfig(
     val window: Int = 10,
     val minHits: Int = 3,
+    /** Per-type overrides of [minHits]; Police needs two hits (see DEFAULT_MIN_HITS_BY_HAZARD). */
+    val minHitsByHazard: Map<String, Int> = DEFAULT_MIN_HITS_BY_HAZARD,
     val minConfidence: Float = 0.40f,
     /** Per-label overrides of [minConfidence]; potholes ship at 0.45 (see DEFAULT_LABEL_FLOORS). */
     val minConfidenceByLabel: Map<String, Float> = DEFAULT_LABEL_FLOORS,
@@ -45,6 +47,10 @@ data class ReportConfig(
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
 val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f)
+
+/** Same value as DEFAULT_MIN_HITS_BY_HAZARD in wazeomatic/report_manager.py: two classifier hits above the
+ *  police floor in ten frames (measured with the classifiers at their trained 160 px input). */
+val DEFAULT_MIN_HITS_BY_HAZARD: Map<String, Int> = mapOf("POLICE" to 2)
 
 /** Same values as SCENE_COOLDOWNS in wazeomatic/scene.py (seconds). */
 val SCENE_COOLDOWNS: Map<String, Double> = mapOf(
@@ -153,7 +159,7 @@ class ReportManager(
 
         val events = ArrayList<HazardEvent>()
         for ((hazard, tr) in tracks) {
-            val hits = qualifyingHits(tr) ?: continue
+            val hits = qualifyingHits(tr, cfg.minHitsByHazard[hazard] ?: cfg.minHits) ?: continue
             if (now - tr.lastEmittedTs < (cfg.cooldownByHazard[hazard] ?: cfg.cooldownS)) continue
             if (hazard == "HAZARD_SHOULDER_CAR_STOPPED" && !stoppedVehicleConfirmed(tr)) continue
             val cover = waze?.covering(hazard)
@@ -263,10 +269,10 @@ class ReportManager(
         }
     }
 
-    /** The hits that justify a report now, or null. */
-    private fun qualifyingHits(tr: Track): Collection<Hit>? {
-        if (cfg.trackIou <= 0f) return if (tr.hits.size >= cfg.minHits) tr.hits else null
-        val ready = tr.tracklets.filter { it.hits.size >= cfg.minHits }
+    /** The hits that justify a report now (at least [need] in the window), or null. */
+    private fun qualifyingHits(tr: Track, need: Int): Collection<Hit>? {
+        if (cfg.trackIou <= 0f) return if (tr.hits.size >= need) tr.hits else null
+        val ready = tr.tracklets.filter { it.hits.size >= need }
         if (ready.isEmpty()) return null
         return ready.maxByOrNull { tl -> tl.hits.maxOf { it.conf } }!!.hits
     }

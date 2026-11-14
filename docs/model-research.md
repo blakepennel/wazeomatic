@@ -377,7 +377,7 @@ The same on the desktop (`ReportConfig`, `run_video.py`) and in the phone app (`
 | Hood zone | learnt from the picture, minimum 10 % of the frame height |
 | Detector box threshold | 0.35 on the desktop and in the app |
 | Report floor | 0.40; pothole 0.45 (the higher of the general floor and a label floor applies) |
-| Persistence | 3 hits in 10 inference frames |
+| Persistence | 3 hits in 10 inference frames (Police 2) |
 | Cooldowns | 60 s per hazard type and 60 s between any two events |
 | Spatial tracking | off (`track_iou` 0) |
 

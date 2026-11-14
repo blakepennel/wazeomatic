@@ -91,7 +91,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `max_fps` | 6 | camera: inference rate cap (extra frames are dropped) |
 | `conf` | 0.40 | report min confidence (detector box threshold is min(0.35, conf), the desktop default) |
 | `cooldown` / `global_cooldown` | 60 / 60 | seconds per hazard type / between any two events; the second matches the macro, which files at most one report a minute, so a held-back hazard is counted here (`heldBack`) instead of vanishing there |
-| `min_hits` / `window` | 3 / 10 | persistence rule |
+| `min_hits` / `window` | 3 / 10 | persistence rule; Police needs 2 hits whatever `min_hits` says (`DEFAULT_MIN_HITS_BY_HAZARD` in `ReportManager.kt`) |
 | `stopped_vehicle` | false | experimental parked-car heuristic |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
@@ -101,7 +101,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `fusion` | wbf | `wbf` = weighted boxes fusion (boxes averaged, confidence = weighted mean over all members, so a box one member missed is scored down), `nms` = keep the best box |
 | `ensemble_weights` | "" | per-member weights, e.g. `3,1` (default equal) |
 | `class_conf` | "" | per-label confidence floors after fusion, e.g. `cone=0.5,delineator=0.5` |
-| `report_class_conf` | pothole=0.45,police_vehicle=0.85 | per-label hit floors inside the Report Manager; the higher of the floor and `conf` applies, so a floor can raise the bar for a label but never lower it (same as `_min_conf` in `wazeomatic/report_manager.py`); both floors are the shipped default on the phone and the desktop pipeline. The police floor puts the vehicle classifier between its 0.8 and 0.9 operating points: 0.03-0.12 % of dashcam civilian vehicles called police (see `docs/waze-coverage.md`) |
+| `report_class_conf` | pothole=0.45,police_vehicle=0.85 | per-label hit floors inside the Report Manager; the higher of the floor and `conf` applies, so a floor can raise the bar for a label but never lower it (same as `_min_conf` in `wazeomatic/report_manager.py`); both floors are the shipped default on the phone and the desktop pipeline. At the police floor the averaged vehicle classifiers call one dashcam civilian vehicle in about 5,800 police in a single frame (see `docs/waze-coverage.md`) |
 | `hood_frac` | 0.10 | minimum hood / dashboard zone at the bottom of the frame (fraction of the height); boxes whose bottom edge is inside it are ignored, except police / ambulance / fire boxes, which are ignored only when they lie wholly inside it (a police car close beside us reaches the bottom of the frame) |
 | `auto_hood` | true | grow the hood zone from the picture itself (`HoodEstimator.kt`): the dashboard keeps sharp edges in a running average of the frames while the road blurs away; on the test clips this finds a 22 % dashboard that the fixed 10 % missed (an air vent was reported as a pothole) |
 | `track_iou` | 0 | > 0 turns on spatial tracking: the hits behind a report must come from boxes that overlap frame to frame (grown by `track_grow`, default 1.5) or sit within 1.5 box sizes; three unrelated flickers no longer add up to a report |

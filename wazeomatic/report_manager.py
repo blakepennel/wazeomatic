@@ -28,6 +28,10 @@ from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 
 DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85}
+# per-type overrides of ReportConfig.min_hits. Police: two classifier hits above the 0.85 floor in ten frames;
+# with the classifiers at their trained 160 px input that found 7 of the 9 police cars on the held-out
+# Argoverse clips with no false report on the other 154, where three hits found 5 (docs/waze-coverage.md)
+DEFAULT_MIN_HITS_BY_HAZARD: dict[str, int] = {"POLICE": 2}
 
 
 def _scene_cooldowns() -> dict[str, float]:
@@ -46,6 +50,7 @@ def default_label_floor_spec() -> str:
 class ReportConfig:
     window: int = 10                 # inference frames considered
     min_hits: int = 3                # hits required inside the window
+    min_hits_by_hazard: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_MIN_HITS_BY_HAZARD))
     min_confidence: float = 0.40     # per-detection confidence to count as a hit
     # per-label floors on top of min_confidence (the higher of the two applies). Potholes need
     # more: the v3 model is clean on 12 minutes of hazard-free footage at 0.45 (the older 640c
@@ -174,7 +179,7 @@ class ReportManager:
 
         events: list[HazardEvent] = []
         for hazard, tr in self._tracks.items():
-            hits = self._qualifying_hits(tr)
+            hits = self._qualifying_hits(tr, self.cfg.min_hits_by_hazard.get(hazard, self.cfg.min_hits))
             if hits is None:
                 continue
             if now - tr.last_emitted_ts < self.cfg.cooldown_by_hazard.get(hazard, self.cfg.cooldown_s):
@@ -243,11 +248,11 @@ class ReportManager:
                     tl.hits.popleft()
             tr.tracklets = [tl for tl in tr.tracklets if tl.hits]
 
-    def _qualifying_hits(self, tr: _Track):
-        """The hits that justify a report now, or None."""
+    def _qualifying_hits(self, tr: _Track, need: int):
+        """The hits that justify a report now (at least ``need`` in the window), or None."""
         if self.cfg.track_iou <= 0:
-            return tr.hits if len(tr.hits) >= self.cfg.min_hits else None
-        ready = [tl for tl in tr.tracklets if len(tl.hits) >= self.cfg.min_hits]
+            return tr.hits if len(tr.hits) >= need else None
+        ready = [tl for tl in tr.tracklets if len(tl.hits) >= need]
         if not ready:
             return None
         return max(ready, key=lambda tl: max(h[1] for h in tl.hits)).hits
