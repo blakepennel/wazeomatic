@@ -167,6 +167,7 @@ def build_detectors(spec: DetectorSpec) -> list:
 
 
 DEFAULT_VEHICLE_MODEL = ROOT / "models" / "vehicle_cls.onnx"
+DEFAULT_VEHICLE_MODEL2 = ROOT / "models" / "vehicle_cls2.onnx"     # averaged with the first when present
 DEFAULT_WEATHER_MODEL = ROOT / "models" / "weather_cls.onnx"
 DEFAULT_SURFACE_MODEL = ROOT / "models" / "surface_cls.onnx"
 SCENE_FEATURES = ("traffic", "crash", "lanes", "signals", "weather")
@@ -174,8 +175,9 @@ SCENE_FEATURES = ("traffic", "crash", "lanes", "signals", "weather")
 
 def add_scene_args(ap) -> None:
     """Flags for the second stage (vehicle classifier), the weather classifier and the scene rules."""
-    ap.add_argument("--vehicle-model", help=f"police / ambulance / fire classifier for COCO vehicles "
-                                            f"(default {DEFAULT_VEHICLE_MODEL.relative_to(ROOT)} if present)")
+    ap.add_argument("--vehicle-model", help=f"police / ambulance / fire classifier for COCO vehicles; a comma list "
+                                            f"averages several (default {DEFAULT_VEHICLE_MODEL.relative_to(ROOT)}, "
+                                            f"plus {DEFAULT_VEHICLE_MODEL2.relative_to(ROOT)} if present)")
     ap.add_argument("--no-vehicle", action="store_true", help="no vehicle classifier: no police, ambulance, fire")
     ap.add_argument("--vehicle-crops", type=int, default=4, help="largest vehicles classified per frame")
     ap.add_argument("--weather-model", help=f"whole-frame weather classifier "
@@ -217,9 +219,16 @@ def build_second_stage(args):
         hfov, height, horizon = (float(v) for v in args.camera_geometry.split(","))
         geo = {"hfov_deg": hfov, "cam_height_m": height, "horizon_y": horizon}
     if not getattr(args, "no_vehicle", False) and not getattr(args, "no_coco", False):
-        p = _optional_model(getattr(args, "vehicle_model", None), DEFAULT_VEHICLE_MODEL, "vehicle classifier")
-        if p is not None:
-            vehicle = VehicleClassifier(p, max_crops=getattr(args, "vehicle_crops", 4))
+        explicit = getattr(args, "vehicle_model", None)
+        if explicit and "," in explicit:
+            paths = [_optional_model(m.strip(), DEFAULT_VEHICLE_MODEL, "vehicle classifier") for m in explicit.split(",")]
+        else:
+            p = _optional_model(explicit, DEFAULT_VEHICLE_MODEL, "vehicle classifier")
+            paths = [p] if p is not None else []
+            if p is not None and not explicit and DEFAULT_VEHICLE_MODEL2.exists():
+                paths.append(DEFAULT_VEHICLE_MODEL2)
+        if paths:
+            vehicle = VehicleClassifier(paths, max_crops=getattr(args, "vehicle_crops", 4))
     if not getattr(args, "no_weather", False):
         p = _optional_model(getattr(args, "weather_model", None), DEFAULT_WEATHER_MODEL, "weather classifier")
         q = _optional_model(getattr(args, "surface_model", None), DEFAULT_SURFACE_MODEL, "road-surface classifier")

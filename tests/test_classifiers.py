@@ -21,6 +21,7 @@ class FakeClf:
 def vehicle_clf(probs, **kw):
     vc = VehicleClassifier.__new__(VehicleClassifier)
     vc.clf = FakeClf(["civilian", "police", "ambulance", "fire"], probs)
+    vc.clfs = [vc.clf] + kw.get("more", [])
     vc.max_crops, vc.min_box_px, vc.min_vehicle_conf, vc.pad = kw.get("max_crops", 4), 28, 0.35, 0.12
     vc.last_ms, vc.last_probs = 0.0, []
     return vc
@@ -69,6 +70,18 @@ def test_vehicle_emits_police_with_vehicle_box():
     assert "ambulance" in labels and "fire_truck" not in labels     # 0.04 is under the 0.05 report floor
     assert vc.clf.seen[0][0].shape == (64, 64, 3)
     assert vc.last_probs[0][1]["civilian"] == np.float32(0.1)
+
+
+def test_vehicle_averages_several_models():
+    # a second model with its classes in another order and a larger input: averaged by class name
+    other = FakeClf(["police", "civilian", "fire", "ambulance"], [0.4, 0.5, 0.1, 0.0], size=96)
+    vc = vehicle_clf([0.1, 0.8, 0.06, 0.04], more=[other])
+    out = {d.label: d.confidence for d in vc(np.zeros((480, 640, 3), np.uint8), [Detection("car", 0.9, (0.4, 0.6, 0.2, 0.2))])}
+    assert abs(out["police_vehicle"] - 0.6) < 1e-6         # (0.8 + 0.4) / 2: one sure model alone is not enough
+    assert abs(out["fire_truck"] - 0.07) < 1e-6
+    assert "ambulance" not in out                            # (0.06 + 0) / 2 = 0.03, under the 0.05 floor
+    assert other.seen[0][0].shape == (96, 96, 3)             # each model gets crops at its own size
+    assert vc.last_ms == 2.0
 
 
 def test_vehicle_no_candidates_no_model_call():

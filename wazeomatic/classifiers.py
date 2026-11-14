@@ -108,9 +108,16 @@ class VehicleClassifier:
 
     name = "vehicle"
 
-    def __init__(self, model_path: str | Path, max_crops: int = 4, min_box_px: int = 28,
+    def __init__(self, model_path: str | Path | Sequence[str | Path], max_crops: int = 4, min_box_px: int = 28,
                  min_vehicle_conf: float = 0.35, threads: int = 2, pad: float = 0.12):
-        self.clf = OnnxClassifier(model_path, threads=threads)
+        # several models (same classes) are averaged: two models trained on different hard negatives make
+        # different mistakes on look-alikes, so the mean is far more often below the police floor on them
+        paths = [model_path] if isinstance(model_path, (str, Path)) else list(model_path)
+        self.clfs = [OnnxClassifier(m, threads=threads) for m in paths]
+        self.clf = self.clfs[0]
+        for c in self.clfs[1:]:
+            if sorted(c.labels) != sorted(self.clf.labels):
+                raise SystemExit(f"vehicle classifiers disagree on classes: {c.path} {c.labels} vs {self.clf.labels}")
         self.max_crops = max_crops
         self.min_box_px = min_box_px
         self.min_vehicle_conf = min_vehicle_conf
@@ -130,12 +137,19 @@ class VehicleClassifier:
         if not cand:
             self.last_ms = 0.0
             return []
-        crops = [square_crop(image, d.bbox, self.pad, self.clf.size) for d in cand]
-        probs = self.clf.predict(crops)
-        self.last_ms = self.clf.last_ms
+        sums = [dict.fromkeys(self.clf.labels, 0.0) for _ in cand]
+        self.last_ms = 0.0
+        crops: dict[int, list[np.ndarray]] = {}
+        for clf in self.clfs:
+            if clf.size not in crops:
+                crops[clf.size] = [square_crop(image, d.bbox, self.pad, clf.size) for d in cand]
+            for acc, p in zip(sums, clf.predict(crops[clf.size])):
+                for lab, v in zip(clf.labels, p):
+                    acc[lab] += float(v)
+            self.last_ms += clf.last_ms
         out: list[Detection] = []
-        for d, p in zip(cand, probs):
-            pd = {lab: float(v) for lab, v in zip(self.clf.labels, p)}
+        for d, acc in zip(cand, sums):
+            pd = {lab: v / len(self.clfs) for lab, v in acc.items()}
             self.last_probs.append((d, pd))
             for cls, label in VEHICLE_CLASS_TO_LABEL.items():
                 if cls in pd and pd[cls] >= 0.05:

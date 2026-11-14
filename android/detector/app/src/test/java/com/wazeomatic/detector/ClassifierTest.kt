@@ -102,6 +102,20 @@ class ClassifierTest {
     }
 
     @Test
+    fun vehicleModelsAreAveragedByClassName() {
+        val first = FakeClassifier(listOf("civilian", "police", "ambulance", "fire")) { floatArrayOf(0.1f, 0.8f, 0.06f, 0.04f) }
+        val second = FakeClassifier(listOf("police", "civilian", "fire", "ambulance"), 96) { floatArrayOf(0.4f, 0.5f, 0.1f, 0f) }
+        val vc = VehicleClassifier(first, more = listOf(second))
+        val car = Detection("car", 0.9f, BBox(0.4f, 0.6f, 0.2f, 0.2f), "coco")
+        val out = vc(RgbImage.filled(640, 480, 0, 0, 0), listOf(car)).associate { it.label to it.confidence }
+        assertEquals(0.6f, out["police_vehicle"]!!, 1e-6f)      // (0.8 + 0.4) / 2: one sure model alone is not enough
+        assertEquals(0.07f, out["fire_truck"]!!, 1e-6f)
+        assertNull(out["ambulance"])                             // 0.03 is under the 0.05 floor
+        assertEquals(96, second.seen[0].width)                   // each model gets crops at its own size
+        assertEquals(3.0, vc.lastMs, 0.0)
+    }
+
+    @Test
     fun vehicleCandidatesAreTheLargestConfidentVehicles() {
         val fake = FakeClassifier(listOf("civilian", "police", "ambulance", "fire")) { floatArrayOf(0.1f, 0.8f, 0.06f, 0.04f) }
         val vc = VehicleClassifier(fake)

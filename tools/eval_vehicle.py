@@ -35,17 +35,22 @@ VIDEO_EXT = {".mp4", ".webm", ".ogv", ".ogg", ".mkv", ".mov", ".avi"}
 
 def eval_crops(args) -> dict:
     root = Path(args.data) if args.data else datasets_root() / "vehicle_crops" / "val"
-    clf = OnnxClassifier(args.model, threads=8)
-    names = clf.labels
+    # a comma list averages the models per class, as VehicleClassifier does with several models
+    clfs = [OnnxClassifier(m, threads=8) for m in args.model.split(",")]
+    names = clfs[0].labels
     ys, ps, srcs = [], [], []
     for ci, cls in enumerate(names):
         files = sorted((root / cls).glob("*.jpg"))
         srcs += [f.name.split("_", 1)[0] for f in files]
         for i in range(0, len(files), 64):
-            batch = [cv2.resize(cv2.imread(str(f)), (clf.size, clf.size), interpolation=cv2.INTER_AREA)
-                     for f in files[i:i + 64]]
-            ps.append(clf.predict(batch))
-            ys += [ci] * len(batch)
+            ims = [cv2.imread(str(f)) for f in files[i:i + 64]]
+            acc = np.zeros((len(ims), len(names)), np.float32)
+            for clf in clfs:
+                batch = [cv2.resize(im, (clf.size, clf.size), interpolation=cv2.INTER_AREA) for im in ims]
+                pr = clf.predict(batch)
+                acc += pr[:, [clf.labels.index(n) for n in names]]
+            ps.append(acc / len(clfs))
+            ys += [ci] * len(ims)
     y, p = np.array(ys), np.concatenate(ps)
     pred = p.argmax(1)
     out = {"n": int(len(y)), "top1": round(float((pred == y).mean()), 4), "per_class": {}}
@@ -171,7 +176,8 @@ def eval_clips(args) -> tuple[dict, int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mode", choices=["crops", "clips"])
-    ap.add_argument("--model", help="vehicle classifier ONNX (default models/vehicle_cls.onnx)")
+    ap.add_argument("--model", help="vehicle classifier ONNX (default models/vehicle_cls.onnx); crops: a comma "
+                                    "list averages several")
     ap.add_argument("--data", help="crops: val folder")
     ap.add_argument("--clips", help="clips: folder of videos (searched recursively)")
     ap.add_argument("--clip-half", type=int, choices=[0, 1],

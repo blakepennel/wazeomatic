@@ -72,6 +72,8 @@ val hazardModel2 = (findProperty("hazardModel2") as String?) ?: ""
 // Override with e.g. -PvehicleModel=vehicle_cls_v2.onnx, or "" to leave it out.
 val classifierModels = linkedMapOf(
     "vehicle_cls" to ((findProperty("vehicleModel") as String?) ?: "vehicle_cls.onnx"),
+    // averaged with vehicle_cls on the phone when present (models/README.md)
+    "vehicle_cls2" to ((findProperty("vehicleModel2") as String?) ?: "vehicle_cls2.onnx"),
     "weather_cls" to ((findProperty("weatherModel") as String?) ?: "weather_cls.onnx"),
     "surface_cls" to ((findProperty("surfaceModel") as String?) ?: "surface_cls.onnx"),
 )

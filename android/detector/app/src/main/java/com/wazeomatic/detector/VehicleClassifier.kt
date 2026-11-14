@@ -4,7 +4,9 @@ package com.wazeomatic.detector
  * Second stage for the stock detector's vehicles (twin of classifiers.VehicleClassifier): the largest few
  * car / truck / bus boxes are cropped, padded to a square and classified as civilian, police, ambulance or fire
  * engine. Emergency classes come back as detections with the vehicle's box (model "vehicle"), so the report
- * manager treats them like any other hazard class. [maxCrops] bounds the per-frame cost.
+ * manager treats them like any other hazard class. [maxCrops] bounds the per-frame cost. With [more] models
+ * (same classes, any order or input size) the probabilities are averaged per class: models trained on different
+ * hard negatives make different mistakes on look-alikes.
  */
 class VehicleClassifier(
     val clf: ImageClassifier,
@@ -13,7 +15,14 @@ class VehicleClassifier(
     val minVehicleConf: Float = 0.35f,
     val pad: Double = 0.12,
     val minProb: Float = 0.05f,
+    val more: List<ImageClassifier> = emptyList(),
 ) : java.io.Closeable {
+    private val clfs = listOf(clf) + more
+
+    init {
+        for (c in more) require(c.labels.toSet() == clf.labels.toSet()) { "vehicle classifiers disagree on classes: ${c.labels} vs ${clf.labels}" }
+    }
+
     var lastMs = 0.0
         private set
     /** Probabilities of the last frame's crops, for logs. */
@@ -33,14 +42,23 @@ class VehicleClassifier(
             lastMs = 0.0
             return emptyList()
         }
-        val crops = cand.map { ImageOps.squareCrop(image, it.bbox, pad, clf.size) }
-        val probs = clf.predict(crops)
-        lastMs = clf.lastMs
+        val sums = List(cand.size) { LinkedHashMap<String, Float>().apply { clf.labels.forEach { put(it, 0f) } } }
+        val cropsBySize = HashMap<Int, List<RgbImage>>()
+        var ms = 0.0
+        for (c in clfs) {
+            val crops = cropsBySize.getOrPut(c.size) { cand.map { ImageOps.squareCrop(image, it.bbox, pad, c.size) } }
+            val probs = c.predict(crops)
+            for ((k, p) in probs.withIndex()) for ((i, lab) in c.labels.withIndex()) {
+                if (i < p.size && lab in sums[k]) sums[k][lab] = sums[k][lab]!! + p[i]
+            }
+            ms += c.lastMs
+        }
+        lastMs = ms
         val out = ArrayList<Detection>()
         val seen = ArrayList<Pair<Detection, Map<String, Float>>>()
-        for ((d, p) in cand.zip(probs.toList())) {
+        for ((d, acc) in cand.zip(sums)) {
             val pd = LinkedHashMap<String, Float>()
-            for ((i, lab) in clf.labels.withIndex()) if (i < p.size) pd[lab] = p[i]
+            for ((lab, v) in acc) pd[lab] = v / clfs.size
             seen.add(d to pd)
             for ((cls, label) in VEHICLE_CLASS_TO_LABEL) {
                 val v = pd[cls] ?: continue
@@ -51,7 +69,7 @@ class VehicleClassifier(
         return out
     }
 
-    override fun close() = clf.close()
+    override fun close() = clfs.forEach { try { it.close() } catch (_: Exception) {} }
 
     companion object {
         val VEHICLE_LABELS = setOf("car", "truck", "bus")

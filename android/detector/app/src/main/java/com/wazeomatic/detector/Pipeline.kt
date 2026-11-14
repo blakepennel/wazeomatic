@@ -94,7 +94,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         vehicle = if (!settings.vehicleClassifier) null else if (!hasCoco) {
             notes.add("vehicle: off (no coco)")
             null
-        } else loadClassifier(ctx, env, "vehicle_cls", "vehicle", notes)?.let { VehicleClassifier(it, maxCrops = settings.vehicleCrops) }
+        } else loadClassifier(ctx, env, "vehicle_cls", "vehicle", notes)?.let { first ->
+            // a second vehicle model, when bundled, is averaged with the first (models/README.md)
+            val second = if (assetExists(ctx, "vehicle_cls2.onnx")) loadClassifier(ctx, env, "vehicle_cls2", "vehicle 2", notes) else null
+            VehicleClassifier(first, maxCrops = settings.vehicleCrops, more = listOfNotNull(second))
+        }
         sceneClassifiers = if (!settings.weather) null else {
             val w = loadClassifier(ctx, env, "weather_cls", "weather", notes, threads = 1)?.let { SceneClassifier(it) }
             val r = loadClassifier(ctx, env, "surface_cls", "surface", notes, threads = 1)?.let { RoadSurface(it) }
