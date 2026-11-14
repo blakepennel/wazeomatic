@@ -144,6 +144,33 @@ other parameters were set before. Most remaining false alarms are cones on a cur
 puts them in the wrong lane. A Waze user who sees a closed lane holds the 1.0 s definition; the 1.5 s one is
 there to show how the numbers move.
 
+The second Argoverse fetch added logs that were never used for tuning. On the held-out half of all logs
+(`--clip-half 1`, 163 clips, same geometry), the 109 clips outside the original 100 have no blocked lane by
+the label definition and get no Blocked lane report; the 54 inside it give 4 of 6 found with no false report
+(1.0 s) and 3 of 5 with one false report (1.5 s) (`runs/eval/lanes_h1*.json`).
+
+### Construction and the other hazard rules
+
+Every rule at once (hazard model, COCO, vehicle classifiers, scene rules; `tools/eval_vehicle.py clips --hazard
+--clip-half 1 --step 1`) on the 163 held-out Argoverse clips, 37.9 minutes of city driving in six US cities.
+Construction is scored against the 3D labels with `tools/eval_construction_argoverse.py`: a clip is a work
+zone when a cone, drum, message-board trailer or flagger with lidar points stands 3-40 m ahead in view and at
+most 10 m to the side for a second, and has none when no such object is within 80 m; the 60 clips in between
+are left out.
+
+| Report | Result |
+|---|---|
+| Construction | 81 of 86 work-zone clips reported (recall 0.94); 4 of the 17 clips without a work zone get one (precision 0.95) |
+| Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
+| Broken traffic light, Crash, Traffic | none |
+| Police | 7 of 9, none false (the table above) |
+
+The four Construction reports without a labelled work zone, checked by eye: striped delineator posts on the
+pavement and a row of posts with fencing at a work site (both labelled as bollards in Argoverse), an "END
+ROAD WORK" sign (a construction sign, but it marks where the work zone ends: telling the two apart needs the
+text), and a pedestrian in an orange T-shirt taken for a worker. Two of the four are real work zones the
+labels miss.
+
 ### Weather
 
 The weather classifier on 2,425 BDD100K frames held out by file hash (`tools/eval_scene.py`), one frame at a
