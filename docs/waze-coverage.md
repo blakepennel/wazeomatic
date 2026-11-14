@@ -162,8 +162,11 @@ smoothed probability above the threshold for 20 s (fog) and 60 s (rain), so isol
 Waze. These numbers are at the 224 px input the model was trained at (`runs/eval/scene_topview_224w_160s.json`);
 fed 128 px frames, as the pipeline did before the input size was read from the model, clear frames met the
 fog threshold in 1.0 % and the rain threshold in 3.3 %, and rain frames 62 %. Real fog is rare in BDD100K
-(25 val frames): at 224 px a fog threshold as low as 0.4 still catches only 3 of them, so fog recall is a
-rough figure and the threshold stays at 0.70.
+(25 val frames): at 224 px a fog threshold as low as 0.4 still catches only 3 of them. A second check
+uses DAWN (real road pictures in adverse weather, gathered from the web; evaluation only, see NOTICE.md):
+a single picture clears the fog threshold in 46 % of its 300 fog pictures (52 % at 128 px) and the rain
+threshold in 60 % of its 200 rain pictures (62 %), and 17 rain pictures come out as fog (31 at 128 px). A
+fog threshold of 0.6 would add two points of fog recall, so it stays at 0.70.
 
 ### Road surface
 

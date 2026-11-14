@@ -55,7 +55,9 @@ Commons. The UK Road DashCam clips (aap9002, MIT) and the Argoverse 2 sequences 
 used for the real-footage checks are fetched by hand as described in
 [assets/videos/README.md](assets/videos/README.md). The emergency-vehicle clips used to test police and
 crash reporting come from Wikimedia Commons under CC BY / CC BY-SA (`tools/fetch_commons_videos.py`
-records author and licence per clip).
+records author and licence per clip). The fog and rain pictures of DAWN (Kenk and Hassaballah,
+Mendeley Data 10.17632/766ygrbt8y.3; all rights reserved, no commercial use or redistribution) are used
+only to measure the weather classifier and are never trained on.
 
 ## Waze
 
