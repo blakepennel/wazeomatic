@@ -12,6 +12,13 @@ Stage 2 (--stage images): for the top ``--logs`` logs download the calibration, 
 
     python tools/fetch_argoverse_hazards.py --stage annotations
     python tools/fetch_argoverse_hazards.py --stage images --logs 60 --every 5
+    python tools/fetch_argoverse_hazards.py --stage images --logs 200 --skip 100   # the next 200
+    python tools/fetch_argoverse_hazards.py --stage clips      # one mp4 per log, for the clip evaluations
+
+Stage 3 (--stage clips): every downloaded log as ``<datasets>/argoverse2/clips/<first 8 of the log id>.mp4``
+at 5 fps, 1280 px wide, with the top 15 % (sky) and the bottom 20 % (bonnet) of the portrait front camera cut
+off, roughly a dashcam's view. ``tools/eval_vehicle.py``, ``tools/eval_lanes_argoverse.py`` and
+``tools/mine_vehicle_crops.py --clips`` read these.
 
 Licence: Argoverse 2 is CC BY-NC-SA 4.0 (research use).
 """
@@ -124,9 +131,9 @@ def rank_logs() -> list[dict]:
     return rows
 
 
-def stage_images(n_logs: int, every: int, workers: int, min_tracks: int) -> None:
+def stage_images(n_logs: int, every: int, workers: int, min_tracks: int, skip: int = 0) -> None:
     rows = json.loads((OUT / "log_ranking.json").read_text())
-    chosen = [r for r in rows if r["hazard_tracks"] >= min_tracks][:n_logs]
+    chosen = [r for r in rows if r["hazard_tracks"] >= min_tracks][skip:skip + n_logs]
     print(f"downloading {len(chosen)} logs, every {every}th front frame")
     for i, r in enumerate(chosen):
         split, log = r["split"], r["log"]
@@ -143,12 +150,39 @@ def stage_images(n_logs: int, every: int, workers: int, min_tracks: int) -> None
         print(f"  [{i + 1}/{len(chosen)}] {log}: {len(frames[::every])} frames, {r['hazard_tracks']} tracks")
 
 
+def stage_clips() -> None:
+    import cv2
+    out = OUT / "clips"
+    out.mkdir(parents=True, exist_ok=True)
+    made = 0
+    for split in ("train", "val"):
+        root = OUT / "logs" / split
+        for log in sorted(root.iterdir()) if root.exists() else []:
+            frames = sorted((log / "sensors" / "cameras" / CAMERA).glob("*.jpg"))
+            dst = out / f"{log.name[:8]}.mp4"
+            if not frames or dst.exists():
+                continue
+            first = cv2.imread(str(frames[0]))
+            h, w = first.shape[:2]
+            y1, y2 = int(h * 0.15), int(h * 0.80)            # sky and bonnet out
+            size = (1280, int(1280 * (y2 - y1) / w) // 2 * 2)
+            vw = cv2.VideoWriter(str(dst), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, size)
+            for f in frames:
+                im = cv2.imread(str(f))
+                if im is not None:
+                    vw.write(cv2.resize(im[y1:y2], size, interpolation=cv2.INTER_AREA))
+            vw.release()
+            made += 1
+    print(f"{made} new clips in {out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=["annotations", "rank", "images"], required=True)
+    ap.add_argument("--stage", choices=["annotations", "rank", "images", "clips"], required=True)
     ap.add_argument("--logs", type=int, default=60)
     ap.add_argument("--every", type=int, default=5, help="keep every Nth front frame (20 Hz source)")
     ap.add_argument("--min-tracks", type=int, default=3)
+    ap.add_argument("--skip", type=int, default=0, help="start after this many logs of the ranking (fetch more later)")
     ap.add_argument("--workers", type=int, default=16)
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -156,8 +190,10 @@ def main() -> None:
         stage_annotations(args.workers)
     elif args.stage == "rank":
         rank_logs()
+    elif args.stage == "clips":
+        stage_clips()
     else:
-        stage_images(args.logs, args.every, args.workers, args.min_tracks)
+        stage_images(args.logs, args.every, args.workers, args.min_tracks, args.skip)
 
 
 if __name__ == "__main__":

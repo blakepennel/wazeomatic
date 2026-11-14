@@ -4,7 +4,8 @@
     python tools/eval_vehicle.py clips --model models/vehicle_cls.onnx --clips F:/dev/datasets/commons_videos
     python tools/eval_vehicle.py clips --clips assets/videos --expect none          # false reports on clean drives
     python tools/eval_vehicle.py clips --hazard --clips F:/dev/datasets/argoverse2/clips   # every event type
-    python tools/eval_vehicle.py clips --clips F:/dev/datasets/argoverse2/clips --clip-half 1 --step 1
+    python tools/eval_vehicle.py clips --clips F:/dev/datasets/argoverse2/clips --clip-half 1 --step 1 \
+        --police-truth configs/police_truth_argoverse.txt
 
 **crops** - precision / recall per class on ``<datasets>/vehicle_crops/val``, and for police the score
 threshold that keeps the civilian false-positive rate at 1 %, 0.3 % and 0.1 % of crops, with the police recall
@@ -153,8 +154,18 @@ def eval_clips(args) -> tuple[dict, int]:
         for t in r.get("events", []):
             by_type[t] = by_type.get(t, 0) + 1
     minutes = round(sum(r.get("seconds", 0.0) for r in results.values()) / 60.0, 1)
-    return {"clips": n, "minutes": minutes, "clips_with_police_or_crash": hit, "events_by_type": by_type,
-            "per_clip": results}, bad
+    out = {"clips": n, "minutes": minutes, "clips_with_police_or_crash": hit, "events_by_type": by_type}
+    if args.police_truth:
+        # clip stems checked by eye to show a marked police vehicle; every other clip has none
+        truth = {ln.split("#")[0].strip() for ln in Path(args.police_truth).read_text(encoding="utf-8").splitlines()}
+        truth.discard("")
+        fired = {Path(k).stem for k, r in results.items() if "POLICE" in r.get("events", [])}
+        stems = {Path(k).stem for k, r in results.items() if "error" not in r}
+        pos = truth & stems
+        out["police_truth"] = {"clips_with_police": len(pos), "found": len(fired & pos), "missed": sorted(pos - fired),
+                               "clips_without_police": len(stems - pos), "false_clips": sorted(fired - pos)}
+    out["per_clip"] = results
+    return out, bad
 
 
 def main() -> None:
@@ -168,6 +179,8 @@ def main() -> None:
     ap.add_argument("--step", type=int, default=3)
     ap.add_argument("--hazard", action="store_true", help="clips: run the hazard model too (all scene rules)")
     ap.add_argument("--expect", choices=["none", "any"], help="clips: fail on any / on no police-crash event")
+    ap.add_argument("--police-truth", help="clips: text file of clip stems that show a marked police vehicle "
+                                           "(one per line); scores POLICE events against it")
     ap.add_argument("--out", help="write the JSON result here")
     argv = sys.argv[1:]
     # pipeline flags go after a bare "--"; a REMAINDER positional would swallow --model and the rest too
