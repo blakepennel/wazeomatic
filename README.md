@@ -142,8 +142,8 @@ The second stage and the scene rules are measured separately, each on data it wa
 
 | Report | Measured on | Result |
 | --- | --- | --- |
-| Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 7 of 9 police clips reported; no false Police report in the 154 clips without police |
-| Police, Crash | 14.6 min of dashcam drives without responders | 0 false reports |
+| Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 12 of 13 police clips reported; no false Police report in the 150 clips without police (the earlier two-model pair: 7 of 13) |
+| Police, Crash | 14.6 min of dashcam drives | 0 false reports (one correct Police report: a parked police car in the work-zone log) |
 | Construction | 163 held-out Argoverse 2 city clips scored against their 3D cone, drum and flagger labels | recall 0.99, precision 0.97 (two of the three false reports are, on review, work zones the labels call bollards) |
 | Object on the road | Lost and Found val frames (120 with a small obstacle, 120 without) | recall 0.55, precision 0.89; no report on the 163 held-out Argoverse clips |
 | Blocked lane | 100 Argoverse 2 logs scored against their 3D cone and drum labels | precision 0.77, recall 0.77, side right on 80 % of hits; no false report on 109 logs never used for tuning |

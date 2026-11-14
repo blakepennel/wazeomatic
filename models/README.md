@@ -11,8 +11,8 @@ published](#why-the-weights-are-not-published). Build them locally with the step
 | `hazard_yolo11n_v3.onnx` | The previous shipped model, six classes (no debris). Kept for comparison. |
 | `hazard_yolo11s_v3.onnx` | YOLO11s trained on the same v3 set, 640 px, six classes. Not the default: about 3x the compute of the nano. Use it with `--hazard-model` on the desktop or `-PhazardModel` / `-PhazardModel2` in the Android build. |
 | `coco_yolo11n.onnx` | Stock COCO YOLO11n, 416 px, used for vehicles, people and animals. |
-| `vehicle_cls.onnx`, `vehicle_cls2.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px (the pipeline reads the size from the export's `imgsz` metadata, since the input is dynamic), four classes (ambulance, civilian, fire, police). Copies of `vehicle_v6.onnx` and `vehicle_v5.onnx`; when `vehicle_cls2` is present (desktop and app) the two are averaged per class. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
-| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v7.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v5 and v6 are loaded. |
+| `vehicle_cls.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px (the pipeline reads the size from the export's `imgsz` metadata, since the input is dynamic), four classes (ambulance, civilian, fire, police). A copy of `vehicle_v8.onnx`. An optional `vehicle_cls2.onnx` is averaged with it per class (desktop and app); none ships since v8. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
+| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v8.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v8 is loaded. |
 | `weather_cls.onnx` | Whole-frame weather: YOLO11n-cls, 224 px, four classes (clear, fog, rain, snow). A copy of `weather_yolo11n.onnx`. Feeds the Fog and Slippery road rules. |
 | `surface_cls.onnx` (optional) | Road-surface patch classifier (dry, wet, water, slush, snow, ice) for Flood, Icy road, Unplowed road and Slippery road. Without it those rules stay silent. |
 
@@ -87,15 +87,20 @@ python tools/fetch_commons_vehicles.py         # police / ambulance / fire photo
 python tools/fetch_openimages.py               # Open Images Ambulance, Car, Taxi, Van boxes
 python tools/build_vehicle_crops.py            # <datasets>/vehicle_crops
 python tools/train_classifier.py vehicle --ship
-# a second model trained on different hard negatives, averaged with the first:
-#   copy it to models/vehicle_cls2.onnx (+ vehicle_cls2.labels.txt); the app bundles it when present
+# optional second model, averaged with the first: copy it to models/vehicle_cls2.onnx
+#   (+ vehicle_cls2.labels.txt); the app bundles it when present (v5 + v6 shipped that way before v8)
+# whole-track mining on clips no evaluation scores (see v8 below):
+python tools/mine_vehicle_tracks.py scan --clips <datasets>/argoverse2/clips_mine --work <datasets>/mining_tracks/new
+python tools/mine_vehicle_tracks.py sheets --work <datasets>/mining_tracks/new
+python tools/mine_vehicle_tracks.py label --work <datasets>/mining_tracks/new --yes 0,3 --skip 5
+python tools/build_vehicle_crops.py --sources tracks --track-repeat 3
 python tools/build_scene_sets.py weather       # BDD100K frames by weather label, plus synthetic fog in train
 python tools/train_classifier.py weather --ship
 python tools/fetch_rscd.py; python tools/build_scene_sets.py surface
 python tools/train_classifier.py surface --ship
 ```
 
-The vehicle classifier took four rounds. v1 learnt photo style instead of livery: every police picture was a
+The vehicle classifier took eight rounds. v1 learnt photo style instead of livery: every police picture was a
 hand-held photo and every civilian car a dashcam crop, so it called 22 % of hand-held civilian look-alikes
 police. v2 added Open Images photos of ordinary cars, taxis and vans as civilian. v3 added crops mined from
 40,000 BDD100K dashcam frames: `tools/mine_vehicle_crops.py scan` scores every vehicle with the current model,
@@ -125,6 +130,25 @@ because the two police cars missed on Argoverse score lower on larger, sharper c
 dropped from 8.9 % (v5 + v6) to 1.3 %, but on the held-out Argoverse clips v7 found 6 of 9 police cars, alone
 or averaged with v5 and v6, against 7 of 9 for the pair, and still missed the same two. The taxi crops stay in
 the set for the next round.
+
+v8 (loaded) fixed the misses by changing how crops are mined. Both crop miners so far ranked single crops by the
+classifier's own score, so a police car it scored 0.00 from behind never reached a contact sheet, and the two
+missed cars were exactly that: slicktop SUVs and sedans seen from the rear. `tools/mine_vehicle_tracks.py`
+follows each COCO vehicle from frame to frame (box overlap, split where the colour histogram or the box size
+jumps, so an ID swap does not mix two cars), shows a track when any one of its frames scores 0.3, and a single
+yes or no labels every frame of it, rear and far views included (`<datasets>/mined_tracks/<class>/<clip>_t<k>/`,
+crops `mt_*`, three degraded copies of each train frame; for v8 the split went by track, it now goes by clip). On the mined
+Argoverse half and on 300 new logs that no evaluation uses (`fetch_argoverse_hazards.py --clips-out
+clips_mine`), 24 tracks were police (406 frames: Miami, Pittsburgh, DC and Detroit cars, many that v5 and v6
+scored below 0.2) and 98 look-alike tracks gave 209 civilian frames. v8 is trained like v5 to v7 on the whole
+set with these added. It found three police clips in the held-out half that the truth list did not have,
+because the list was built from crops some earlier model had scored 0.2: a sedan with its light bar on at a
+work zone, another from behind with a bike rack and a DC SUV. A fourth (a Miami SUV half out of the frame)
+turned up while checking v8's near misses. With those added (13 police clips), v8 alone finds 12 with no false
+clip; v5 + v6 find 7 and every average with v5 or v6 loses most of the gain. On held-out crops v8 keeps 70 %
+of police at 0.3 % false civilians against 60 % for the pair, and calls 12 of 554 ambulances police against 17.
+Its new weak spot is a Toronto box ambulance, white with blue graphics, that it scores 0.85 to 0.91 police
+([docs/waze-coverage.md](../docs/waze-coverage.md#measured)).
 
 ## Retired files
 

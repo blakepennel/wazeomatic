@@ -17,7 +17,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
 | Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe. A dog or cat beside a person on the same ground line is a pet on a walk and does not count | on |
-| Police | `POLICE` | vehicle classifier (two models averaged) says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 2 hits in 10 frames | on |
+| Police | `POLICE` | vehicle classifier says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 2 hits in 10 frames | on |
 | Police > Other side | `POLICE_OTHER_SIDE` | police box entirely in the far-left 22 % of the frame (right-hand traffic) | off (`--police-other-side`) |
 | Crash | `CRASH` | an ambulance or fire engine, or two kinds of responder, with red / blue flashing lights on them, for 3 s: boxes that grow while we drive towards them, or that stand still while we stand (a responder driving past a waiting car is not a crash); ends as soon as they leave the frame | on |
 | Crash > Other side | `CRASH_OTHER_SIDE` | the same, entirely on the far left | on |
@@ -59,20 +59,24 @@ pick the thresholds unless the row says so.
 ### Police and crash
 
 **Police on dashcam footage.** Argoverse 2 front-camera logs (16 s each, 5 fps; six US cities) split in two
-by a hash of the clip name: one half was mined for the hard negatives of v5 and v6, the other half was never
-trained on and is only scored. The police cars in that half were found by scoring every 5th frame with a
-classifier at a low threshold and checking every candidate by eye (`configs/police_truth_argoverse.txt`); the
-full pipeline then runs over every frame (`tools/eval_vehicle.py clips --clip-half 1 --step 1
---police-truth ...`):
+by a hash of the clip name: one half was mined for the hard negatives of v5, v6 and v8, the other half was
+never trained on and is only scored (v8 also learnt from 300 further logs that are not in either half). The
+police cars in that half were found by scoring every 5th frame with a classifier at a low threshold and
+checking every candidate by eye (`configs/police_truth_argoverse.txt`); the full pipeline then runs over every
+frame (`tools/eval_vehicle.py clips --clip-half 1 --step 1 --police-truth ...`). The first rows were scored
+against the list as it was then (9 police clips); v8 turned up four more that no earlier model had scored 0.2,
+all checked by eye, and the last two rows use the list of 13:
 
-| 163 held-out clips, 37.9 minutes | crop size | hits in 10 frames | police clips found (of 9) | clips without police that got a Police report (of 154) |
+| 163 held-out clips, 37.9 minutes | crop size | hits in 10 frames | police clips found | clips without police that got a Police report |
 |---|---|---|---|---|
-| v4 | 128 px | 3 | 5 | 16 |
-| v5 | 128 px | 3 | 7 | 12 |
-| v6 | 128 px | 3 | 8 | 4 |
-| v5 and v6 averaged | 128 px | 3 | 8 | 2 |
-| v5 and v6 averaged | 160 px | 3 | 5 | 0 |
-| v5 and v6 averaged (ships) | 160 px | 2 | 7 | 0 |
+| v4 | 128 px | 3 | 5 of 9 | 16 of 154 |
+| v5 | 128 px | 3 | 7 of 9 | 12 of 154 |
+| v6 | 128 px | 3 | 8 of 9 | 4 of 154 |
+| v5 and v6 averaged | 128 px | 3 | 8 of 9 | 2 of 154 |
+| v5 and v6 averaged | 160 px | 3 | 5 of 9 | 0 of 154 |
+| v5 and v6 averaged (shipped until v8) | 160 px | 2 | 7 of 9 | 0 of 154 |
+| v5 and v6 averaged, list of 13 | 160 px | 2 | 7 of 13 | 0 of 150 |
+| v8 (ships), list of 13 | 160 px | 2 | 12 of 13 | 0 of 150 |
 
 The classifiers are trained on 160 px crops. Their ONNX export has a dynamic input size, and until this
 measurement both the desktop and the phone read that as "no size" and fed them 128 px crops; they now take the
@@ -84,8 +88,15 @@ where both were run. The averaging, the 160 px input and the two-hit rule were c
 last rows are in-sample for those choices (not for the models, which never saw these clips). At 160 px no
 floor between 0.6 and 0.9 with two to four hits finds more than seven without a false report; at 128 px with
 three hits the same clips give eight with two false reports (an old white Chevrolet Impala and a silver Dodge
-seen from behind). The two police cars missed are a DC Metropolitan Police SUV seen mostly from behind (0.72
-at most at 160 px) and the car in clip 931b76ee, which the 160 px models score no higher than 0.46.
+seen from behind). The two police cars the pair missed are a DC Metropolitan Police SUV seen mostly from behind
+(0.72 at most at 160 px) and the car in clip 931b76ee, which the 160 px models score no higher than 0.46.
+
+v8 finds both, and the four the list lacked: two parked sedans with their light bars on, one from behind
+(`assets/videos/labelled/argo_2ff4f798_workzone.mp4` is one of them), a DC SUV and a Miami SUV half out of
+the frame, the one it misses. It came from mining whole tracks instead of single crops ([models/README.md](../models/README.md#building-the-models));
+averaging it with v5 or v6 gives back most of the gain (7 or 8 of 13), so it ships alone. The v8 row is the
+pipeline as shipped (`runs/eval/argo_h1_vehicle_v8.json`); the pair's row on the list of 13 is from the cache
+of per-frame scores. The rule (0.85, two hits) was kept from the pair, not retuned for v8.
 
 **Vehicle classifier, crop level.** Held-out crops of `<datasets>/vehicle_crops/val` (split by source file;
 `tools/eval_vehicle.py crops --data ...`), scored at the shipped police floor of 0.85, at the 160 px input the
@@ -106,27 +117,52 @@ Waze; what does is a look-alike that stays in view, which is why the floor is 0.
 argmax. v4 differs from v3 by 3,000 more ambulance photos from
 six countries; v3 called Edinburgh, Toronto and Japanese ambulances police at 0.9 and above.
 
+The val folder has grown since (303 taxi photos, 91 Argoverse look-alikes, 55 frames of police tracks and 28
+of look-alike tracks), so v8 is compared with the pair on the current one (`runs/eval/vehicle_v8_crops_E.json`,
+`vehicle_v5v6_crops_E.json`), at 0.85:
+
+| | v5 + v6 | v8 (ships) |
+|---|---|---|
+| police crops called police (944) | 73.4 % | 71.4 % |
+| dashcam civilian vehicles called police (BDD100K, 5,784) | 0.02 % (1) | 0.03 % (2) |
+| civilian photos called police (Open Images, 1,542) | 0.97 % | 0.71 % |
+| civilian look-alikes called police (Commons, 193) | 6.2 % | 3.6 % |
+| taxis called police (Commons, 303) | 8.9 % | 1.7 % |
+| Argoverse look-alikes called police (91 crops, 28 track frames) | 1.1 %, 0 % | 0 %, 0 % |
+| ambulances called police (554) | 0.90 % | 0.54 % |
+| fire engines called police (416) | 0.96 % | 0.48 % |
+
+Most police crops are hand-held Commons photos; on those v8 is a little behind the pair, as on the Commons
+clips below. Its gain is on dashcam views, which this folder has few of.
+
 **Clips.** The full pipeline (`tools/eval_vehicle.py clips`, report manager as shipped, no global cooldown),
-v4 at 128 px / v5 + v6 at 128 px / v5 + v6 at 160 px with two hits (ships):
+v4 at 128 px / v5 + v6 at 128 px / v5 + v6 at 160 px with two hits / v8 (ships):
 
 | Footage | Minutes | POLICE | CRASH |
 |---|---|---|---|
-| dashcam clips without police or responders (`assets/videos`: two Commons drives at two encodings, two UK drives, two Argoverse logs) | 14.6 | 0 / 0 / 0 | 0 / 0 / 0 |
-| Commons videos of police vehicles, mostly hand-held (19 clips) | | 9 / 8 / 10 clips | 2 / 0 / 1 clips |
-| Commons videos of ambulances (13 clips) | | 0 / 1 / 2 clips | 6 / 7 / 7 clips |
-| Commons videos of other responders and emergency lighting (11 clips) | | 3 / 3 / 1 clips | 7 / 6 / 5 clips |
+| dashcam drives in `assets/videos`: two Commons drives at two encodings, two UK drives, two Argoverse logs | 14.6 | 0 / 0 / 0 / 1 | 0 / 0 / 0 / 0 |
+| Commons videos of police vehicles, mostly hand-held (19 clips) | | 9 / 8 / 10 / 8 clips | 2 / 0 / 1 / 2 clips |
+| Commons videos of ambulances (13 clips) | | 0 / 1 / 2 / 2 clips | 6 / 7 / 7 / 6 clips |
+| Commons videos of other responders and emergency lighting (11 clips) | | 3 / 3 / 1 / 3 clips | 7 / 6 / 5 / 3 clips |
 
-The Police report among the other responders is "Toronto Police responding", a real police car. The two
-ambulance clips that get one are false: the box is a taxi in both, a dark Edinburgh private-hire car with a
-door badge (0.89) and a white Japanese taxi in Sendai (0.86).
+The v8 Police report on the drives is right: the Argoverse work-zone log
+(`labelled/argo_2ff4f798_workzone.mp4`) has a police sedan with its light bar on parked by the cones, which no
+earlier model reported. The rows were once described as drives without police; that clip never was one.
+
+The Police report among the other responders is "Toronto Police responding", a real police car. With the pair
+the two ambulance clips that get one are false: the box is a taxi in both, a dark Edinburgh private-hire car
+with a door badge (0.89) and a white Japanese taxi in Sendai (0.86). v8 drops the Edinburgh car and keeps
+Sendai, and adds three false ones: a French ambulance clip (the box is road surface in a blurred pan), dark
+cars under blue light at a Berlin fire scene at night, and a Toronto box ambulance, white with blue graphics,
+parked at a scene (0.85 to 0.91 for several seconds). The Commons police clips v8 misses and the pair found are
+a Poissy municipal police car and the unmarked New York cars.
 
 Taxis also lead the civilian photos called police at the crop level: the pair calls 8.9 % of 303 held-out
 Commons taxi photos (Japan, UK, Canada, Germany, France, Australia, New York) police at 0.85. A v7 trained with
 1,894 of those photos as civilian, and with softened copies of half the crops (`--res-jitter 0.5`), brings that
 to 1.3 % and, averaged with v5 and v6, takes the Commons ambulance and lighting clips to no Police report; but
 on the held-out Argoverse clips it finds 6 of 9 police cars, alone or averaged, against 7 of 9 for the pair,
-and the Commons police clips from 10 to 8. The pair stays; for US driving it has no false report on these
-clips. The cached scores behind these counts are per-frame classifier scores on the pipeline's own vehicle
+and the Commons police clips from 10 to 8. The pair stayed then; v8 replaced it (see above). The cached scores behind these counts are per-frame classifier scores on the pipeline's own vehicle
 boxes, run through the two-hit rule.
 
 The police clips that stay silent show unmarked cars (a diplomatic convoy, black saloons), a car far away, or
@@ -174,7 +210,7 @@ are left out.
 | Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
 | Object | none (two false ones before the debris road rules: a vent on a building front and the legs of a man crossing) |
 | Pothole, Broken traffic light, Crash, Traffic | none (Argoverse has no pothole labels, so this only says there was no false one) |
-| Police | 7 of 9, none false (the table above) |
+| Police | 12 of 13, none false (vehicle v8; the table above) |
 
 Construction reports without a labelled work zone, checked by eye: striped delineator posts on the pavement
 and a row of posts with fencing at a work site (both labelled as bollards in Argoverse, so real work zones the
