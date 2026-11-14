@@ -206,7 +206,9 @@ class ReportManager:
             self._update_tracklets(accepted)
 
         events: list[HazardEvent] = []
-        for hazard, tr in self._tracks.items():
+        # the type reported longest ago goes first when the global cooldown frees, so a work zone that keeps
+        # qualifying does not hold back a police car every minute (sorted is stable: ties keep first-seen order)
+        for hazard, tr in sorted(self._tracks.items(), key=lambda kv: kv[1].last_emitted_ts):
             hits = self._qualifying_hits(tr, self.cfg.min_hits_by_hazard.get(hazard, self.cfg.min_hits))
             if hits is None:
                 continue

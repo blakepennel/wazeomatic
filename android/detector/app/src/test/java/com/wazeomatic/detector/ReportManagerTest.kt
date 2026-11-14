@@ -91,6 +91,18 @@ class ReportManagerTest {
     }
 
     @Test
+    fun typesTakeTurnsForTheGlobalCooldown() {
+        // a work zone that qualifies every minute must not hold back a pothole (or a police car) for good
+        val m = rm(ReportConfig(minHits = 1))
+        assertEquals(listOf("HAZARD_ON_ROAD_CONSTRUCTION"), m.update(listOf(det("cone", 0.7f))).map { it.hazardType })
+        repeat(3) { assertTrue(m.update(listOf(det("cone", 0.7f), det("pothole", 0.7f))).isEmpty()) }
+        now += 61
+        assertEquals(listOf("HAZARD_ON_ROAD_POTHOLE"), m.update(listOf(det("cone", 0.7f), det("pothole", 0.7f))).map { it.hazardType })
+        now += 61
+        assertEquals(listOf("HAZARD_ON_ROAD_CONSTRUCTION"), m.update(listOf(det("cone", 0.7f), det("pothole", 0.7f))).map { it.hazardType })
+    }
+
+    @Test
     fun customCooldownSetting() {
         val m = rm(ReportConfig(cooldownS = 1.0, globalCooldownS = 0.0))
         assertEquals(1, (1..3).flatMap { m.update(listOf(det("dog"))) }.size)

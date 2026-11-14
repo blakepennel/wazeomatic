@@ -85,6 +85,18 @@ def test_default_global_cooldown_matches_the_macro_and_counts_what_it_holds_back
     assert rm.held_back == 1
 
 
+def test_types_take_turns_for_the_global_cooldown():
+    # a work zone that qualifies every minute must not hold back a pothole (or a police car) for good
+    rm, clock = make(window=10, min_hits=1)
+    assert [e.hazard_type for e in rm.update([det("cone")])] == ["HAZARD_ON_ROAD_CONSTRUCTION"]
+    for _ in range(3):
+        assert rm.update([det("cone"), det("pothole")]) == []
+    clock.advance(61)
+    assert [e.hazard_type for e in rm.update([det("cone"), det("pothole")])] == ["HAZARD_ON_ROAD_POTHOLE"]
+    clock.advance(61)
+    assert [e.hazard_type for e in rm.update([det("cone"), det("pothole")])] == ["HAZARD_ON_ROAD_CONSTRUCTION"]
+
+
 def test_unmapped_labels_ignored():
     rm, _ = make(window=10, min_hits=1)
     assert rm.update([det("toothbrush"), det("car")]) == []

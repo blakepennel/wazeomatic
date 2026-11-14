@@ -173,7 +173,9 @@ class ReportManager(
         if (cfg.trackIou > 0f) updateTracklets(accepted)
 
         val events = ArrayList<HazardEvent>()
-        for ((hazard, tr) in tracks) {
+        // the type reported longest ago goes first when the global cooldown frees, so a work zone that keeps
+        // qualifying does not hold back a police car every minute (sortedBy is stable: ties keep first-seen order)
+        for ((hazard, tr) in tracks.entries.sortedBy { it.value.lastEmittedTs }) {
             val hits = qualifyingHits(tr, cfg.minHitsByHazard[hazard] ?: cfg.minHits) ?: continue
             if (now - tr.lastEmittedTs < (cfg.cooldownByHazard[hazard] ?: cfg.cooldownS)) continue
             if (hazard == "HAZARD_SHOULDER_CAR_STOPPED" && !stoppedVehicleConfirmed(tr)) continue
