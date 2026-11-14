@@ -80,6 +80,10 @@ class ReportConfig:
     # almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
     livery_labels: tuple[str, ...] = ("barricade",)
     livery_inside: float = 0.8
+    # a dog or cat beside a person standing on the same ground is a pet being walked on the pavement, not an
+    # animal loose on the road (the one Animal report on 38 minutes of held-out Argoverse city clips)
+    pet_labels: tuple[str, ...] = ("dog", "cat")
+    pet_reach: float = 0.75          # horizontal gap to the person's box, in person heights
     vehicle_min_area: float = 0.02   # bbox area fraction - close enough to matter
     vehicle_min_growth: float = 1.35 # area must grow by this factor across the window
 
@@ -124,6 +128,14 @@ def _inside(a, b) -> float:
     return ix * iy / max(a[2] * a[3], 1e-9)
 
 
+def _beside(pet, person, reach: float) -> bool:
+    """``pet`` (normalised xywh) stands next to ``person``: a horizontal gap of at most ``reach`` person heights,
+    and the bottoms of the two boxes (where they touch the ground) within half a person height."""
+    gap = max(0.0, abs(pet[0] - person[0]) - (pet[2] + person[2]) / 2)
+    ground = abs((pet[1] + pet[3] / 2) - (person[1] + person[3] / 2))
+    return gap <= reach * person[3] and ground <= 0.5 * person[3]
+
+
 class ReportManager:
     def __init__(self, config: ReportConfig | None = None, source: str = "sim",
                  clock: Callable[[], float] | None = None, waze=None):
@@ -156,6 +168,7 @@ class ReportManager:
         accepted: dict[str, list[Detection]] = defaultdict(list)
         detections = list(detections)
         vehicles = [d.bbox for d in detections if d.label in self.cfg.vehicle_labels]
+        people = [d.bbox for d in detections if d.label == "person"]
         for d in detections:
             hazard = self._hazard_for(d)
             if hazard is None or d.confidence < self._min_conf(d.label):
@@ -164,6 +177,8 @@ class ReportManager:
                 continue
             if d.label in self.cfg.livery_labels and any(_inside(d.bbox, v) >= self.cfg.livery_inside
                                                          for v in vehicles):
+                continue
+            if d.label in self.cfg.pet_labels and any(_beside(d.bbox, p, self.cfg.pet_reach) for p in people):
                 continue
             accepted[hazard].append(d)
             if hazard not in best or d.confidence > best[hazard].confidence:

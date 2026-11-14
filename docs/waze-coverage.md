@@ -16,7 +16,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris, when the model has it | on if the model has the class |
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
-| Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe | on |
+| Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe. A dog or cat beside a person on the same ground line is a pet on a walk and does not count | on |
 | Police | `POLICE` | vehicle classifier (two models averaged) says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 2 hits in 10 frames | on |
 | Police > Other side | `POLICE_OTHER_SIDE` | police box entirely in the far-left 22 % of the frame (right-hand traffic) | off (`--police-other-side`) |
 | Crash | `CRASH` | an ambulance or fire engine, or two kinds of responder, with red / blue flashing lights on them, for 3 s: boxes that grow while we drive towards them, or that stand still while we stand (a responder driving past a waiting car is not a crash); ends as soon as they leave the frame | on |

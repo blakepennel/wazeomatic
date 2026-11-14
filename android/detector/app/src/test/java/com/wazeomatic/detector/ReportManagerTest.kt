@@ -182,6 +182,21 @@ class ReportManagerTest {
     }
 
     @Test
+    fun dogOnAWalkIsNotAnAnimalOnTheRoad() {
+        // Argoverse 3f9796e9: a man walking a dog on the pavement, person and dog at the same ground line
+        val person = det("person", 0.9f, BBox(0.88f, 0.645f, 0.08f, 0.25f))
+        val dog = det("dog", 0.75f, BBox(0.976f, 0.733f, 0.048f, 0.07f))
+        val m = rm()
+        repeat(5) { assertTrue(m.update(listOf(dog, person)).isEmpty()) }
+        // the same dog alone, or a person far off on another ground line, is reported
+        val alone = rm()
+        assertEquals(listOf("HAZARD_SHOULDER_ANIMALS"), (1..3).flatMap { alone.update(listOf(dog)) }.map { it.hazardType })
+        val far = det("person", 0.9f, BBox(0.3f, 0.45f, 0.03f, 0.09f))
+        val other = rm()
+        assertEquals(listOf("HAZARD_SHOULDER_ANIMALS"), (1..3).flatMap { other.update(listOf(dog, far)) }.map { it.hazardType })
+    }
+
+    @Test
     fun policeNeedsTwoHitsByDefault() {
         // same rule as DEFAULT_MIN_HITS_BY_HAZARD in report_manager.py
         assertEquals(mapOf("POLICE" to 2), ReportConfig().minHitsByHazard)

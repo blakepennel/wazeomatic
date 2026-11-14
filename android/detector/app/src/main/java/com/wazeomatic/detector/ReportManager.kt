@@ -41,6 +41,11 @@ data class ReportConfig(
     // almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
     val liveryLabels: Set<String> = setOf("barricade"),
     val liveryInside: Float = 0.8f,
+    // a dog or cat beside a person standing on the same ground is a pet being walked on the pavement, not an
+    // animal loose on the road
+    val petLabels: Set<String> = setOf("dog", "cat"),
+    /** Horizontal gap to the person's box, in person heights. */
+    val petReach: Float = 0.75f,
     val vehicleMinArea: Float = 0.02f,
     val vehicleMinGrowth: Float = 1.35f,
 )
@@ -138,12 +143,14 @@ class ReportManager(
         val accepted = LinkedHashMap<String, ArrayList<Detection>>()
         val all = detections.toList()
         val vehicles = all.filter { it.label in cfg.vehicleLabels }.map { it.bbox }
+        val people = all.filter { it.label == "person" }.map { it.bbox }
         for (d in all) {
             val hazard = hazardFor(d) ?: continue
             if (d.confidence < minConf(d.label)) continue
             // scene labels are whole-frame boxes, the hood zone does not apply to them
             if (d.model != "scene" && inHoodZone(d)) continue
             if (d.label in cfg.liveryLabels && vehicles.any { inside(d.bbox, it) >= cfg.liveryInside }) continue
+            if (d.label in cfg.petLabels && people.any { beside(d.bbox, it, cfg.petReach) }) continue
             accepted.getOrPut(hazard) { ArrayList() }.add(d)
             val prev = best[hazard]
             if (prev == null || d.confidence > prev.confidence) best[hazard] = d
@@ -214,6 +221,14 @@ class ReportManager(
         maxOf(cfg.minConfidence, cfg.minConfidenceByLabel[label] ?: 0f)
 
     /** Fraction of box [a] that lies inside box [b]. */
+    /** [pet] stands next to [person]: a horizontal gap of at most [reach] person heights, and the bottoms of
+     *  the two boxes (where they touch the ground) within half a person height. Twin of report_manager._beside. */
+    private fun beside(pet: BBox, person: BBox, reach: Float): Boolean {
+        val gap = maxOf(0f, kotlin.math.abs(pet.cx - person.cx) - (pet.w + person.w) / 2)
+        val ground = kotlin.math.abs((pet.cy + pet.h / 2) - (person.cy + person.h / 2))
+        return gap <= reach * person.h && ground <= 0.5f * person.h
+    }
+
     private fun inside(a: BBox, b: BBox): Float {
         val ix = maxOf(0f, minOf(a.cx + a.w / 2, b.cx + b.w / 2) - maxOf(a.cx - a.w / 2, b.cx - b.w / 2))
         val iy = maxOf(0f, minOf(a.cy + a.h / 2, b.cy + b.h / 2) - maxOf(a.cy - a.h / 2, b.cy - b.h / 2))

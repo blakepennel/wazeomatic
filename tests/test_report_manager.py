@@ -169,6 +169,20 @@ def test_default_pothole_floor_is_045():
     assert "cone" not in ReportConfig().min_confidence_by_label
 
 
+def test_dog_on_a_walk_is_not_an_animal_on_the_road():
+    # Argoverse 3f9796e9: a man walking a dog on the pavement, person and dog at the same ground line
+    person = Detection("person", 0.9, (0.88, 0.645, 0.08, 0.25))
+    dog = Detection("dog", 0.75, (0.976, 0.733, 0.048, 0.07))
+    rm, _ = make(window=10)
+    assert all(rm.update([dog, person]) == [] for _ in range(5))
+    # the same dog alone, or a person far off on another ground line, is reported
+    rm, _ = make(window=10)
+    assert [e.hazard_type for _ in range(3) for e in rm.update([dog])] == ["HAZARD_SHOULDER_ANIMALS"]
+    far = Detection("person", 0.9, (0.3, 0.45, 0.03, 0.09))
+    rm, _ = make(window=10)
+    assert [e.hazard_type for _ in range(3) for e in rm.update([dog, far])] == ["HAZARD_SHOULDER_ANIMALS"]
+
+
 def test_police_needs_two_hits_by_default():
     rm, _ = make(window=10)
     cop = Detection("police_vehicle", 0.9, (0.5, 0.5, 0.2, 0.2), model="vehicle")
