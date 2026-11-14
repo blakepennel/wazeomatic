@@ -1,0 +1,13 @@
+# Argoverse 2 clips (<datasets>/argoverse2/clips, tools/fetch_argoverse_hazards.py --stage clips) that show a
+# marked police vehicle, checked by eye. Only the half that tools/mine_vehicle_crops.py did not mine
+# (--clip-half 1) is listed; every other clip of that half shows none. Candidates were the crops a vehicle
+# classifier scored 0.2 or more on every 5th frame, so a police car it never scored above 0.2 could be missing.
+11ba4e81  # Miami police sedan, parked, side view
+4aae26d1  # Miami police sedan with a bike rack, rear and side
+7e4d67b3  # police sedan ahead, rear view, several seconds
+931b76ee  # Pittsburgh police SUV, rear
+f3cd0d0d  # Metropolitan Police (DC) sedan ahead at dusk, rear
+2b044433  # Pittsburgh police SUV parked across the street, side
+f3cc42c7  # Metropolitan Police (DC) SUV, side
+f61bcee1  # black-and-white police sedan, side and rear
+ff8e7fdb  # Metropolitan Police (DC) sedan, front three-quarter

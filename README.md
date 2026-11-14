@@ -131,6 +131,16 @@ The v3 models were trained on 45,855 images from seven sources: StarLine road-wo
 2 front-camera logs with the 3D labels projected into the image, RDD2022 and three pothole sets. The v3 nano ships;
 the v3 small is one build flag away for a phone that can afford it.
 
+The second stage and the scene rules are measured separately, each on data it was not tuned on unless
+[docs/waze-coverage.md](docs/waze-coverage.md) says so:
+
+| Report | Measured on | Result |
+| --- | --- | --- |
+| Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 8 of 9 police clips reported; a false Police report in 2 of the 154 clips without police |
+| Police, Crash | 14.6 min of dashcam drives without responders | 0 false reports |
+| Blocked lane | 100 Argoverse 2 logs scored against their 3D cone and drum labels | precision 0.77, recall 0.77, side right on 80 % of hits |
+| Fog / Slippery road | 2,425 held-out BDD100K frames, one frame at a time | fog threshold met on 1.0 % of clear frames, rain threshold on 3.3 % of clear and 62 % of rainy frames |
+
 ## Desktop simulator
 
 Python 3.10 or newer, and ffmpeg on the PATH for the clip download:

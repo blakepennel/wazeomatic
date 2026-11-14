@@ -10,8 +10,8 @@ published](#why-the-weights-are-not-published). Build them locally with the step
 | `hazard_yolo11n_v3.onnx` | The same model under its versioned name. |
 | `hazard_yolo11s_v3.onnx` | YOLO11s trained on the same v3 set, 640 px, six classes. Not the default: about 3x the compute of the nano. Use it with `--hazard-model` on the desktop or `-PhazardModel` / `-PhazardModel2` in the Android build. |
 | `coco_yolo11n.onnx` | Stock COCO YOLO11n, 416 px, used for vehicles, people and animals. |
-| `vehicle_cls.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px, four classes (ambulance, civilian, fire, police). A copy of `vehicle_v4.onnx`. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
-| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx`, `vehicle_v3.onnx`, `vehicle_v4.onnx` | The four rounds of the vehicle classifier (see below); only v4 is loaded. |
+| `vehicle_cls.onnx`, `vehicle_cls2.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px, four classes (ambulance, civilian, fire, police). Copies of `vehicle_v6.onnx` and `vehicle_v5.onnx`; when `vehicle_cls2` is present (desktop and app) the two are averaged per class. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
+| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v6.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v5 and v6 are loaded. |
 | `weather_cls.onnx` | Whole-frame weather: YOLO11n-cls, 224 px, four classes (clear, fog, rain, snow). A copy of `weather_yolo11n.onnx`. Feeds the Fog and Slippery road rules. |
 | `surface_cls.onnx` (optional) | Road-surface patch classifier (dry, wet, water, slush, snow, ice) for Flood, Icy road, Unplowed road and Slippery road. Without it those rules stay silent. |
 
@@ -68,6 +68,8 @@ python tools/fetch_commons_vehicles.py         # police / ambulance / fire photo
 python tools/fetch_openimages.py               # Open Images Ambulance, Car, Taxi, Van boxes
 python tools/build_vehicle_crops.py            # <datasets>/vehicle_crops
 python tools/train_classifier.py vehicle --ship
+# a second model trained on different hard negatives, averaged with the first:
+#   copy it to models/vehicle_cls2.onnx (+ vehicle_cls2.labels.txt); the app bundles it when present
 python tools/build_scene_sets.py weather       # BDD100K frames by weather label, plus synthetic fog in train
 python tools/train_classifier.py weather --ship
 python tools/fetch_rscd.py; python tools/build_scene_sets.py surface
@@ -82,7 +84,17 @@ police. v2 added Open Images photos of ordinary cars, taxis and vans as civilian
 `<datasets>/mined_vehicles/<class>` (51 police, 23 ambulance, 1 fire engine, 279 civilian look-alikes) with an
 exclude list that takes the real police cars out of the civilian negatives. v4 added ambulances from the UK,
 Japan, Germany, France, Australia and the Netherlands (Commons): v3 called Battenberg and box-bodied
-ambulances police, because police crops outnumbered ambulance crops four to one. Measured numbers are in
+ambulances police, because police crops outnumbered ambulance crops four to one.
+
+v4 still called police on a parked grey sedan, an Infiniti behind a UPS truck or a white SUV in a quarter of
+the Argoverse 2 clips. v5 and v6 are hard-negative rounds on that footage: the clips are split in two by a
+hash of their name (`tools/mine_vehicle_crops.py --clip-half`), one half is mined and checked by eye (v5: 100
+road-work logs, 121 civilian look-alikes and 16 police crops; v6: 200 more logs fetched with
+`tools/fetch_argoverse_hazards.py --skip 100`, 178 look-alikes, 2 police, 1 ambulance), and the other half is
+only ever scored (`configs/police_truth_argoverse.txt`). Each round fixed the look-alikes it was shown and
+found new ones, but not the same ones, so the two models are averaged: on the 163 held-out clips that cut the
+clips with a false Police report from 12 (v5) and 4 (v6) to 2, with 8 of the 9 police clips found. A YOLO11s-cls
+at 192 px (`vehicle_s192`) was not better than either. Measured numbers are in
 [docs/waze-coverage.md](../docs/waze-coverage.md#measured).
 
 ## Retired files

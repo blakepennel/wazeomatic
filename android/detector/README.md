@@ -28,6 +28,7 @@ cd android\detector
 | `hazard_yolo11n.onnx` + `hazard_yolo11n.labels.txt` | `hazard.onnx` + `hazard_labels.txt` |
 | `coco_yolo11n.onnx` + `coco_yolo11n.labels.txt` | `coco.onnx` + `coco_labels.txt` |
 | `vehicle_cls.onnx` + `vehicle_cls.labels.txt` (optional) | `vehicle_cls.onnx` + `vehicle_cls_labels.txt` |
+| `vehicle_cls2.onnx` + `vehicle_cls2.labels.txt` (optional, averaged with the first) | `vehicle_cls2.onnx` + `vehicle_cls2_labels.txt` |
 | `weather_cls.onnx` + `weather_cls.labels.txt` (optional) | `weather_cls.onnx` + `weather_cls_labels.txt` |
 | `surface_cls.onnx` + `surface_cls.labels.txt` (optional) | `surface_cls.onnx` + `surface_cls_labels.txt` |
 

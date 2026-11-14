@@ -17,7 +17,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
 | Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe | on |
-| Police | `POLICE` | vehicle classifier says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 3 hits in 10 frames | on |
+| Police | `POLICE` | vehicle classifier (two models averaged) says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 3 hits in 10 frames | on |
 | Police > Other side | `POLICE_OTHER_SIDE` | police box entirely in the far-left 22 % of the frame (right-hand traffic) | off (`--police-other-side`) |
 | Crash | `CRASH` | an ambulance or fire engine, or two kinds of responder, with red / blue flashing lights on them, for 3 s: boxes that grow while we drive towards them, or that stand still while we stand (a responder driving past a waiting car is not a crash); ends as soon as they leave the frame | on |
 | Crash > Other side | `CRASH_OTHER_SIDE` | the same, entirely on the far left | on |
@@ -58,31 +58,56 @@ pick the thresholds unless the row says so.
 
 ### Police and crash
 
-**Vehicle classifier, crop level.** Held-out crops of `<datasets>/vehicle_crops/val` (split by source file,
-never trained on; `tools/eval_vehicle.py crops`), scored at the shipped police floor of 0.85:
+**Police on dashcam footage.** Argoverse 2 front-camera logs (16 s each, 5 fps; six US cities) split in two
+by a hash of the clip name: one half was mined for the hard negatives of v5 and v6, the other half was never
+trained on and is only scored. The police cars in that half were found by scoring every 5th frame with a
+classifier at a low threshold and checking every candidate by eye (`configs/police_truth_argoverse.txt`); the
+full pipeline then runs over every frame (`tools/eval_vehicle.py clips --clip-half 1 --step 1
+--police-truth ...`):
 
-| | v3 | v4 (ships) |
+| 163 held-out clips, 37.9 minutes | police clips found (of 9) | clips without police that got a Police report (of 154) |
 |---|---|---|
-| police crops called police (885) | 70.1 % | 66.7 % |
-| dashcam civilian vehicles called police (BDD100K, 5,784) | 0.07 % | 0.07 % |
-| civilian photos called police (Open Images cars, taxis, vans, 1,542) | 2.3 % | 1.8 % |
-| civilian look-alikes called police (Commons: Tahoes, Explorers, taxis, tow trucks, 193) | 9.8 % | 10.9 % |
-| ambulances called police (554) | 4.5 % | 2.0 % |
-| fire engines called police (416) | 1.9 % | 1.2 % |
+| v4 | 5 | 16 |
+| v5 | 7 | 12 |
+| v6 | 8 | 4 |
+| v5 and v6 averaged (ships) | 8 | 2 |
 
-One dashcam vehicle in about 1,400 is called police in a single frame. A report needs three such frames out of
-ten, so isolated misses do not reach Waze; what does is a look-alike that stays in view, which is why the floor
-is 0.85 and not the 0.5 of the argmax. v4 differs from v3 by 3,000 more ambulance photos from six countries;
-v3 called Edinburgh, Toronto and Japanese ambulances police at 0.9 and above.
+The v5 and averaged rows are the pipeline itself; v4 and v6 come from a cache of the classifier's per-frame
+scores on the same frames run through the same 3-in-10 rule, which gave the same counts as the pipeline for
+v5 and the average. The choice of v6 and of averaging was made on these clips, so the last two rows are
+in-sample for that choice (not for the models, which never saw these clips). The two false reports left are
+an old white Chevrolet Impala (a common police model) and a silver Dodge seen from behind for several
+seconds; the missed police car is a DC Metropolitan Police SUV that scores 1.0 side-on in a single frame and
+0.80-0.82 from behind. Two false reports in 38 minutes is still about three an hour of city driving: the 60 s
+global cooldown and the Waze reader keep one from repeating, and a floor of 0.9 gives none on these clips at
+the cost of one police car (7 of 9).
 
-**Clips.** The full pipeline (`tools/eval_vehicle.py clips`, report manager as shipped, no global cooldown):
+**Vehicle classifier, crop level.** Held-out crops of `<datasets>/vehicle_crops/val` (split by source file;
+`tools/eval_vehicle.py crops --data ...`), scored at the shipped police floor of 0.85:
+
+| | v3 | v4 | v5 | v6 | v5 + v6 (ships) |
+|---|---|---|---|---|---|
+| police crops called police (889) | 70.1 % | 66.6 % | 72.2 % | 69.0 % | 68.1 % |
+| dashcam civilian vehicles called police (BDD100K, 5,784) | 0.07 % | 0.07 % | 0.05 % | 0.05 % | 0.02 % |
+| civilian photos called police (Open Images cars, taxis, vans, 1,542) | 2.3 % | 1.8 % | 2.5 % | 1.9 % | 1.6 % |
+| civilian look-alikes called police (Commons: Tahoes, Explorers, taxis, tow trucks, 193) | 9.8 % | 10.9 % | 9.8 % | 8.8 % | 7.3 % |
+| ambulances called police (554) | 4.5 % | 2.0 % | 2.5 % | 3.4 % | 2.2 % |
+| fire engines called police (416) | 1.9 % | 1.2 % | 1.0 % | 1.4 % | 1.0 % |
+
+The averaged pair calls one dashcam vehicle in about 6,000 police in a single frame. A report needs three such
+frames out of ten, so isolated misses do not reach Waze; what does is a look-alike that stays in view, which
+is why the floor is 0.85 and not the 0.5 of the argmax. v4 differs from v3 by 3,000 more ambulance photos from
+six countries; v3 called Edinburgh, Toronto and Japanese ambulances police at 0.9 and above.
+
+**Clips.** The full pipeline (`tools/eval_vehicle.py clips`, report manager as shipped, no global cooldown),
+v4 / v5 + v6:
 
 | Footage | Minutes | POLICE | CRASH |
 |---|---|---|---|
-| dashcam clips without police or responders (`assets/videos`: two Commons drives at two encodings, two UK drives, two Argoverse logs) | 14.6 | 0 | 0 |
-| Commons videos of police vehicles, mostly hand-held (19 clips) | | 9 clips | 2 clips |
-| Commons videos of ambulances (13 clips) | | 0 clips | 6 clips |
-| Commons videos of other responders and emergency lighting (11 clips) | | 3 clips | 7 clips |
+| dashcam clips without police or responders (`assets/videos`: two Commons drives at two encodings, two UK drives, two Argoverse logs) | 14.6 | 0 / 0 | 0 / 0 |
+| Commons videos of police vehicles, mostly hand-held (19 clips) | | 9 / 8 clips | 2 / 0 clips |
+| Commons videos of ambulances (13 clips) | | 0 / 1 clips | 6 / 7 clips |
+| Commons videos of other responders and emergency lighting (11 clips) | | 3 / 3 clips | 7 / 6 clips |
 
 The police clips that stay silent show unmarked cars (a diplomatic convoy, black saloons), a car far away, or
 only a light bar at night. The CRASH events on the Commons clips are responders driving towards a camera that
