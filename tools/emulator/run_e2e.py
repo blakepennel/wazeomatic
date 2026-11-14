@@ -127,7 +127,7 @@ CHECKS_B = {
     "B1": "B1 video pushed",
     "B2": "B2 detector emitted WazeomaticEvent",
     "B3": "B3 mock Waze received the detector broadcasts",
-    "B4": "B4 sent reports match the hazard_type mapping",
+    "B4": "B4 sent or dry-run reports match the hazard_type mapping",
     "B5": "B5 every report traces back to a detector event",
     "B6": "B6 one-per-minute limit held",
 }
@@ -883,11 +883,15 @@ class Runner:
             detail += (f"; {len(obstructed)} macro run(s) obstructed: mock Waze was not the focused window "
                        f"({obstructed[0].get('detail', '')})")
         self.check(CHECKS_B["B3"], len(received) > 0 and not obstructed, detail)
-        sends = [r for r in reports if r.get("action") == "send" and r.get("via") == "auto_macro"]
+        # the app ships with dry_run on, so a fresh install files dry runs: the macro walks the same menu path
+        # and cancels on the confirm sheet, which is as good a check of the mapping as a real send
+        sends = [r for r in reports if r.get("via") == "auto_macro" and
+                 (r.get("action") == "send" or (r.get("action") == "cancel" and r.get("dry_run") is True))]
         mismatched = [r for r in sends if (r.get("category"), r.get("subcategory")) !=
                       EXPECTED.get(r.get("hazard_type", ""), ("?", "?"))]
+        n_dry = sum(1 for r in sends if r.get("dry_run") is True)
         self.check(CHECKS_B["B4"], len(sends) > 0 and not mismatched,
-                   f"{len(sends)} send(s), {len(mismatched)} mismatched")
+                   f"{len(sends)} report(s) ({n_dry} dry run), {len(mismatched)} mismatched")
         unknown = [r for r in sends if r.get("hazard_type") not in det_types]
         self.check(CHECKS_B["B5"], not unknown, f"{len(unknown)} untraced")
         limit_ok = len(sends) <= int(wait_s / 60) + 1

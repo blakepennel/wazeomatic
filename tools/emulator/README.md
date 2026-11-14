@@ -119,9 +119,14 @@ adb -s emulator-5554 shell am broadcast -a com.wazeomatic.HAZARD_DETECTED --es h
 Waze with `bring_to_front=true` (+ `appops set ... SYSTEM_ALERT_WINDOW allow` so it may come to
 the front from the background), launches
 `am start -n com.wazeomatic.detector/.MainActivity --es source video --es video test.mp4`,
-waits, reads logcat tag `WazeomaticEvent` and checks mock Waze received those events, sent
-reports match the schema mapping and the one-per-minute limit held. If the detector logs no
-events at all, B2-B6 are reported as SKIP (nothing to compare) and the run is INCOMPLETE.
+waits, reads logcat tag `WazeomaticEvent` and checks mock Waze received those events, the
+reports match the schema mapping and the one-per-minute limit held. The app ships with `dry_run`
+on, so without `--detector-extras "--ez dry_run false"` the macro walks the same menu path and
+cancels on the confirm sheet; B4-B6 count those dry runs like sends. If the detector logs no
+events at all, B2-B6 are reported as SKIP (nothing to compare) and the run is INCOMPLETE. The
+default clip is a drive without hazards, so that is its expected result; for events use the
+work-zone clip (`--video assets/videos/labelled/argo_2ff4f798_workzone.mp4`), which gives a
+Hazard > Construction report a minute on the emulator.
 
 `--expect-hazard <HAZARD_TYPE>` (repeatable) adds check "B7 detector reported <type> from the
 hazard model": at least one detector event of that type whose `label` is a class of the shipped
