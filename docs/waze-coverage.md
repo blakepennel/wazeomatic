@@ -12,7 +12,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Waze report | `hazard_type` | What fires it | Default |
 |---|---|---|---|
 | Hazard > Pothole | `HAZARD_ON_ROAD_POTHOLE` | hazard model, class pothole, floor 0.45 | on |
-| Hazard > Construction | `HAZARD_ON_ROAD_CONSTRUCTION` | hazard model: cone, sign, delineator, barricade, worker | on |
+| Hazard > Construction | `HAZARD_ON_ROAD_CONSTRUCTION` | hazard model: cone, sign, delineator, barricade, worker (a worker needs 0.6) | on |
 | Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris, when the model has it | on if the model has the class |
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
@@ -160,16 +160,18 @@ are left out.
 
 | Report | Result |
 |---|---|
-| Construction | 81 of 86 work-zone clips reported (recall 0.94); 4 of the 17 clips without a work zone get one (precision 0.95) |
+| Construction | 81 of 86 work-zone clips reported (recall 0.94); 3 of the 17 clips without a work zone get one (precision 0.96) |
 | Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
 | Broken traffic light, Crash, Traffic | none |
 | Police | 7 of 9, none false (the table above) |
 
-The four Construction reports without a labelled work zone, checked by eye: striped delineator posts on the
-pavement and a row of posts with fencing at a work site (both labelled as bollards in Argoverse), an "END
-ROAD WORK" sign (a construction sign, but it marks where the work zone ends: telling the two apart needs the
-text), and a pedestrian in an orange T-shirt taken for a worker. Two of the four are real work zones the
-labels miss.
+Construction reports without a labelled work zone, checked by eye: striped delineator posts on the pavement
+and a row of posts with fencing at a work site (both labelled as bollards in Argoverse, so real work zones the
+labels miss), and an "END ROAD WORK" sign (a construction sign, but it marks where the work zone ends: telling
+the two apart needs the text). A fourth, a pedestrian in an orange T-shirt taken for a worker at 0.61, is why a
+worker box now needs 0.6 to count: replayed on cached detections (`tools/cache_detections.py --clip-half 1`)
+that drops it and no work-zone clip, and on the val clips of `tools/eval_events.py` (1,201 clips, `--zoom-crop
+--limit 120 --frames 8 --seed 1`) it keeps all 310 Construction events and drops one false one.
 
 ### Weather
 

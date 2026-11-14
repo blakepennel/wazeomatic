@@ -51,7 +51,7 @@ data class ReportConfig(
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
-val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f)
+val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f)
 
 /** Same value as DEFAULT_MIN_HITS_BY_HAZARD in wazeomatic/report_manager.py: two classifier hits above the
  *  police floor in ten frames (measured with the classifiers at their trained 160 px input). */

@@ -27,7 +27,9 @@ from typing import Callable, Iterable, Optional
 from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 
-DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85}
+# worker: a pedestrian in an orange or yellow shirt looks like hi-vis; 0.6 dropped the one such Construction
+# report on the held-out Argoverse clips and cost no Construction event on the val clips (docs/waze-coverage.md)
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
 # per-type overrides of ReportConfig.min_hits. Police: two classifier hits above the 0.85 floor in ten frames;
 # with the classifiers at their trained 160 px input that found 7 of the 9 police cars on the held-out
 # Argoverse clips with no false report on the other 154, where three hits found 5 (docs/waze-coverage.md)

@@ -152,9 +152,9 @@ def test_default_pothole_floor_is_045():
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import Detection
 
-    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85}
+    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
     cfg = ReportConfig(global_cooldown_s=0)
-    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85}
+    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
     rm = ReportManager(cfg, clock=lambda: 1000.0)
     weak = Detection("pothole", 0.42, (0.5, 0.5, 0.1, 0.1))
     for i in range(3):
