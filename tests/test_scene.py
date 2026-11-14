@@ -129,6 +129,26 @@ def test_blocked_lane_side():
     assert all(not any(lab.startswith("scene_lane") for lab in s) for s in shoulder)
 
 
+def test_blocked_lane_ignores_distant_curbside_cones():
+    # drums along a parking lane 50 m ahead sit near the vanishing point: x looks central, but on the ground
+    # they are three lane widths to the right
+    far = lambda t: [Detection("cone", 0.8, (x, 0.52, 0.01, 0.03)) for x in (0.58, 0.6, 0.62, 0.64)]
+    labels = run_scene(SceneConfig(enabled=("lanes",)), 8, far)
+    assert all(not any(lab.startswith("scene_lane") for lab in s) for s in labels)
+
+
+def test_blocked_lane_needs_one_side_held():
+    # the cone line swings from one side to the other every second (turning through a junction)
+    flip = lambda t: [Detection("cone", 0.8, (x if int(t) % 2 else 1 - x, 0.7, 0.03, 0.06))
+                      for x in (0.55, 0.62, 0.7)]
+    labels = run_scene(SceneConfig(enabled=("lanes",)), 24, flip, dt=0.25)
+    assert all(not any(lab.startswith("scene_lane") for lab in s) for s in labels)
+    one = lambda t: [Detection("cone", 0.8, (x, 0.7, 0.03, 0.06)) for x in (0.55, 0.62, 0.7)]
+    labels = run_scene(SceneConfig(enabled=("lanes",)), 4, one)
+    assert not any(lab.startswith("scene_lane") for lab in labels[2])     # 1.0 s: not yet
+    assert "scene_lane_right" in labels[3]                                # 1.5 s held
+
+
 def test_weather_needs_hold_time():
     fog = lambda t: {"clear": 0.05, "fog": 0.95}
     labels = run_scene(SceneConfig(enabled=("weather",)), 60, lambda t: [], fog)
@@ -158,6 +178,60 @@ def test_crash_needs_responders_on_scene():
     assert "scene_crash" not in out
 
 
+def test_crash_not_for_responders_passing_a_waiting_car():
+    lit = lambda t, img, dets: [Detection("emergency_lights", 0.8, d.bbox, model="lights") for d in dets]
+
+    def run(boxes):
+        sa = SceneAnalyzer(SceneConfig(enabled=("crash",)))
+        sa.lights.update = lit
+        fired = False
+        for i in range(16):
+            t = i * 0.5
+            fired |= any(d.label == "scene_crash" for d in sa.update(t, texture(0), boxes(t)))
+        return fired
+    # we wait at a light; an ambulance and a police car drive across the frame
+    passing = lambda t: [Detection("ambulance", 0.9, (0.1 + 0.1 * t, 0.5, 0.12, 0.12), model="vehicle"),
+                         Detection("police_vehicle", 0.9, (0.05 + 0.1 * t, 0.5, 0.1, 0.1), model="vehicle")]
+    assert not run(passing)
+    # the same two parked at the scene ahead of us
+    parked = lambda t: [Detection("ambulance", 0.9, (0.6 + 0.002 * np.sin(t), 0.5, 0.12, 0.12), model="vehicle"),
+                        Detection("police_vehicle", 0.9, (0.75, 0.5, 0.1, 0.1), model="vehicle")]
+    assert run(parked)
+
+
+def test_crash_needs_lights_on_the_responders_and_ends_with_them():
+    amb = Detection("ambulance", 0.9, (0.6, 0.5, 0.12, 0.12), model="vehicle")
+    pol = Detection("police_vehicle", 0.9, (0.75, 0.5, 0.1, 0.1), model="vehicle")
+    car = Detection("car", 0.9, (0.3, 0.5, 0.1, 0.1), model="coco")
+
+    def run(lit_label, present=lambda t: True):
+        sa = SceneAnalyzer(SceneConfig(enabled=("crash",)))
+        sa.lights.update = lambda t, img, dets: [Detection("emergency_lights", 0.8, d.bbox, model="lights")
+                                                 for d in dets if d.label == lit_label]
+        fired = []
+        for i in range(24):
+            t = i * 0.5
+            ds = [amb, pol, car] if present(t) else [car]
+            fired.append(any(d.label == "scene_crash" for d in sa.update(t, texture(0), ds)))
+        return fired
+    # parked responders, but the flashing light is on a work truck next to them
+    assert not any(run("car"))
+    # one truck that the classifier calls police in one frame and fire engine in the next is one responder
+    sb = SceneAnalyzer(SceneConfig(enabled=("crash",)))
+    sb.lights.update = lambda t, img, dets: [Detection("emergency_lights", 0.8, d.bbox, model="lights")
+                                             for d in dets]
+    box = (0.5, 0.5, 0.2, 0.2)
+    for i in range(16):
+        guess = [Detection("police_vehicle", 0.55 if i % 2 else 0.4, box, model="vehicle"),
+                 Detection("fire_truck", 0.4 if i % 2 else 0.55, box, model="vehicle")]
+        sb.update(i * 0.5, texture(0), guess)
+    stamps = [e[0] for e in sb._emergency]
+    assert len(stamps) == len(set(stamps))       # one entry per frame for the one box, of its best class
+    # lights on the responders: a crash, which stops once they are out of view
+    fired = run("ambulance", present=lambda t: t < 7.0)
+    assert any(fired[:14]) and not any(fired[16:])
+
+
 def test_slippery_needs_rain_and_wet_road():
     both = lambda t: {"rain": 0.9, "clear": 0.1, "surface_wet": 0.7, "surface_dry": 0.3}
     rain_only = lambda t: {"rain": 0.9, "clear": 0.1, "surface_dry": 0.95, "surface_wet": 0.05}
@@ -166,3 +240,17 @@ def test_slippery_needs_rain_and_wet_road():
     assert "scene_slippery" in run_scene(cfg, 140, lambda t: [], both)[-1]
     for fn in (rain_only, wet_only):
         assert all("scene_slippery" not in s for s in run_scene(cfg, 140, lambda t: [], fn))
+
+
+def test_ground_point_inverts_the_camera_model():
+    import math
+    sa = SceneAnalyzer(SceneConfig(cam_height_m=1.3, horizon_y=0.5, hfov_deg=70.0))
+    aspect = 16 / 9
+    fy = 0.5 / math.tan(math.radians(35.0)) * aspect
+    dist, lat = 10.0, 1.8                                  # 10 m ahead, half a lane to the right
+    gy = 0.5 + fy * 1.3 / dist
+    cx = 0.5 + lat * (gy - 0.5) / (1.3 * aspect)
+    d, y = sa.ground_point((cx, gy - 0.02, 0.02, 0.04), aspect)
+    assert abs(d - dist) < 1e-6 and abs(y - lat) < 1e-6
+    assert abs(sa.lane_offset((cx, gy - 0.02, 0.02, 0.04), aspect) - 1.0) < 1e-6
+    assert sa.lane_offset((0.5, 0.49, 0.02, 0.02), aspect) is None          # above the horizon

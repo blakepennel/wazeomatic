@@ -3,6 +3,7 @@ package com.wazeomatic.detector
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Random
@@ -186,6 +187,43 @@ class SceneAnalyzerTest {
     }
 
     @Test
+    fun blockedLaneIgnoresDistantCurbsideCones() {
+        val far = { _: Double -> listOf(0.58, 0.6, 0.62, 0.64).map { Detection("cone", 0.8f, BBox(it.toFloat(), 0.52f, 0.01f, 0.03f)) } }
+        val labels = runScene(SceneConfig(enabled = setOf("lanes")), 8, far)
+        assertTrue(labels.all { s -> s.none { it.startsWith("scene_lane") } })
+    }
+
+    @Test
+    fun groundPointInvertsTheCameraModel() {
+        val sa = SceneAnalyzer(SceneConfig(camHeightM = 1.3, horizonY = 0.5, hfovDeg = 70.0))
+        val aspect = 16.0 / 9.0
+        val fy = 0.5 / kotlin.math.tan(Math.toRadians(35.0)) * aspect
+        val gy = 0.5 + fy * 1.3 / 10.0
+        val cx = 0.5 + 1.8 * (gy - 0.5) / (1.3 * aspect)
+        val b = BBox(cx.toFloat(), (gy - 0.02).toFloat(), 0.02f, 0.04f)
+        val g = sa.groundPoint(b, aspect)!!
+        assertEquals(10.0, g.first, 1e-3)
+        assertEquals(1.8, g.second, 1e-3)
+        assertEquals(1.0, sa.laneOffset(b, aspect)!!, 1e-3)
+        assertNull(sa.laneOffset(BBox(0.5f, 0.49f, 0.02f, 0.02f), aspect))
+    }
+
+    @Test
+    fun blockedLaneNeedsOneSideHeld() {
+        val cfg = SceneConfig(enabled = setOf("lanes"))
+        val flip = { t: Double ->
+            listOf(0.55, 0.62, 0.7).map { x ->
+                Detection("cone", 0.8f, BBox((if (t.toInt() % 2 == 1) x else 1 - x).toFloat(), 0.7f, 0.03f, 0.06f))
+            }
+        }
+        assertTrue(runScene(cfg, 24, flip, dt = 0.25).all { s -> s.none { it.startsWith("scene_lane") } })
+        val one = { _: Double -> listOf(0.55, 0.62, 0.7).map { Detection("cone", 0.8f, BBox(it.toFloat(), 0.7f, 0.03f, 0.06f)) } }
+        val labels = runScene(cfg, 4, one)
+        assertTrue(labels[2].none { it.startsWith("scene_lane") })
+        assertTrue("scene_lane_right" in labels[3])
+    }
+
+    @Test
     fun weatherNeedsHoldTime() {
         val cfg = SceneConfig(enabled = setOf("weather"))
         val labels = runScene(cfg, 60, { emptyList() }, { mapOf("clear" to 0.05f, "fog" to 0.95f) })
@@ -216,6 +254,55 @@ class SceneAnalyzerTest {
         out = emptySet()
         for (i in 0 until 12) out = sb.update(i * 0.5, texture(i * 6), responders(i * 0.5).drop(1)).map { it.label }.toSet()
         assertFalse("scene_crash" in out)
+    }
+
+    @Test
+    fun crashNotForRespondersPassingAWaitingCar() {
+        class AllLit : EmergencyLights() {
+            override fun update(t: Double, img: RgbImage, dets: List<Detection>): List<Detection> =
+                dets.map { Detection("emergency_lights", 0.8f, it.bbox, "lights") }
+        }
+        fun run(boxes: (Double) -> List<Detection>): Boolean {
+            val sa = SceneAnalyzer(SceneConfig(enabled = setOf("crash"))).apply { lights = AllLit() }
+            var fired = false
+            for (i in 0 until 16) {
+                val t = i * 0.5
+                fired = fired || sa.update(t, texture(0), boxes(t)).any { it.label == "scene_crash" }
+            }
+            return fired
+        }
+        // we wait at a light; an ambulance and a police car drive across the frame
+        assertFalse(run { t -> listOf(
+            Detection("ambulance", 0.9f, BBox((0.1 + 0.1 * t).toFloat(), 0.5f, 0.12f, 0.12f), "vehicle"),
+            Detection("police_vehicle", 0.9f, BBox((0.05 + 0.1 * t).toFloat(), 0.5f, 0.1f, 0.1f), "vehicle")) })
+        // the same two parked at the scene ahead of us
+        assertTrue(run { t -> listOf(
+            Detection("ambulance", 0.9f, BBox((0.6 + 0.002 * kotlin.math.sin(t)).toFloat(), 0.5f, 0.12f, 0.12f), "vehicle"),
+            Detection("police_vehicle", 0.9f, BBox(0.75f, 0.5f, 0.1f, 0.1f), "vehicle")) })
+    }
+
+    @Test
+    fun crashNeedsLightsOnTheRespondersAndEndsWithThem() {
+        val amb = Detection("ambulance", 0.9f, BBox(0.6f, 0.5f, 0.12f, 0.12f), "vehicle")
+        val pol = Detection("police_vehicle", 0.9f, BBox(0.75f, 0.5f, 0.1f, 0.1f), "vehicle")
+        val car = Detection("car", 0.9f, BBox(0.3f, 0.5f, 0.1f, 0.1f), "coco")
+        class LitOn(val label: String) : EmergencyLights() {
+            override fun update(t: Double, img: RgbImage, dets: List<Detection>): List<Detection> =
+                dets.filter { it.label == label }.map { Detection("emergency_lights", 0.8f, it.bbox, "lights") }
+        }
+        fun run(litLabel: String, present: (Double) -> Boolean = { true }): List<Boolean> {
+            val sa = SceneAnalyzer(SceneConfig(enabled = setOf("crash"))).apply { lights = LitOn(litLabel) }
+            return (0 until 24).map { i ->
+                val t = i * 0.5
+                sa.update(t, texture(0), if (present(t)) listOf(amb, pol, car) else listOf(car)).any { it.label == "scene_crash" }
+            }
+        }
+        // parked responders, but the flashing light is on a work truck next to them
+        assertFalse(run("car").any { it })
+        // lights on the responders: a crash, which stops once they are out of view
+        val fired = run("ambulance") { it < 7.0 }
+        assertTrue(fired.take(14).any { it })
+        assertFalse(fired.drop(16).any { it })
     }
 
     @Test

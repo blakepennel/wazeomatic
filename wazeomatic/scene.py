@@ -11,10 +11,10 @@ label                      condition
 scene_traffic_standstill   not moving for ``standstill_s`` with a vehicle close ahead and no red light seen
 scene_traffic_heavy        over ``heavy_window_s``: mostly slow or stopped, repeatedly, among many vehicles,
                            and no red light seen
-scene_crash                an ambulance or fire engine, or two emergency vehicles, or one with flashing
-                           lights next to stopped traffic, for ``crash_hold_s``
-scene_lane_left/center/    a cluster of at least ``lane_min_objects`` work-zone objects whose spread lies on
-right                      one side of the lane ahead
+scene_crash                an ambulance or fire engine with lights, or two kinds of responder with lights,
+                           for ``crash_hold_s``: that we approach, or that stand still while we stand
+scene_lane_left/center/    at least ``lane_min_objects`` cones, drums or barricades on the road 3-40 m ahead,
+right                      two of them inside our lane (flat-road camera model), on one side for 1.5 s
 scene_dark_signal          two or more signal heads close ahead, none lit, for ``dark_signal_s``; a single lit
                            head anywhere in view vetoes it (a signal seen from behind is dark too)
 scene_fog, scene_slippery  the weather classifier's smoothed probability above a threshold for a hold time
@@ -26,6 +26,7 @@ twin is ``SceneAnalyzer.kt``.
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
@@ -63,6 +64,20 @@ DEFAULT_WEATHER_RULES: dict[str, tuple[str, float, float]] = {
 
 def _whole(label: str, conf: float, bbox=(0.5, 0.5, 1.0, 1.0)) -> Detection:
     return Detection(label=label, confidence=float(min(1.0, max(0.0, conf))), bbox=tuple(bbox), model="scene")
+
+
+def _standing(boxes: Sequence[tuple], max_shift: float) -> bool:
+    """Whether a run of boxes (oldest first) stays put: the centre of the last third is within ``max_shift``
+    box widths of the first third's and the size changed by less than 40 %."""
+    if len(boxes) < 3:
+        return False
+    third = max(1, len(boxes) // 3)
+    first, last = boxes[:third], boxes[-third:]
+    width = float(np.mean([b[2] for b in boxes]))
+    shift = abs(float(np.mean([b[0] for b in last])) - float(np.mean([b[0] for b in first])))
+    a0 = float(np.mean([b[2] * b[3] for b in first]))
+    a1 = float(np.mean([b[2] * b[3] for b in last]))
+    return width > 0 and shift <= max_shift * width and 0.7 <= a1 / max(a0, 1e-9) <= 1.4
 
 
 def _iou(a, b) -> float:
@@ -253,14 +268,27 @@ class SceneConfig:
     # crash
     crash_hold_s: float = 3.0
     crash_window_s: float = 10.0
+    crash_max_shift: float = 0.5       # standing still: box centre moves less than this many box widths
     other_side_x: float = 0.22            # emergency scene entirely left of this (right-hand traffic)
     police_other_side: bool = False       # relabel far-side police as Police > Other side (opt in)
     # lanes
     lane_min_objects: int = 3
     lane_window_s: float = 3.0
-    lane_left_x: float = 0.42
-    lane_right_x: float = 0.58
-    lane_min_y: float = 0.45              # objects on the road surface, not signs on gantries
+    # Flat-road pinhole model of the camera. Where a box meets the road (its bottom edge, row gy) the point lies
+    # d = f_y * cam_height / (gy - horizon_y) metres ahead and (cx - 0.5) * cam_height * aspect / (gy - horizon_y)
+    # metres to the side (aspect = width / height, square pixels). The lateral distance needs no field of view,
+    # only the mount height and the horizon row; the distance needs the horizontal field of view too.
+    cam_height_m: float = 1.3             # phone on the windscreen of a car
+    horizon_y: float = 0.50               # row of the horizon with the phone mounted level
+    hfov_deg: float = 70.0                # Pixel main camera in 16:9 video
+    lane_width_m: float = 3.6
+    lane_max_dist_m: float = 40.0         # further away a cone is a few pixels and its row unreliable
+    lane_min_dist_m: float = 3.0
+    # offsets u are in half lane widths from our centre line: |u| <= 1 is our lane, 1 to 3 the next
+    lane_max_offset: float = 2.0          # count objects in our lane and in the near half of the next one
+    lane_reach: float = 0.8               # at least two objects well inside our lane (tuned on Argoverse 2 3D labels)
+    lane_side_u: float = 0.6              # median offset beyond this: left / right; inside: center
+    lane_hold_s: float = 1.5              # the same side for this long
     # dark signals
     dark_signal_s: float = 4.0
     signal_min_px: int = 18
@@ -277,7 +305,9 @@ class SceneAnalyzer:
         self._hist: deque = deque()            # (t, ego state, n vehicles, vehicle close ahead)
         self._last_red = -1e9
         self._emergency: deque = deque()       # (t, label, bbox, lights)
-        self._construction: deque = deque()    # (t, cx, cy, label)
+        self._construction: deque = deque()    # (t, u, ground y, label)
+        self._lane_side: Optional[str] = None
+        self._lane_since = 0.0
         self._dark_since: Optional[float] = None
         self._weather: dict[str, float] = {}
         self._weather_since: dict[str, float] = {}
@@ -311,7 +341,7 @@ class SceneAnalyzer:
         if "crash" in cfg.enabled:
             out += self._crash(t, dets, lights, ego)
         if "lanes" in cfg.enabled:
-            out += self._lanes(t, dets)
+            out += self._lanes(t, dets, w / h)
         if "signals" in cfg.enabled:
             out += self._signals(t, signals, sig_colours)
         if "weather" in cfg.enabled and weather is not None:
@@ -350,15 +380,21 @@ class SceneAnalyzer:
     # --------------------------------------------------------------------------- crash
     def _crash(self, t: float, dets: Sequence[Detection], lights: Sequence[Detection], ego: str) -> list[Detection]:
         cfg = self.cfg
+        # the vehicle classifier scores every class on a box; a box is one responder, of its best class
+        best: dict[tuple, Detection] = {}
         for d in dets:
-            if d.label in EMERGENCY_LABELS and d.confidence >= 0.5:
+            key = tuple(d.bbox)
+            if d.label in EMERGENCY_LABELS and (key not in best or d.confidence > best[key].confidence):
+                best[key] = d
+        for d in best.values():
+            if d.confidence >= 0.5:
+                # lights count only on a responder: a work truck's beacon or a flickering tail light is not one
                 lit = any(_iou(d.bbox, L.bbox) > 0.5 for L in lights)
                 self._emergency.append((t, d.label, d.bbox, lit))
-        for L in lights:
-            self._emergency.append((t, "lights", L.bbox, True))
         while self._emergency and t - self._emergency[0][0] > cfg.crash_window_s:
             self._emergency.popleft()
-        if not self._emergency:
+        # responders still in view: the window keeps them for 10 s, the scene ends when they leave the frame
+        if not self._emergency or t - self._emergency[-1][0] > 1.0:
             return []
         span = self._emergency[-1][0] - self._emergency[0][0]
         if span < cfg.crash_hold_s:
@@ -366,13 +402,17 @@ class SceneAnalyzer:
         labels = [e[1] for e in self._emergency]
         heavy = sum(1 for lab in labels if lab in ("ambulance", "fire_truck"))
         lit = sum(1 for e in self._emergency if e[3])
-        kinds = {lab for lab in labels if lab in EMERGENCY_LABELS}
-        # responders on scene, not responders on their way: either we approach them (their boxes grow while
-        # we move) or traffic around them has stopped. An ambulance overtaking us shrinks and does not count.
+        # a kind counts when seen at least twice: one truck the classifier calls police once and fire engine
+        # once is not two responders
+        kinds = {lab for lab in set(labels) if labels.count(lab) >= 2}
+        # responders on scene, not responders on their way. While we drive, we approach them: their boxes
+        # grow (an ambulance overtaking us shrinks). While we stand, they must stand too: an ambulance that
+        # drives past a car waiting at a light crosses the frame and is not a crash.
         areas = [e[2][2] * e[2][3] for e in self._emergency]
         third = max(1, len(areas) // 3)
         approaching = float(np.mean(areas[-third:])) >= 1.3 * float(np.mean(areas[:third]))
-        on_scene = approaching or ego != "moving"
+        standing = _standing([e[2] for e in self._emergency], cfg.crash_max_shift)
+        on_scene = (approaching and ego != "stationary") or (standing and ego != "moving")
         # an ambulance or fire engine with lights, or two kinds of responder; police alone is a traffic stop
         responders = (heavy >= 3 and lit >= 2) or (len(kinds) >= 2 and lit >= 2)
         if not (responders and on_scene):
@@ -396,29 +436,43 @@ class SceneAnalyzer:
         return out
 
     # --------------------------------------------------------------------------- lanes
-    def _lanes(self, t: float, dets: Sequence[Detection]) -> list[Detection]:
+    def ground_point(self, bbox, aspect: float) -> Optional[tuple[float, float]]:
+        """(distance ahead, lateral offset to the right) in metres of the point where a box meets the road, from
+        the flat-road camera model; None above the horizon."""
+        cfg = self.cfg
+        dv = bbox[1] + bbox[3] / 2 - cfg.horizon_y
+        if dv <= 1e-3:
+            return None
+        fy = 0.5 / math.tan(math.radians(cfg.hfov_deg) / 2) * aspect
+        return fy * cfg.cam_height_m / dv, (bbox[0] - 0.5) * cfg.cam_height_m * aspect / dv
+
+    def lane_offset(self, bbox, aspect: float = 16 / 9) -> Optional[float]:
+        """Lateral offset in half lane widths (negative: left), or None when out of the distance range."""
+        cfg = self.cfg
+        g = self.ground_point(bbox, aspect)
+        if g is None or not cfg.lane_min_dist_m <= g[0] <= cfg.lane_max_dist_m:
+            return None
+        return g[1] / (cfg.lane_width_m / 2)
+
+    def _lanes(self, t: float, dets: Sequence[Detection], aspect: float) -> list[Detection]:
         cfg = self.cfg
         for d in dets:
-            if d.label in CONSTRUCTION_LABELS and d.label != "construction_sign" and d.confidence >= 0.45 \
-                    and d.bbox[1] >= cfg.lane_min_y:
-                self._construction.append((t, d.bbox[0], d.bbox[1], d.label))
+            if d.label in CONSTRUCTION_LABELS and d.label != "construction_sign" and d.confidence >= 0.45:
+                u = self.lane_offset(d.bbox, aspect)
+                if u is not None and abs(u) <= cfg.lane_max_offset:
+                    self._construction.append((t, u, d.bbox[1] + d.bbox[3] / 2, d.label))
         while self._construction and t - self._construction[0][0] > cfg.lane_window_s:
             self._construction.popleft()
         now = [c for c in self._construction if t - c[0] <= 0.5]
-        if len(now) < cfg.lane_min_objects:
+        us = sorted(c[1] for c in now)
+        side = None
+        if len(us) >= cfg.lane_min_objects and sum(1 for u in us if abs(u) <= cfg.lane_reach) >= 2:
+            mid = us[len(us) // 2]
+            side = "left" if mid < -cfg.lane_side_u else "right" if mid > cfg.lane_side_u else "center"
+        if side != self._lane_side:
+            self._lane_side, self._lane_since = side, t
+        if side is None or t - self._lane_since < cfg.lane_hold_s:
             return []
-        xs = sorted(c[1] for c in now)
-        mid = xs[len(xs) // 2]
-        # the objects must reach into the lane ahead: some lie between the two lane lines of our lane
-        reach = sum(1 for x in xs if cfg.lane_left_x - 0.12 <= x <= cfg.lane_right_x + 0.12)
-        if reach < 2:
-            return []
-        if mid < cfg.lane_left_x:
-            side = "left"
-        elif mid > cfg.lane_right_x:
-            side = "right"
-        else:
-            side = "center"
         conf = min(1.0, 0.5 + 0.08 * len(now))
         return [_whole(f"scene_lane_{side}", conf)]
 

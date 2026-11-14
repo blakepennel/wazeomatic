@@ -31,6 +31,21 @@ fun defaultWeatherRules(): LinkedHashMap<String, WeatherRule> = linkedMapOf(
 private fun whole(label: String, conf: Double) =
     Detection(label, conf.coerceIn(0.0, 1.0).toFloat(), BBox(0.5f, 0.5f, 1f, 1f), "scene")
 
+/** Whether a run of boxes (oldest first) stays put: the centre of the last third is within [maxShift] box widths
+ *  of the first third's and the size changed by less than 40 %. */
+internal fun standing(boxes: List<BBox>, maxShift: Double): Boolean {
+    if (boxes.size < 3) return false
+    val third = max(1, boxes.size / 3)
+    val first = boxes.take(third)
+    val last = boxes.takeLast(third)
+    val width = boxes.map { it.w.toDouble() }.average()
+    val shift = abs(last.map { it.cx.toDouble() }.average() - first.map { it.cx.toDouble() }.average())
+    val a0 = first.map { it.w.toDouble() * it.h }.average()
+    val a1 = last.map { it.w.toDouble() * it.h }.average()
+    val ratio = a1 / maxOf(a0, 1e-9)
+    return width > 0 && shift <= maxShift * width && ratio in 0.7..1.4
+}
+
 internal fun boxIou(a: BBox, b: BBox): Double {
     val ax1 = a.cx - a.w / 2.0; val ay1 = a.cy - a.h / 2.0; val ax2 = a.cx + a.w / 2.0; val ay2 = a.cy + a.h / 2.0
     val bx1 = b.cx - b.w / 2.0; val by1 = b.cy - b.h / 2.0; val bx2 = b.cx + b.w / 2.0; val by2 = b.cy + b.h / 2.0
@@ -251,14 +266,24 @@ data class SceneConfig(
     // crash
     val crashHoldS: Double = 3.0,
     val crashWindowS: Double = 10.0,
+    val crashMaxShift: Double = 0.5,      // standing still: box centre moves less than this many box widths
     val otherSideX: Double = 0.22,
     val policeOtherSide: Boolean = false,
     // lanes
     val laneMinObjects: Int = 3,
     val laneWindowS: Double = 3.0,
-    val laneLeftX: Double = 0.42,
-    val laneRightX: Double = 0.58,
-    val laneMinY: Double = 0.45,
+    // flat-road pinhole camera, same as scene.py: a box meeting the road at row gy is
+    // fy * camHeightM / (gy - horizonY) m ahead and (cx - 0.5) * camHeightM * aspect / (gy - horizonY) m to the side
+    val camHeightM: Double = 1.3,
+    val horizonY: Double = 0.50,
+    val hfovDeg: Double = 70.0,
+    val laneWidthM: Double = 3.6,
+    val laneMaxDistM: Double = 40.0,
+    val laneMinDistM: Double = 3.0,
+    val laneMaxOffset: Double = 2.0,
+    val laneReach: Double = 0.8,
+    val laneSideU: Double = 0.6,
+    val laneHoldS: Double = 1.5,
     // dark signals
     val darkSignalS: Double = 4.0,
     val signalMinPx: Int = 18,
@@ -279,12 +304,14 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
 
     private class Sample(val t: Double, val ego: String, val vehicles: Int, val ahead: Boolean)
     private class Emergency(val t: Double, val label: String, val bbox: BBox, val lit: Boolean)
-    private class Work(val t: Double, val cx: Double, val cy: Double, val label: String)
+    private class Work(val t: Double, val u: Double, val groundY: Double, val label: String)
 
     private val hist = ArrayDeque<Sample>()
     private var lastRed = -1e9
     private val emergency = ArrayDeque<Emergency>()
     private val construction = ArrayDeque<Work>()
+    private var laneSide: String? = null
+    private var laneSince = 0.0
     private var darkSince: Double? = null
     private val weatherEma = LinkedHashMap<String, Double>()
     private val weatherSince = HashMap<String, Double>()
@@ -302,6 +329,7 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     fun update(t: Double, img: RgbImage, dets: List<Detection>, weather: Map<String, Float>? = null): List<Detection> {
         val out = ArrayList<Detection>()
         val h = img.height
+        val w = img.width
         ego.update(t, img, dets)
         val egoState = ego.state(t)
         val lit = lights.update(t, img, dets)
@@ -317,7 +345,7 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
 
         if ("traffic" in cfg.enabled) out.addAll(traffic(t))
         if ("crash" in cfg.enabled) out.addAll(crash(t, dets, lit, egoState))
-        if ("lanes" in cfg.enabled) out.addAll(lanes(t, dets))
+        if ("lanes" in cfg.enabled) out.addAll(lanes(t, dets, w.toDouble() / h))
         if ("signals" in cfg.enabled) out.addAll(signals(t, signals, colours))
         if ("weather" in cfg.enabled && weather != null) updateWeather(t, weather)
         if ("weather" in cfg.enabled) out.addAll(weatherLabels(t))
@@ -353,24 +381,35 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     }
 
     private fun crash(t: Double, dets: List<Detection>, lights: List<Detection>, ego: String): List<Detection> {
+        // the vehicle classifier scores every class on a box; a box is one responder, of its best class
+        val best = HashMap<BBox, Detection>()
         for (d in dets) {
-            if (d.label in SceneLabels.EMERGENCY && d.confidence >= 0.5f) {
+            if (d.label !in SceneLabels.EMERGENCY) continue
+            val prev = best[d.bbox]
+            if (prev == null || d.confidence > prev.confidence) best[d.bbox] = d
+        }
+        for (d in best.values) {
+            if (d.confidence >= 0.5f) {
+                // lights count only on a responder: a work truck's beacon or a flickering tail light is not one
                 val lit = lights.any { boxIou(d.bbox, it.bbox) > 0.5 }
                 emergency.addLast(Emergency(t, d.label, d.bbox, lit))
             }
         }
-        for (l in lights) emergency.addLast(Emergency(t, "lights", l.bbox, true))
         while (emergency.isNotEmpty() && t - emergency.first().t > cfg.crashWindowS) emergency.removeFirst()
-        if (emergency.isEmpty()) return emptyList()
+        // responders still in view: the window keeps them for 10 s, the scene ends when they leave the frame
+        if (emergency.isEmpty() || t - emergency.last().t > 1.0) return emptyList()
         if (emergency.last().t - emergency.first().t < cfg.crashHoldS) return emptyList()
         val heavy = emergency.count { it.label == "ambulance" || it.label == "fire_truck" }
         val lit = emergency.count { it.lit }
-        val kinds = emergency.map { it.label }.filter { it in SceneLabels.EMERGENCY }.toSet()
-        // responders on scene, not on their way: we approach them (their boxes grow) or traffic has stopped
+        // a kind counts when seen at least twice: one truck called police once and fire engine once is not two
+        val kinds = emergency.groupingBy { it.label }.eachCount().filterValues { it >= 2 }.keys
+        // responders on scene, not on their way. While we drive, we approach them: their boxes grow. While we
+        // stand, they must stand too: an ambulance driving past a car waiting at a light is not a crash.
         val areas = emergency.map { it.bbox.w.toDouble() * it.bbox.h }
         val third = max(1, areas.size / 3)
         val approaching = areas.takeLast(third).average() >= 1.3 * areas.take(third).average()
-        val onScene = approaching || ego != "moving"
+        val standing = standing(emergency.map { it.bbox }, cfg.crashMaxShift)
+        val onScene = (approaching && ego != "stationary") || (standing && ego != "moving")
         // an ambulance or fire engine with lights, or two kinds of responder; police alone is a traffic stop
         val responders = (heavy >= 3 && lit >= 2) || (kinds.size >= 2 && lit >= 2)
         if (!(responders && onScene)) return emptyList()
@@ -393,21 +432,39 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         return out
     }
 
-    private fun lanes(t: Double, dets: List<Detection>): List<Detection> {
+    /** (metres ahead, metres to the right) where the box meets the road, from the flat-road camera model; null
+     *  above the horizon. */
+    fun groundPoint(b: BBox, aspect: Double): Pair<Double, Double>? {
+        val dv = b.cy.toDouble() + b.h / 2.0 - cfg.horizonY
+        if (dv <= 1e-3) return null
+        val fy = 0.5 / kotlin.math.tan(Math.toRadians(cfg.hfovDeg) / 2) * aspect
+        return Pair(fy * cfg.camHeightM / dv, (b.cx - 0.5) * cfg.camHeightM * aspect / dv)
+    }
+
+    /** Lateral offset in half lane widths (negative: left); null outside the distance range. */
+    fun laneOffset(b: BBox, aspect: Double = 16.0 / 9.0): Double? {
+        val g = groundPoint(b, aspect) ?: return null
+        if (g.first < cfg.laneMinDistM || g.first > cfg.laneMaxDistM) return null
+        return g.second / (cfg.laneWidthM / 2)
+    }
+
+    private fun lanes(t: Double, dets: List<Detection>, aspect: Double): List<Detection> {
         for (d in dets) {
-            if (d.label in SceneLabels.CONSTRUCTION && d.label != "construction_sign" && d.confidence >= 0.45f &&
-                d.bbox.cy >= cfg.laneMinY
-            ) construction.addLast(Work(t, d.bbox.cx.toDouble(), d.bbox.cy.toDouble(), d.label))
+            if (d.label in SceneLabels.CONSTRUCTION && d.label != "construction_sign" && d.confidence >= 0.45f) {
+                val u = laneOffset(d.bbox, aspect) ?: continue
+                if (abs(u) <= cfg.laneMaxOffset) construction.addLast(Work(t, u, d.bbox.cy + d.bbox.h / 2.0, d.label))
+            }
         }
         while (construction.isNotEmpty() && t - construction.first().t > cfg.laneWindowS) construction.removeFirst()
         val now = construction.filter { t - it.t <= 0.5 }
-        if (now.size < cfg.laneMinObjects) return emptyList()
-        val xs = now.map { it.cx }.sorted()
-        val mid = xs[xs.size / 2]
-        // the objects must reach into the lane ahead: some lie between the two lane lines of our lane
-        val reach = xs.count { it >= cfg.laneLeftX - 0.12 && it <= cfg.laneRightX + 0.12 }
-        if (reach < 2) return emptyList()
-        val side = if (mid < cfg.laneLeftX) "left" else if (mid > cfg.laneRightX) "right" else "center"
+        val us = now.map { it.u }.sorted()
+        var side: String? = null
+        if (us.size >= cfg.laneMinObjects && us.count { abs(it) <= cfg.laneReach } >= 2) {
+            val mid = us[us.size / 2]
+            side = if (mid < -cfg.laneSideU) "left" else if (mid > cfg.laneSideU) "right" else "center"
+        }
+        if (side != laneSide) { laneSide = side; laneSince = t }
+        if (side == null || t - laneSince < cfg.laneHoldS) return emptyList()
         return listOf(whole("scene_lane_$side", min(1.0, 0.5 + 0.08 * now.size)))
     }
 
