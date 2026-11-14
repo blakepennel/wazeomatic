@@ -93,8 +93,10 @@ road-work logs, 121 civilian look-alikes and 16 police crops; v6: 200 more logs 
 `tools/fetch_argoverse_hazards.py --skip 100`, 178 look-alikes, 2 police, 1 ambulance), and the other half is
 only ever scored (`configs/police_truth_argoverse.txt`). Each round fixed the look-alikes it was shown and
 found new ones, but not the same ones, so the two models are averaged: on the 163 held-out clips that cut the
-clips with a false Police report from 12 (v5) and 4 (v6) to 2, with 8 of the 9 police clips found. A YOLO11s-cls
-at 192 px (`vehicle_s192`) was not better than either. Measured numbers are in
+clips with a false Police report from 12 (v5) and 4 (v6) to 2, with 8 of the 9 police clips found, all at 128 px
+crops (before the pipeline read the trained input size from the export). At the trained 160 px, with Police on
+two hits in ten frames, the pair finds 7 of 9 with no false report. A YOLO11s-cls at 192 px (`vehicle_s192`)
+was not better than either. Measured numbers are in
 [docs/waze-coverage.md](../docs/waze-coverage.md#measured).
 
 ## Retired files
