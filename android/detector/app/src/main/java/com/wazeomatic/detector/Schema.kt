@@ -22,10 +22,24 @@ object Schema {
         HazardType("HAZARD_ON_ROAD_POTHOLE", "Hazard", "Pothole", "Pothole / road damage"),
         HazardType("HAZARD_ON_ROAD_CONSTRUCTION", "Hazard", "Construction", "Cones, work-zone signs, delineators"),
         HazardType("HAZARD_ON_ROAD_OBJECT", "Hazard", "Object", "Debris or object on the road"),
+        HazardType("HAZARD_ON_ROAD_TRAFFIC_LIGHT", "Hazard", "Broken traffic light",
+            "Signal head in view with no lamp lit for several seconds"),
         HazardType("HAZARD_SHOULDER_CAR_STOPPED", "Hazard", "Car on shoulder", "Vehicle stopped on the shoulder"),
         HazardType("HAZARD_SHOULDER_ANIMALS", "Hazard", "", "Animal on or near the road (plain Hazard; Waze removed the Animals subtype)"),
         HazardType("POLICE", "Police", "", "Police vehicle visible"),
+        HazardType("POLICE_OTHER_SIDE", "Police", "Other side", "Police vehicle on the opposite carriageway"),
         HazardType("CRASH", "Crash", "", "Crash / collision"),
+        HazardType("CRASH_OTHER_SIDE", "Crash", "Other side", "Crash scene on the opposite carriageway"),
+        HazardType("TRAFFIC_HEAVY", "Traffic", "Heavy", "Slow, dense traffic for a sustained stretch"),
+        HazardType("TRAFFIC_STANDSTILL", "Traffic", "Standstill", "Traffic not moving, not at a red light"),
+        HazardType("WEATHER_FOG", "Bad weather", "Fog", "Fog limiting visibility"),
+        HazardType("WEATHER_FLOOD", "Bad weather", "Flood", "Standing water across the road"),
+        HazardType("WEATHER_SLIPPERY", "Bad weather", "Slippery road", "Wet road in heavy rain"),
+        HazardType("WEATHER_ICE", "Bad weather", "Icy road", "Ice on the road surface"),
+        HazardType("WEATHER_UNPLOWED", "Bad weather", "Unplowed road", "Snow covering the lanes"),
+        HazardType("BLOCKED_LANE_LEFT", "Blocked lane", "Left lane", "Left lane blocked by a work zone or vehicle"),
+        HazardType("BLOCKED_LANE_CENTER", "Blocked lane", "Center lane", "Center lane blocked"),
+        HazardType("BLOCKED_LANE_RIGHT", "Blocked lane", "Right lane", "Right lane blocked"),
     ).associateBy { it.key }
 
     val DEFAULT_CLASS_TO_HAZARD: Map<String, String> = linkedMapOf(
@@ -36,13 +50,35 @@ object Schema {
         "delineator" to "HAZARD_ON_ROAD_CONSTRUCTION",
         "barricade" to "HAZARD_ON_ROAD_CONSTRUCTION",
         "worker" to "HAZARD_ON_ROAD_CONSTRUCTION",
-        "police_vehicle" to "POLICE",
+        "police_vehicle" to "POLICE",          // the vehicle classifier's label for a police car
+        "debris" to "HAZARD_ON_ROAD_OBJECT",
+        "deer" to "HAZARD_SHOULDER_ANIMALS",
         // COCO classes used from the stock detector
         "dog" to "HAZARD_SHOULDER_ANIMALS",
         "horse" to "HAZARD_SHOULDER_ANIMALS",
         "sheep" to "HAZARD_SHOULDER_ANIMALS",
         "cow" to "HAZARD_SHOULDER_ANIMALS",
         "bear" to "HAZARD_SHOULDER_ANIMALS",
+        // the stock COCO model calls a deer a giraffe now and then; on a North American road these are
+        // deer, elk or moose
+        "giraffe" to "HAZARD_SHOULDER_ANIMALS",
+        "zebra" to "HAZARD_SHOULDER_ANIMALS",
+        "elephant" to "HAZARD_SHOULDER_ANIMALS",
+        // scene-level labels (wazeomatic/scene.py): one whole-frame detection per frame while a condition holds
+        "scene_traffic_heavy" to "TRAFFIC_HEAVY",
+        "scene_traffic_standstill" to "TRAFFIC_STANDSTILL",
+        "scene_fog" to "WEATHER_FOG",
+        "scene_flood" to "WEATHER_FLOOD",
+        "scene_slippery" to "WEATHER_SLIPPERY",
+        "scene_ice" to "WEATHER_ICE",
+        "scene_unplowed" to "WEATHER_UNPLOWED",
+        "scene_crash" to "CRASH",
+        "scene_crash_other_side" to "CRASH_OTHER_SIDE",
+        "scene_police_other_side" to "POLICE_OTHER_SIDE",
+        "scene_lane_left" to "BLOCKED_LANE_LEFT",
+        "scene_lane_center" to "BLOCKED_LANE_CENTER",
+        "scene_lane_right" to "BLOCKED_LANE_RIGHT",
+        "scene_dark_signal" to "HAZARD_ON_ROAD_TRAFFIC_LIGHT",
         // car/truck/bus only become a hazard through the stopped-vehicle heuristic
     )
 }

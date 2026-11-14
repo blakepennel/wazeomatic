@@ -10,6 +10,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Only asked for when "use GPS speed" is switched on (off by default). The speed feeds the ego-motion
+         estimate on the phone; no location leaves the device. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -31,6 +37,21 @@
         <service
             android:name=".DetectorService"
             android:exported="false"
-            android:foregroundServiceType="camera|dataSync" />
+            android:foregroundServiceType="camera|dataSync|location" />
+
+        <!-- Read-only Waze screen reader (see WazeWatcherService). Switched on by the user under
+             Settings > Accessibility; only the system can bind it. -->
+        <service
+            android:name=".WazeWatcherService"
+            android:exported="true"
+            android:label="@string/waze_watcher_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/waze_watcher" />
+        </service>
     </application>
 </manifest>

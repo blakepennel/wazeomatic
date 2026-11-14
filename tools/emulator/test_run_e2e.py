@@ -21,16 +21,18 @@ def rows(plan, **status_by_name):
 
 
 class PlanAndVerdict(unittest.TestCase):
-    def test_default_full_run_has_21_checks(self):
+    def test_default_full_run_has_29_checks(self):
         self.assertEqual(len(e2e.CHECKS_A), 14)
         self.assertEqual(len(e2e.CHECKS_B), 7)
+        self.assertEqual(len(e2e.CHECKS_C), 8)
         plan = e2e.planned_checks("all", [])
-        self.assertEqual(len(plan), 21)
-        self.assertEqual(len(set(plan)), 21)
+        self.assertEqual(len(plan), 29)
+        self.assertEqual(len(set(plan)), 29)
 
     def test_stage_not_requested_is_not_planned(self):
         self.assertEqual(e2e.planned_checks("a", []), list(e2e.CHECKS_A.values()))
         self.assertEqual(e2e.planned_checks("b", []), list(e2e.CHECKS_B.values()))
+        self.assertEqual(e2e.planned_checks("c", []), list(e2e.CHECKS_C.values()))
 
     def test_expect_hazard_adds_b7(self):
         plan = e2e.planned_checks("b", ["HAZARD_ON_ROAD_CONSTRUCTION"])
@@ -45,9 +47,9 @@ class PlanAndVerdict(unittest.TestCase):
 
     def test_stage_b_without_evidence_is_incomplete(self):
         plan = e2e.planned_checks("all", [])
-        done = rows(list(e2e.CHECKS_A.values()))
+        done = rows(list(e2e.CHECKS_A.values()) + list(e2e.CHECKS_C.values()))
         res = e2e.fill_skips(done, plan, "detector APK not built")
-        self.assertEqual(len(res), 21)
+        self.assertEqual(len(res), 29)
         self.assertEqual([r[0] for r in res].count("SKIP"), 7)
         self.assertTrue(all(r[2] == "detector APK not built" for r in res if r[0] == "SKIP"))
         self.assertEqual(e2e.verdict(res), "INCOMPLETE")
@@ -79,16 +81,18 @@ class PlanAndVerdict(unittest.TestCase):
         src = Path(e2e.__file__).read_text(encoding="utf-8")
         keys_a = set(re.findall(r'CHECKS_A\["(\w+)"\]', src))
         keys_b = set(re.findall(r'CHECKS_B\["(\w+)"\]', src))
+        keys_c = set(re.findall(r'CHECKS_C\["(\w+)"\]', src))
         # A4_police / A4_animals go through dry_run_without_sub(key, ...)
         keys_a |= set(re.findall(r'dry_run_without_sub\("(\w+)"', src))
         self.assertEqual(keys_a, set(e2e.CHECKS_A))
         self.assertEqual(keys_b, set(e2e.CHECKS_B))
+        self.assertEqual(keys_c, set(e2e.CHECKS_C))
 
     def test_summary_of_a_run_without_stage_b_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = e2e.Runner("emulator-0", Path(tmp))
             r.plan = e2e.planned_checks("all", [])
-            for name in e2e.CHECKS_A.values():
+            for name in list(e2e.CHECKS_A.values()) + list(e2e.CHECKS_C.values()):
                 r.results.append(("PASS", name, ""))
             r.not_run_reason = "detector APK not built"
             with mock.patch("builtins.print"):
@@ -96,10 +100,10 @@ class PlanAndVerdict(unittest.TestCase):
             text = (Path(tmp) / "summary.txt").read_text(encoding="utf-8")
             self.assertIn("E2E SUMMARY  INCOMPLETE", text)
             self.assertNotIn("E2E SUMMARY  PASS", text)
-            self.assertIn("21 check(s): 14 PASS, 0 FAIL, 7 SKIP", text)
+            self.assertIn("29 check(s): 22 PASS, 0 FAIL, 7 SKIP", text)
             r2 = e2e.Runner("emulator-0", Path(tmp))
             r2.plan = list(r.plan)
-            r2.results = [("PASS", n, "") for n in e2e.CHECKS_A.values()]
+            r2.results = [("PASS", n, "") for n in list(e2e.CHECKS_A.values()) + list(e2e.CHECKS_C.values())]
             with mock.patch("builtins.print"):
                 self.assertEqual(r2.summary(allow_skip=True), 0)
 
@@ -248,6 +252,118 @@ class ExpectedHazard(unittest.TestCase):
         events = [self.ev("pothole", hazard_type="HAZARD_ON_ROAD_POTHOLE")]
         macro = [self.macro("sent", hazard_type="HAZARD_ON_ROAD_POTHOLE")]
         self.assertFalse(e2e.check_expected_hazard(self.T, events, macro)[0])
+
+
+class StageC(unittest.TestCase):
+    """Parsing and verdict code of the Waze reader stage."""
+
+    SVC = e2e.WAZE_SERVICE
+
+    def test_accessibility_list_keeps_what_was_on(self):
+        self.assertEqual(e2e.accessibility_list_with("null", self.SVC), self.SVC)
+        self.assertEqual(e2e.accessibility_list_with("", self.SVC), self.SVC)
+        other = "com.example.tts/.Reader"
+        self.assertEqual(e2e.accessibility_list_with(other, self.SVC), f"{other}:{self.SVC}")
+        # already on, in either the long or the short form: not added twice
+        self.assertEqual(e2e.accessibility_list_with(f"{other}:{self.SVC}", self.SVC), f"{other}:{self.SVC}")
+        short = "com.wazeomatic.detector/.WazeWatcherService"
+        self.assertEqual(e2e.accessibility_list_with(short, self.SVC), short)
+
+    def test_restore_commands(self):
+        self.assertEqual(e2e.accessibility_restore_commands("null", "null"),
+                         ["settings delete secure enabled_accessibility_services",
+                          "settings delete secure accessibility_enabled"])
+        self.assertEqual(e2e.accessibility_restore_commands("a/.B\n", "0"),
+                         ["settings put secure enabled_accessibility_services 'a/.B'",
+                          "settings put secure accessibility_enabled '0'"])
+
+    def test_desktop_alerts_verdict(self):
+        good = {"hazard_type": "POLICE", "distance_m": 482.8, "text": "Police · 0.3 mi · Reported 2 min ago"}
+        self.assertTrue(e2e.check_desktop_alerts([good])[0])
+        self.assertFalse(e2e.check_desktop_alerts([])[0])
+        self.assertFalse(e2e.check_desktop_alerts([good, good])[0])
+        self.assertFalse(e2e.check_desktop_alerts([dict(good, hazard_type="CRASH")])[0])
+        self.assertFalse(e2e.check_desktop_alerts([dict(good, distance_m=3218.7)])[0])
+        self.assertFalse(e2e.check_desktop_alerts([dict(good, distance_m=None)])[0])
+
+    def test_desktop_reader_on_the_mock_card(self):
+        """The card layout of AlertCard.kt as uiautomator dumps it, through the real desktop parser."""
+        reader = e2e.import_waze_reader()
+        xml = ("UI hierchary dumped to: /dev/tty<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>"
+               "<hierarchy rotation=\"0\"><node text=\"\" package=\"com.wazeomatic.mockwaze\" bounds=\"[0,0][1280,2856]\">"
+               "<node text=\"\" content-desc=\"Menu\" package=\"com.wazeomatic.mockwaze\" bounds=\"[46,193][203,350]\"/>"
+               "<node text=\"MOCK WAZE · nothing is sent\" package=\"com.wazeomatic.mockwaze\" bounds=\"[400,210][880,260]\"/>"
+               "<node text=\"Police\" package=\"com.wazeomatic.mockwaze\" bounds=\"[230,450][420,520]\"/>"
+               "<node text=\"0.3 mi\" package=\"com.wazeomatic.mockwaze\" bounds=\"[230,520][360,575]\"/>"
+               "<node text=\"Reported 2 min ago\" package=\"com.wazeomatic.mockwaze\" bounds=\"[230,575][620,625]\"/>"
+               "<node text=\"Where to?\" package=\"com.wazeomatic.mockwaze\" bounds=\"[150,2600][900,2700]\"/>"
+               "</node></hierarchy>")
+        screen = reader.parse_uiautomator_xml(xml)
+        ok, detail = e2e.check_desktop_alerts([a.to_dict() for a in screen.alerts])
+        self.assertTrue(ok, detail)
+
+    def test_mock_alert_titles_classify_back_to_their_key(self):
+        reader = e2e.import_waze_reader()
+        src = (e2e.REPO / "android" / "mockwaze" / "app" / "src" / "main" / "java" / "com" / "wazeomatic"
+               / "mockwaze" / "WazeMenu.kt").read_text(encoding="utf-8")
+        block = src[src.index("val alertTitles"):]
+        block = block[:block.index(")\n")]
+        titles = dict(re.findall(r'"(\w+)" to "([^"]+)"', block))
+        self.assertEqual(set(titles), set(e2e.EXPECTED))
+        for key, title in titles.items():
+            self.assertEqual(reader.classify_text(title), key, title)
+
+    def test_mock_menu_covers_every_hazard_key(self):
+        src = (e2e.REPO / "android" / "mockwaze" / "app" / "src" / "main" / "java" / "com" / "wazeomatic"
+               / "mockwaze" / "WazeMenu.kt").read_text(encoding="utf-8")
+        block = src[src.index("val hazardTypes"):]
+        block = block[:block.index(")\n\n")]
+        paths = {k: (c, s) for k, c, s in re.findall(r'"(\w+)" to MenuPath\("([^"]+)"(?:, "([^"]*)")?\)', block)}
+        self.assertEqual(paths, e2e.EXPECTED)
+
+    WAZE = ('11-13 10:00:01.000 I/WazeomaticWaze( 4242): WAZE_ALERT {"hazard_type":"POLICE","category":"Police",'
+            '"text":"Police · 0.3 mi · Reported 2 min ago","distance_m":482.8,"kind":"alert","ts":1794500000.000}')
+    CONF = ('11-13 10:00:05.000 I/WazeomaticWaze( 4242): CONFIRMED {"hazard_type":"POLICE","confidence":0.900,'
+            '"label":"police_vehicle","ts":1794500004.000,"frame_index":3,"waze":{"hazard_type":"POLICE",'
+            '"category":"Police","text":"Police · 0.3 mi","distance_m":482.8,"kind":"alert","ts":1794500003.500}}')
+
+    def test_waze_alert_lines(self):
+        self.assertTrue(e2e.check_waze_alert_lines(["junk", self.WAZE])[0])
+        self.assertFalse(e2e.check_waze_alert_lines([self.WAZE.replace("POLICE", "CRASH")])[0])
+        self.assertFalse(e2e.check_waze_alert_lines([self.WAZE.replace("482.8", "3218.7")])[0])
+        self.assertFalse(e2e.check_waze_alert_lines([self.CONF])[0])
+
+    def test_confirmed_lines(self):
+        self.assertTrue(e2e.check_confirmed_lines([self.WAZE, self.CONF])[0])
+        self.assertFalse(e2e.check_confirmed_lines([self.WAZE])[0])
+        other = self.CONF.replace('"waze":{"hazard_type":"POLICE"', '"waze":{"hazard_type":"CRASH"')
+        self.assertFalse(e2e.check_confirmed_lines([other])[0])
+
+    def test_nothing_sent(self):
+        ev = '11-13 10:00:06.000 I/WazeomaticEvent( 4242): {"hazard_type":"POLICE","confidence":0.9,"ts":105.0}'
+        self.assertTrue(e2e.check_nothing_sent([], [], "POLICE", 100.0)[0])
+        self.assertFalse(e2e.check_nothing_sent([ev], [], "POLICE", 100.0)[0])
+        self.assertFalse(e2e.check_nothing_sent([], [{"hazard_type": "POLICE", "outcome": "accepted", "ts": 101.0}],
+                                                "POLICE", 100.0)[0])
+        # rows from before the injection and other types do not count
+        self.assertTrue(e2e.check_nothing_sent([], [{"hazard_type": "POLICE", "outcome": "sent", "ts": 50.0},
+                                                    {"hazard_type": "CRASH", "outcome": "sent", "ts": 101.0}],
+                                               "POLICE", 100.0)[0])
+
+    def test_control_event(self):
+        done = {"hazard_type": "POLICE", "outcome": "dry_run_cancelled", "dry_run": True, "ts": 110.0}
+        self.assertTrue(e2e.check_control_event([done], "POLICE", 100.0)[0])
+        self.assertFalse(e2e.check_control_event([dict(done, ts=50.0)], "POLICE", 100.0)[0])
+        self.assertFalse(e2e.check_control_event([dict(done, outcome="skipped_not_foreground")], "POLICE", 100.0)[0])
+        self.assertFalse(e2e.check_control_event([dict(done, dry_run=False, outcome="sent")], "POLICE", 100.0)[0])
+
+    def test_missing_rows_name_the_stage_reason(self):
+        done = [("PASS", e2e.CHECKS_C["C0"], ""), ("FAIL", e2e.CHECKS_C["C1"], "x")]
+        extra = e2e.missing_rows(done, e2e.CHECKS_C, "detector APK not built")
+        self.assertEqual(len(extra), 6)
+        self.assertTrue(all(r[0] == "SKIP" and r[2] == "detector APK not built" for r in extra))
+        self.assertEqual(e2e.verdict(done + extra), "FAIL")
+        self.assertEqual(e2e.verdict([("PASS", n, "") for n in e2e.CHECKS_C.values()]), "PASS")
 
 
 class Resolve(unittest.TestCase):

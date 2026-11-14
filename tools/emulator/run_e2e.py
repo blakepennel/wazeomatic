@@ -11,10 +11,18 @@ broadcasts with adb, pull reports.jsonl / macro_events.jsonl and check
 Stage B (needs the detector APK): push a dashcam clip, run the detector in video mode, read
 its WazeomaticEvent logcat lines and check mock Waze received them.
 
+Stage C (Waze reader; C1 needs only mock Waze, the rest the debug detector APK): mock Waze shows a
+Police alert card; the desktop reader (wazeomatic.waze_reader over `uiautomator dump`) and the
+detector's read-only accessibility service must both read it; a police_vehicle detection injected into
+the detector while the card shows must become a CONFIRMED line and send nothing, and once the card is
+gone the same injection must reach mock Waze as a dry-run event. The accessibility settings are put
+back at the end.
+
 Usage (from the repo root):
-  .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py              # Stage A + B
+  .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py              # Stage A + B + C
   .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py --stage a
   .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py --stage b --video-seconds 90
+  .venv\\Scripts\\python.exe tools\\emulator\\run_e2e.py --stage c
 
 Every check of the requested stages shows up in the summary. A check that could not run (no
 detector APK, no detector events, an earlier step failed) is a SKIP row, and a run with a SKIP
@@ -57,11 +65,37 @@ EXPECTED = {
     "HAZARD_ON_ROAD_POTHOLE": ("Hazard", "Pothole"),
     "HAZARD_ON_ROAD_CONSTRUCTION": ("Hazard", "Construction"),
     "HAZARD_ON_ROAD_OBJECT": ("Hazard", "Object"),
+    "HAZARD_ON_ROAD_TRAFFIC_LIGHT": ("Hazard", "Broken traffic light"),
     "HAZARD_SHOULDER_CAR_STOPPED": ("Hazard", "Car on shoulder"),
     "HAZARD_SHOULDER_ANIMALS": ("Hazard", ""),
     "POLICE": ("Police", ""),
+    "POLICE_OTHER_SIDE": ("Police", "Other side"),
     "CRASH": ("Crash", ""),
+    "CRASH_OTHER_SIDE": ("Crash", "Other side"),
+    "TRAFFIC_HEAVY": ("Traffic", "Heavy"),
+    "TRAFFIC_STANDSTILL": ("Traffic", "Standstill"),
+    "WEATHER_FOG": ("Bad weather", "Fog"),
+    "WEATHER_FLOOD": ("Bad weather", "Flood"),
+    "WEATHER_SLIPPERY": ("Bad weather", "Slippery road"),
+    "WEATHER_ICE": ("Bad weather", "Icy road"),
+    "WEATHER_UNPLOWED": ("Bad weather", "Unplowed road"),
+    "BLOCKED_LANE_LEFT": ("Blocked lane", "Left lane"),
+    "BLOCKED_LANE_CENTER": ("Blocked lane", "Center lane"),
+    "BLOCKED_LANE_RIGHT": ("Blocked lane", "Right lane"),
 }
+
+# Stage C: the detector's read-only Waze reader (accessibility service) and the debug injection hook.
+WAZE_SERVICE = f"{DET_PKG}/{DET_PKG}.WazeWatcherService"
+SHOW_ALERT_ACTION = f"{MOCK_PKG}.SHOW_ALERT"
+CLEAR_ALERTS_ACTION = f"{MOCK_PKG}.CLEAR_ALERTS"
+INJECT_ACTION = f"{DET_PKG}.INJECT_DETECTION"
+WAZE_TAG = "WazeomaticWaze"
+# 0.3 mi as the alert card says it; the readers must turn it into about 483 m
+C_DISTANCE_TEXT = "0.3 mi"
+C_DISTANCE_M = 0.3 * 1609.344
+# a video file that does not exist: the detector loads its models and builds the pipeline, but no frame
+# arrives, so the only detections are the injected ones
+C_NO_CLIP = "e2e_no_clip.mp4"
 
 # Labels of the shipped six-class hazard model. A detector event with one of these labels came
 # from the hazard model itself, not from a COCO class remapped with the class_map extra.
@@ -97,6 +131,16 @@ CHECKS_B = {
     "B5": "B5 every report traces back to a detector event",
     "B6": "B6 one-per-minute limit held",
 }
+CHECKS_C = {
+    "C0": "C0 mock Waze showed the POLICE alert card (alerts.jsonl)",
+    "C1": "C1 desktop reader (uiautomator dump) sees one POLICE alert at about 483 m",
+    "C2_enabled": "C2 Waze reader accessibility service connected",
+    "C2": "C2 phone reader logged WAZE_ALERT for POLICE",
+    "C3_confirmed": "C3 injected police_vehicle logged as CONFIRMED against the Waze alert",
+    "C3_no_event": "C3 no POLICE event reached mock Waze while Waze showed the alert",
+    "C4": "C4 control: with the alert gone the POLICE event reached mock Waze (dry run)",
+    "C5": "C5 accessibility settings restored",
+}
 
 # Timings used for the run (ms). macro_wait_ms must be longer than sheet_ms/page_ms.
 TIMING = {
@@ -127,7 +171,16 @@ def planned_checks(stage: str, expect_hazards: list[str]) -> list[str]:
     if stage in ("b", "all"):
         plan += CHECKS_B.values()
         plan += [b7_name(t) for t in expect_hazards]
+    if stage in ("c", "all"):
+        plan += CHECKS_C.values()
     return plan
+
+
+def missing_rows(results: list[tuple[str, str, str]], checks: dict[str, str], why: str) -> list[tuple[str, str, str]]:
+    """SKIP rows for the checks of one stage that have no row yet, so a stage that stops early names its
+    own reason instead of the run-wide not_run_reason."""
+    have = {r[1] for r in results}
+    return [("SKIP", name, why) for name in checks.values() if name not in have]
 
 
 def fill_skips(results: list[tuple[str, str, str]], plan: list[str], why: str) -> list[tuple[str, str, str]]:
@@ -220,6 +273,80 @@ def check_expected_hazard(hazard_type: str, events: list[dict], macro: list[dict
     return bool(real) and bool(traced), detail
 
 
+def import_waze_reader():
+    """wazeomatic.waze_reader from the repo (the desktop reader Stage C checks against)."""
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from wazeomatic import waze_reader  # type: ignore
+    return waze_reader
+
+
+def accessibility_list_with(existing: str, component: str) -> str:
+    """Value for `settings put secure enabled_accessibility_services`: what was enabled before (other
+    services stay on) plus `component`. `settings get` prints 'null' when the key is unset."""
+    items = [s for s in (existing or "").strip().split(":") if s and s != "null"]
+    short = component.replace("/" + component.split("/")[0] + ".", "/.")
+    if component not in items and short not in items:
+        items.append(component)
+    return ":".join(items)
+
+
+def accessibility_restore_commands(services: str, enabled: str) -> list[str]:
+    """Shell commands that put both accessibility keys back to what `settings get` printed before."""
+    cmds = []
+    for key, value in (("enabled_accessibility_services", services), ("accessibility_enabled", enabled)):
+        value = (value or "").strip()
+        if not value or value == "null":
+            cmds.append(f"settings delete secure {key}")
+        else:
+            cmds.append(f"settings put secure {key} '{value}'")
+    return cmds
+
+
+def parse_tagged_json(lines: list[str], marker: str) -> list[dict]:
+    """JSON objects of logcat lines that carry `marker` (e.g. 'WAZE_ALERT', 'CONFIRMED')."""
+    return parse_event_lines([l for l in lines if marker in l])
+
+
+def check_desktop_alerts(alerts: list[dict], hazard_type: str = "POLICE", distance_m: float = C_DISTANCE_M,
+                         tol_m: float = 10.0) -> tuple[bool, str]:
+    """C1: the screen holds exactly one alert, of `hazard_type`, about `distance_m` away.
+    `alerts` are WazeAlert.to_dict() rows."""
+    ok = (len(alerts) == 1 and alerts[0].get("hazard_type") == hazard_type
+          and alerts[0].get("distance_m") is not None and abs(float(alerts[0]["distance_m"]) - distance_m) <= tol_m)
+    return ok, f"{len(alerts)} alert(s): {alerts}"
+
+
+def check_waze_alert_lines(lines: list[str], hazard_type: str = "POLICE") -> tuple[bool, str]:
+    """C2: the detector's reader logged a WAZE_ALERT of `hazard_type` about the distance of the card."""
+    rows = parse_tagged_json(lines, "WAZE_ALERT")
+    hits = [r for r in rows if r.get("hazard_type") == hazard_type and r.get("distance_m") is not None
+            and abs(float(r["distance_m"]) - C_DISTANCE_M) <= 10.0]
+    return bool(hits), f"{len(rows)} WAZE_ALERT line(s): {rows[:3]}"
+
+
+def check_confirmed_lines(lines: list[str], hazard_type: str = "POLICE") -> tuple[bool, str]:
+    """C3: a CONFIRMED line of `hazard_type` whose Waze alert is of the same type."""
+    rows = parse_tagged_json(lines, "CONFIRMED")
+    hits = [r for r in rows if r.get("hazard_type") == hazard_type
+            and (r.get("waze") or {}).get("hazard_type") == hazard_type]
+    return bool(hits), f"{len(rows)} CONFIRMED line(s): {rows[:3]}"
+
+
+def check_nothing_sent(event_lines: list[str], macro: list[dict], hazard_type: str, after_ts: float) -> tuple[bool, str]:
+    """C3: no detector event and no mock Waze macro row of `hazard_type` since `after_ts`."""
+    events = [e for e in parse_event_lines(event_lines) if e.get("hazard_type") == hazard_type]
+    rows = [m for m in macro if m.get("hazard_type") == hazard_type and float(m.get("ts", 0)) >= after_ts - 1]
+    return not events and not rows, f"{len(events)} detector event(s), {len(rows)} macro row(s): {rows}"
+
+
+def check_control_event(macro: list[dict], hazard_type: str, after_ts: float) -> tuple[bool, str]:
+    """C4: mock Waze got the event and the macro ran it as a dry run to the end."""
+    rows = [m for m in macro if m.get("hazard_type") == hazard_type and float(m.get("ts", 0)) >= after_ts - 1]
+    done = [m for m in rows if m.get("outcome") == "dry_run_cancelled" and m.get("dry_run") is True]
+    return bool(done), f"{len(rows)} macro row(s): {[(m.get('outcome'), m.get('dry_run')) for m in rows]}"
+
+
 def _sdk_dirs_from_local_properties() -> list[str]:
     dirs = []
     for prop in sorted((REPO / "android").glob("*/local.properties")):
@@ -303,6 +430,9 @@ class Runner:
         self.results: list[tuple[str, str, str]] = []  # (status, name, detail)
         self.logcat_proc: subprocess.Popen | None = None
         self.log_lines: list[str] = []
+        self.detector_installed = False
+        self.c_why = ""                          # why the rest of Stage C did not run
+        self.c_orig: tuple[str | None, str | None] = (None, None)  # accessibility settings before Stage C
 
     # ------------------------------------------------------------ adb helpers
     def adb(self, *args: str, timeout: float = 60, check: bool = False) -> str:
@@ -520,6 +650,22 @@ class Runner:
     def service_running(self) -> bool:
         return "AutoMacroService" in self.sh(f"dumpsys activity services {MOCK_PKG}")
 
+    def install_detector(self) -> tuple[bool, str]:
+        """Installs the newest built detector APK once per run. (ok, detail); detail starts with
+        'detector APK not built' when there is neither an APK nor an installed detector."""
+        if self.detector_installed:
+            return True, "installed earlier in this run"
+        apks = sorted(glob.glob(DET_APK_GLOB), key=os.path.getmtime)
+        installed = DET_PKG in self.sh(f"pm path {DET_PKG}")
+        if not apks and not installed:
+            return False, "detector APK not built (android/detector/app/build/outputs/apk/debug/*.apk)"
+        if not apks:
+            self.detector_installed = True
+            return True, "already on the device, no APK built to reinstall"
+        out = self.adb("install", "-r", "-g", apks[-1], timeout=300)
+        self.detector_installed = "Success" in out
+        return self.detector_installed, out.strip().splitlines()[-1] if out.strip() else ""
+
     # ------------------------------------------------------------ stage A
     def stage_a(self) -> None:
         self.log("=== Stage A: mock Waze auto macro ===")
@@ -667,19 +813,14 @@ class Runner:
         blocker = self.clear_obstruction(allowed=(MOCK_PKG, DET_PKG))
         if "Not Responding" in blocker:
             self.log(f"Stage B started behind {blocker}")
-        apks = sorted(glob.glob(DET_APK_GLOB), key=os.path.getmtime)
-        installed = DET_PKG in self.sh(f"pm path {DET_PKG}")
-        if not apks and not installed:
-            self.not_run_reason = "detector APK not built (android/detector/app/build/outputs/apk/debug/*.apk)"
+        ok, detail = self.install_detector()
+        if detail.startswith("detector APK not built"):
+            self.not_run_reason = detail
             self.log(f"Stage B cannot run: {self.not_run_reason}")
             return
-        if apks:
-            out = self.adb("install", "-r", "-g", apks[-1], timeout=300)
-            if not self.check(CHECKS_B["B0"], "Success" in out, out.strip().splitlines()[-1] if out else ""):
-                self.not_run_reason = "detector install failed (B0)"
-                return
-        else:
-            self.check(CHECKS_B["B0"], True, "already on the device, no APK built to reinstall")
+        if not self.check(CHECKS_B["B0"], ok, detail):
+            self.not_run_reason = "detector install failed (B0)"
+            return
         ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "push_video.ps1"),
               "-InputFile", video, "-Port", self.serial.split("-")[-1]]
         if video_seconds:
@@ -724,7 +865,7 @@ class Runner:
         (self.out / "wazeomatic_events.txt").write_text("\n".join(ev_lines), encoding="utf-8")
         det_types = set()
         for l in ev_lines:
-            det_types.update(re.findall(r"\b(HAZARD_[A-Z_]+|POLICE|CRASH)\b", l))
+            det_types.update(re.findall(r"\b(" + "|".join(sorted(EXPECTED, key=len, reverse=True)) + r")\b", l))
         macro = self.pull_jsonl("macro_events.jsonl")
         reports = self.pull_jsonl("reports.jsonl")
         self.save_jsonl("_stage_b")
@@ -755,6 +896,162 @@ class Runner:
         for hazard_type in self.expect_hazards:
             ok, detail = check_expected_hazard(hazard_type, events, macro)
             self.check(b7_name(hazard_type), ok, detail)
+
+    # ------------------------------------------------------------ stage C
+    def log_lines_since(self, mark: int) -> list[str]:
+        return self.logcat_text().splitlines()[mark:]
+
+    def wait_log(self, mark: int, predicate, timeout: float) -> tuple[bool, str]:
+        """Polls logcat.txt from line `mark` until predicate(lines) -> (ok, detail) holds."""
+        end = time.time() + timeout
+        ok, detail = predicate(self.log_lines_since(mark))
+        while not ok and time.time() < end:
+            time.sleep(0.5)
+            ok, detail = predicate(self.log_lines_since(mark))
+        return ok, detail
+
+    def show_alert(self, hazard_type: str = "POLICE", distance: str = C_DISTANCE_TEXT, minutes_ago: int = 2,
+                   duration_ms: int = 180000) -> None:
+        out = self.sh(f"am broadcast -a {SHOW_ALERT_ACTION} -p {MOCK_PKG} --es alert_type {hazard_type} "
+                      f"--es distance '{distance}' --ei minutes_ago {minutes_ago} --ez still_there false "
+                      f"--ei duration_ms {duration_ms}")
+        self.log(f"show alert {hazard_type} {distance}: {out.strip().splitlines()[-1] if out.strip() else ''}")
+
+    def clear_alerts(self) -> None:
+        self.sh(f"am broadcast -a {CLEAR_ALERTS_ACTION} -p {MOCK_PKG}")
+
+    def inject(self, label: str, confidence: float, count: int, reset: bool = False, clear_waze: bool = False) -> None:
+        cmd = (f"am broadcast -a {INJECT_ACTION} -p {DET_PKG} --es label {label} --es confidence {confidence} "
+               f"--ei count {count}")
+        if reset:
+            cmd += " --ez reset true"
+        if clear_waze:
+            cmd += " --ez clear_waze true"
+        out = self.sh(cmd)
+        self.log(f"inject {count} x {label}@{confidence} reset={reset} clear_waze={clear_waze}: "
+                 f"{out.strip().splitlines()[-1] if out.strip() else ''}")
+
+    def stage_c(self) -> None:
+        """Waze reader: the alert card of mock Waze read by the desktop reader (uiautomator) and by the
+        detector's accessibility service, an injected police detection turned into a confirmation while
+        the alert shows, and sent once it is gone."""
+        self.log("=== Stage C: Waze reader ===")
+        try:
+            reader = import_waze_reader()
+        except Exception as e:  # noqa: BLE001
+            reader = None
+            self.log(f"could not import wazeomatic.waze_reader: {e!r}")
+        self.c_orig = (None, None)
+        try:
+            self._stage_c(reader)
+        finally:
+            # whatever happened, the emulator's accessibility settings go back to what they were
+            orig_services, orig_enabled = self.c_orig
+            self.clear_alerts()
+            if orig_services is not None:
+                for cmd in accessibility_restore_commands(orig_services, orig_enabled):
+                    self.sh(cmd)
+                now_services = self.sh("settings get secure enabled_accessibility_services").strip()
+                now_enabled = self.sh("settings get secure accessibility_enabled").strip()
+                self.check(CHECKS_C["C5"], now_services == orig_services.strip() and now_enabled == orig_enabled.strip(),
+                           f"enabled_accessibility_services={now_services!r} (was {orig_services.strip()!r}), "
+                           f"accessibility_enabled={now_enabled!r} (was {orig_enabled.strip()!r})")
+            self.sh(f"am force-stop {DET_PKG}")
+            self.results += missing_rows(self.results, CHECKS_C, self.c_why or "an earlier Stage C step failed")
+            self.save_jsonl("_stage_c")
+            (self.out / "alerts_stage_c.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in self.pull_jsonl("alerts.jsonl")), encoding="utf-8")
+
+    def _stage_c(self, reader) -> None:
+        self.sh(f"am force-stop {MOCK_PKG}")
+        self.sh(f"am force-stop {DET_PKG}")
+        self.sh("input keyevent 82")
+        self.sh("svc power stayon true")
+        ok, detail = self.install_detector()
+        have_detector = ok
+        if not ok:
+            self.log(f"Stage C without the detector: {detail}")
+            self.c_why = detail
+        else:
+            # pipeline with models but no frames: the only detections are the injected ones
+            out = self.sh(f"am start -n {DET_PKG}/.MainActivity --es source video --es video {C_NO_CLIP} "
+                          f"--ez reset_settings true --ez dry_run true --ez waze_reader true --ez tcp false")
+            self.log("start detector: " + out.strip().replace("\n", " | "))
+            time.sleep(6)  # model loading
+        self.launch_mock(auto_macro=True, require_foreground=True, bring_to_front=False,
+                         clear_reports=True, reset_rate_limit=True)
+        time.sleep(2.5)
+        self.clear_obstruction()
+
+        # --- C0 / C1: the card and the desktop reader -----------------------------------------
+        t0 = self.device_time()
+        self.show_alert()
+        time.sleep(1.5)
+        self.screenshot("C0_alert_card")
+        shown = [r for r in self.pull_jsonl("alerts.jsonl")
+                 if r.get("action") == "shown" and r.get("alert_type") == "POLICE" and float(r.get("ts", 0)) >= t0 - 2]
+        if not self.check(CHECKS_C["C0"], len(shown) >= 1, str(shown)):
+            self.c_why = "mock Waze did not show the alert card (C0)"
+            return
+        if reader is None:
+            self.skip(CHECKS_C["C1"], "wazeomatic.waze_reader could not be imported")
+        else:
+            xml = self.adb("exec-out", "uiautomator", "dump", "/dev/tty", timeout=40)
+            (self.out / "C1_uiautomator.xml").write_text(xml, encoding="utf-8")
+            screen = reader.parse_uiautomator_xml(xml)
+            ok, detail = check_desktop_alerts([a.to_dict() for a in screen.alerts])
+            self.check(CHECKS_C["C1"], ok, f"package={screen.package!r}; {detail}")
+        if not have_detector:
+            return
+
+        # --- C2: switch the accessibility service on and let it read the card ---------------------
+        orig_services = self.sh("settings get secure enabled_accessibility_services").strip()
+        orig_enabled = self.sh("settings get secure accessibility_enabled").strip()
+        self.c_orig = (orig_services, orig_enabled)
+        mark = self.logcat_text().count("\n")
+        value = accessibility_list_with(orig_services, WAZE_SERVICE)
+        self.sh(f"settings put secure enabled_accessibility_services '{value}'")
+        self.sh("settings put secure accessibility_enabled 1")
+        self.log(f"accessibility services: {orig_services!r} -> {value!r}")
+        ok, detail = self.wait_log(mark, lambda ls: (any(WAZE_TAG in l and "Waze reader connected" in l for l in ls), ""), 15)
+        if not ok:
+            dump = self.sh("dumpsys accessibility")
+            ok = "WazeWatcherService" in dump
+            detail = "no 'Waze reader connected' line; dumpsys accessibility " + ("lists" if ok else "does not list") + " it"
+        if not self.check(CHECKS_C["C2_enabled"], ok, detail):
+            self.c_why = "the Waze reader service did not connect (C2)"
+            return
+        # the service only reads on a window change: show the card again now that it is listening
+        self.clear_alerts()
+        time.sleep(1.0)
+        self.show_alert()
+        ok, detail = self.wait_log(mark, check_waze_alert_lines, 15)
+        self.screenshot("C2_alert_read")
+        if not self.check(CHECKS_C["C2"], ok, detail):
+            self.c_why = "the phone reader did not see the alert (C2)"
+            return
+
+        # --- C3: a police car while Waze shows Police nearby -> confirmation, nothing sent ---------
+        t3 = self.device_time()
+        mark3 = self.logcat_text().count("\n")
+        self.inject("police_vehicle", 0.9, 5)
+        ok, detail = self.wait_log(mark3, check_confirmed_lines, 10)
+        self.check(CHECKS_C["C3_confirmed"], ok, detail)
+        time.sleep(4.0)  # a macro started by a stray event would have logged by now
+        ev_lines = [l for l in self.log_lines_since(mark3) if "WazeomaticEvent" in l]
+        ok, detail = check_nothing_sent(ev_lines, self.pull_jsonl("macro_events.jsonl"), "POLICE", t3)
+        self.check(CHECKS_C["C3_no_event"], ok, detail)
+
+        # --- C4: control. Alert gone, fresh ReportManager (as after a service restart) -> sent ----
+        self.clear_alerts()
+        time.sleep(1.5)
+        t4 = self.device_time()
+        self.inject("police_vehicle", 0.9, 5, reset=True, clear_waze=True)
+        row = self.wait_macro_outcome("POLICE", MACRO_END | {"suppressed_rate_limit", "skipped_busy",
+                                                             "skipped_not_foreground"}, t4, 25)
+        self.screenshot("C4_control")
+        ok, detail = check_control_event(self.pull_jsonl("macro_events.jsonl"), "POLICE", t4)
+        self.check(CHECKS_C["C4"], ok, f"{detail}; last outcome row: {self.macro_detail(row)}")
 
     # ------------------------------------------------------------ summary
     def summary(self, allow_skip: bool = False) -> int:
@@ -811,7 +1108,8 @@ def main() -> int:
     global ADB
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serial", default="emulator-5554")
-    ap.add_argument("--stage", choices=["a", "b", "all"], default="all")
+    ap.add_argument("--stage", choices=["a", "b", "c", "all"], default="all",
+                    help="a = mock Waze, b = detector video mode, c = Waze reader, all = a + b + c (default)")
     ap.add_argument("--install", action="store_true", help="reinstall mock Waze even if present")
     ap.add_argument("--no-start", action="store_true", help="do not start the emulator if it is not running")
     ap.add_argument("--adb", default=None,
@@ -835,8 +1133,8 @@ def main() -> int:
     for t in args.expect_hazard:
         if t not in EXPECTED:
             ap.error(f"--expect-hazard {t}: unknown hazard_type (known: {', '.join(EXPECTED)})")
-    if args.expect_hazard and args.stage == "a":
-        ap.error("--expect-hazard is a Stage B check, it cannot be used with --stage a")
+    if args.expect_hazard and args.stage not in ("b", "all"):
+        ap.error(f"--expect-hazard is a Stage B check, it cannot be used with --stage {args.stage}")
     check_schema()
     ADB = resolve_adb(args.adb)
     video = resolve_video(args.video) if args.stage in ("b", "all") else ""
@@ -860,6 +1158,8 @@ def main() -> int:
             r.stage_a()
         if args.stage in ("b", "all"):
             r.stage_b(video, args.video_seconds, args.stage_b_wait)
+        if args.stage in ("c", "all"):
+            r.stage_c()
     except Exception as e:  # keep the summary even if something blows up
         r.check("runner crashed", False, repr(e))
         r.not_run_reason = r.not_run_reason or "the runner crashed before this check"

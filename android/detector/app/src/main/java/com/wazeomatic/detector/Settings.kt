@@ -39,7 +39,26 @@ data class Settings(
     val autoHood: Boolean = true,           // grow the zone from the static bottom of the picture (HoodEstimator)
     val zoomCoco: Boolean = false,          // also run the zoom pass on the COCO model (same default as Python)
     val orientation: String = "auto",       // camera: auto | landscape | landscape_reverse | portrait (how the phone is mounted)
+    val wazeReader: Boolean = true,         // skip events Waze already shows (needs WazeWatcherService switched on)
+    val vehicleClassifier: Boolean = true,  // police / ambulance / fire on COCO vehicles (needs vehicle_cls.onnx)
+    val vehicleCrops: Int = 4,              // largest vehicles classified per frame
+    val weather: Boolean = true,            // weather + road-surface classifiers (weather_cls / surface_cls.onnx)
+    val sceneFeatures: String = SceneLabels.FEATURES.joinToString(","), // scene rules, like --scene-features; "none" = no scene layer
+    val policeOtherSide: Boolean = false,   // report a police car far on the opposite side as Police > Other side
+    val driveSide: String = "right",        // right | left (which side the far carriageway is on)
+    val useGpsSpeed: Boolean = false,       // feed the GPS speed into the ego-motion estimate (asks for location)
 ) {
+    /** Scene analyzer config, or null when the scene layer is off. */
+    fun sceneConfigOrNull(): SceneConfig? {
+        val raw = sceneFeatures.trim().lowercase()
+        if (raw == "none" || raw == "off") return null
+        return SceneConfig(
+            enabled = SceneConfig.parseFeatures(raw),
+            driveSide = if (driveSide == "left") "left" else "right",
+            policeOtherSide = policeOtherSide,
+        )
+    }
+
     val classFloors: Map<String, Float> get() = BoxFusion.parseFloors(classConf)
     /** Two-pass zoom region, null when disabled or malformed (see [ZoomCrop.parse]). */
     val zoomCropOrNull: ZoomCrop? get() = ZoomCrop.parse(zoomCrop)
@@ -93,6 +112,14 @@ data class Settings(
             .putBoolean("auto_hood", autoHood)
             .putBoolean("zoom_coco", zoomCoco)
             .putString("orientation", orientation)
+            .putBoolean("waze_reader", wazeReader)
+            .putBoolean("vehicle_classifier", vehicleClassifier)
+            .putInt("vehicle_crops", vehicleCrops)
+            .putBoolean("weather", weather)
+            .putString("scene_features", sceneFeatures)
+            .putBoolean("police_other_side", policeOtherSide)
+            .putString("drive_side", driveSide)
+            .putBoolean("use_gps_speed", useGpsSpeed)
             .apply()
     }
 
@@ -137,6 +164,14 @@ data class Settings(
             autoHood = z("auto_hood", autoHood),
             zoomCoco = z("zoom_coco", zoomCoco),
             orientation = str("orientation")?.trim()?.lowercase() ?: orientation,
+            wazeReader = z("waze_reader", wazeReader),
+            vehicleClassifier = z("vehicle_classifier", vehicleClassifier),
+            vehicleCrops = i("vehicle_crops", vehicleCrops).coerceIn(0, 16),
+            weather = z("weather", weather),
+            sceneFeatures = str("scene_features") ?: sceneFeatures,
+            policeOtherSide = z("police_other_side", policeOtherSide),
+            driveSide = str("drive_side")?.trim()?.lowercase() ?: driveSide,
+            useGpsSpeed = z("use_gps_speed", useGpsSpeed),
         )
     }
 
@@ -146,7 +181,8 @@ data class Settings(
             "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
-            "zoom_coco", "orientation",
+            "zoom_coco", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
+            "scene_features", "police_other_side", "drive_side", "use_gps_speed",
         )
 
         /** "car=HAZARD_ON_ROAD_OBJECT,cat=HAZARD_SHOULDER_ANIMALS" -> map; unknown hazard keys are skipped. */
@@ -194,6 +230,14 @@ data class Settings(
                 autoHood = p.getBoolean("auto_hood", d.autoHood),
                 zoomCoco = p.getBoolean("zoom_coco", d.zoomCoco),
                 orientation = p.getString("orientation", d.orientation) ?: d.orientation,
+                wazeReader = p.getBoolean("waze_reader", d.wazeReader),
+                vehicleClassifier = p.getBoolean("vehicle_classifier", d.vehicleClassifier),
+                vehicleCrops = p.getInt("vehicle_crops", d.vehicleCrops),
+                weather = p.getBoolean("weather", d.weather),
+                sceneFeatures = p.getString("scene_features", d.sceneFeatures) ?: d.sceneFeatures,
+                policeOtherSide = p.getBoolean("police_other_side", d.policeOtherSide),
+                driveSide = p.getString("drive_side", d.driveSide) ?: d.driveSide,
+                useGpsSpeed = p.getBoolean("use_gps_speed", d.useGpsSpeed),
             )
         }
     }

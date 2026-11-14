@@ -15,7 +15,7 @@ iex "$ps tools\emulator\create_avd.ps1"            # once; -Webcam for back cam 
 iex "$ps tools\emulator\start_emulator.ps1 -Wait"  # -Headless (no window), -Gpu auto|host|swiftshader_indirect, -ColdBoot
 iex "$ps tools\emulator\install_apps.ps1 -Build"   # mock Waze + detector APK if built
 .venv\Scripts\python.exe tools\fetch_test_videos.py # once; test clips for Stage B into assets\videos\
-.venv\Scripts\python.exe tools\emulator\run_e2e.py  # Stage A + Stage B (needs the detector APK)
+.venv\Scripts\python.exe tools\emulator\run_e2e.py  # Stage A + B + C (B and most of C need the detector APK)
 ```
 
 ## Environment
@@ -53,6 +53,7 @@ Stage B stops before it starts and says so. `--stage a` needs no clip.
 
 ```powershell
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage a        # mock Waze only
+.venv\Scripts\python.exe tools\emulator\run_e2e.py --stage c        # Waze reader (debug detector APK)
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --stage-b-wait 150
 .venv\Scripts\python.exe tools\emulator\run_e2e.py --stage b --video-seconds 60 --stage-b-wait 100 --detector-extras "--es class_map car=HAZARD_ON_ROAD_OBJECT --es conf 0.4 --ez dry_run false"
 # (the CC0 clips contain no real hazard; the class_map extra makes the detector treat COCO cars as a hazard so the whole chain is exercised)
@@ -66,11 +67,18 @@ Starts the emulator if it is not running (unless `--no-start`), installs mock Wa
 (`--install` forces it), and writes `logcat.txt`, screenshots, the pulled `reports.jsonl` /
 `macro_events.jsonl` and `summary.txt` to `runs\emulator\<timestamp>\`.
 
-**Result and exit code.** A default full run has **21 checks** (14 in Stage A, 7 in Stage B, plus
-one B7 per `--expect-hazard`), and every check of the requested stages is listed in the summary.
+**Result and exit code.** A default full run has **29 checks** (14 in Stage A, 7 in Stage B, 8 in
+Stage C, plus one B7 per `--expect-hazard`), and every check of the requested stages is listed in the summary.
 A check that could not run (no detector APK, the detector logged no events, an earlier step of
 the stage failed, the runner crashed) is listed as `SKIP` with the reason. A stage that was not
-requested (`--stage a` leaves out Stage B) is not listed and is not a skip.
+requested (`--stage a` leaves out Stages B and C) is not listed and is not a skip.
+
+| `--stage` | stages | checks |
+|---|---|---|
+| `a` | A (mock Waze only) | 14 |
+| `b` | B (detector video mode) | 7 + one B7 per `--expect-hazard` |
+| `c` | C (Waze reader) | 8 |
+| `all` (default) | A, B, C | 29 + B7 rows |
 
 | summary line | meaning | exit code |
 |---|---|---|
@@ -121,6 +129,27 @@ hazard model (pothole, cone, construction_sign, delineator, barricade, worker), 
 remapped with `class_map`, and a mock Waze macro run for one of those events that finished
 (`sent`, or `dry_run_cancelled` when the detector runs with dry_run on). An event that mock Waze
 only suppressed (rate limit, busy) does not count. Without the option there is no B7.
+
+**Stage C** (Waze reader; C0/C1 need only mock Waze, C2-C5 a **debug** detector APK because the
+injection hook only exists in debug builds):
+* C0 `am broadcast -a com.wazeomatic.mockwaze.SHOW_ALERT -p com.wazeomatic.mockwaze --es alert_type POLICE --es distance '0.3 mi' --ei minutes_ago 2`
+  must leave a `shown` row in `alerts.jsonl` (next to `reports.jsonl`).
+* C1 `adb exec-out uiautomator dump /dev/tty`, parsed by `wazeomatic.waze_reader.parse_uiautomator_xml`,
+  must hold exactly one alert: POLICE at about 483 m.
+* C2 adds `com.wazeomatic.detector/com.wazeomatic.detector.WazeWatcherService` to
+  `enabled_accessibility_services` (keeping whatever was already in the list) and sets
+  `accessibility_enabled 1`; the service must connect and log `WAZE_ALERT {...}` with POLICE (logcat
+  tag `WazeomaticWaze`).
+* C3 injects 5 frames of `police_vehicle` @ 0.9 with
+  `am broadcast -a com.wazeomatic.detector.INJECT_DETECTION -p com.wazeomatic.detector --es label police_vehicle --es confidence 0.9 --ei count 5`:
+  the detector must log `CONFIRMED {...}` and send nothing (no `WazeomaticEvent` POLICE line, no
+  POLICE row in `macro_events.jsonl`).
+* C4 clears the card (`CLEAR_ALERTS`) and injects again with `--ez reset true --ez clear_waze true`
+  (a fresh ReportManager, as after a service restart, and an empty Waze reader): the event must reach
+  mock Waze and finish as `dry_run_cancelled`.
+* C5 the two accessibility settings are back to their values from before the stage (also after a
+  failure). The detector is started in video mode on a clip that does not exist, so the pipeline (and the
+  injection hook) runs with no real frames.
 
 Note: once mock Waze jumps to the front, the detector goes to the background. If the detector
 pauses video playback when it is not visible, run it as a foreground service (its owner's call).

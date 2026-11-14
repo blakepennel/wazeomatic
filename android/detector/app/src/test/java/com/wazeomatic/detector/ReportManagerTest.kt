@@ -231,6 +231,71 @@ class ReportManagerTest {
         assertEquals(1, ev.size)
     }
 
+    // ------------------------------------------------------------ Waze check (test_waze_reader.py)
+
+    @Test
+    fun managerTurnsKnownReportIntoConfirmation() {
+        now = 0.0
+        val w = WazeAlerts(clock = { now })
+        w.update(WazeScreen("com.waze", listOf(WazeAlert("POLICE", "Police · 0.2 mi", 320.0))))
+        val m = ReportManager(ReportConfig(), "phone", waze = w) { now }
+        val police = Detection("police_vehicle", 0.9f, BBox(0.6f, 0.5f, 0.1f, 0.1f), "vehicle")
+        val events = ArrayList<HazardEvent>()
+        for (i in 0 until 5) {
+            now = i * 0.1
+            events += m.update(listOf(police), frameIndex = i)
+        }
+        assertTrue(events.isEmpty())
+        assertEquals(1, m.alreadyReported)
+        assertEquals("POLICE", m.confirmations[0].waze.hazardType)
+        assertEquals("POLICE", JSONObject(m.confirmations[0].toJson()).getJSONObject("waze").getString("hazard_type"))
+        // no report went out, so a different hazard may still be sent straight away
+        val cone = Detection("cone", 0.9f, BBox(0.5f, 0.5f, 0.05f, 0.1f))
+        for (i in 5 until 9) {
+            now = i * 0.1
+            events += m.update(listOf(cone), frameIndex = i)
+        }
+        assertEquals(listOf("HAZARD_ON_ROAD_CONSTRUCTION"), events.map { it.hazardType })
+    }
+
+    @Test
+    fun managerWithoutReaderReports() {
+        now = 0.0
+        val m = ReportManager(ReportConfig(), "phone") { now }
+        val police = Detection("police_vehicle", 0.9f, BBox(0.6f, 0.5f, 0.1f, 0.1f), "vehicle")
+        val events = ArrayList<HazardEvent>()
+        for (i in 0 until 4) {
+            now = i * 0.1
+            events += m.update(listOf(police), frameIndex = i)
+        }
+        assertEquals(listOf("POLICE"), events.map { it.hazardType })
+        assertEquals(0, m.alreadyReported)
+    }
+
+    @Test
+    fun cooldownByHazardOverridesThePerTypeCooldown() {
+        assertEquals(900.0, ReportConfig().cooldownByHazard["TRAFFIC_HEAVY"]!!, 0.0)
+        assertEquals(SCENE_COOLDOWNS, ReportConfig().cooldownByHazard)
+        val m = rm(ReportConfig(globalCooldownS = 0.0))
+        // whole-frame scene label: its box touches the bottom edge, the hood zone must not drop it
+        val jam = Detection("scene_traffic_heavy", 0.9f, BBox(0.5f, 0.5f, 1f, 1f), "scene")
+        assertEquals(1, (1..3).flatMap { m.update(listOf(jam)) }.size)
+        now += 61   // past the 60 s default, still inside the 900 s of TRAFFIC_HEAVY
+        assertTrue((1..5).flatMap { m.update(listOf(jam)) }.isEmpty())
+        // a type without an override keeps the plain 60 s
+        assertEquals(1, (1..3).flatMap { m.update(listOf(det("dog"))) }.size)
+        now += 900
+        assertEquals(listOf("TRAFFIC_HEAVY"), (1..3).flatMap { m.update(listOf(jam)) }.map { it.hazardType })
+    }
+
+    @Test
+    fun hoodZoneStillAppliesToNonSceneModels() {
+        val m = rm(ReportConfig(minHits = 1))
+        val full = BBox(0.5f, 0.5f, 1f, 1f)
+        assertTrue(m.update(listOf(Detection("scene_fog", 0.9f, full, "hazard"))).isEmpty())
+        assertEquals(1, m.update(listOf(Detection("scene_fog", 0.9f, full, "scene"))).size)
+    }
+
     @Test
     fun defaultPotholeFloorIs045() {
         assertEquals(mapOf("pothole" to 0.45f), ReportConfig().minConfidenceByLabel)

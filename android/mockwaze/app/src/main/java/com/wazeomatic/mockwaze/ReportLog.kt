@@ -8,14 +8,17 @@ import java.io.File
 /**
  * reports.jsonl      - one line per report that reached the confirm sheet (send or cancel)
  * macro_events.jsonl - one line per HAZARD_DETECTED broadcast and what the auto macro did with it
- * Both live in /sdcard/Android/data/com.wazeomatic.mockwaze/files/ so adb pull can read them.
+ * alerts.jsonl       - one line per alert card shown, dismissed or cleared (SHOW_ALERT / CLEAR_ALERTS)
+ * All three live in /sdcard/Android/data/com.wazeomatic.mockwaze/files/ so adb pull can read them.
  */
 object ReportLog {
     const val TAG = "MockWazeReport"
     const val MACRO_TAG = "MockWazeMacro"
+    const val ALERT_TAG = "MockWazeAlert"
 
     fun reportsFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "reports.jsonl")
     fun macroFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "macro_events.jsonl")
+    fun alertsFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "alerts.jsonl")
 
     private val lock = Any()
 
@@ -74,10 +77,27 @@ object ReportLog {
         Log.i(MACRO_TAG, obj.toString())
     }
 
+    /** action is "shown", "dismissed" (Yes / No / timeout) or "cleared" (CLEAR_ALERTS). */
+    fun alert(ctx: Context, action: String, alert: AlertSpec?, detail: String = "") {
+        val obj = JSONObject().put("ts", now()).put("action", action)
+        if (alert != null) {
+            obj.put("alert_type", alert.alertType)
+                .put("title", alert.title)
+                .put("distance", alert.distance)
+                .put("minutes_ago", alert.minutesAgo)
+                .put("still_there", alert.stillThere)
+                .put("duration_ms", alert.durationMs)
+        }
+        if (detail.isNotEmpty()) obj.put("detail", detail)
+        append(alertsFile(ctx), obj)
+        Log.i(ALERT_TAG, obj.toString())
+    }
+
     fun clear(ctx: Context) {
         synchronized(lock) {
             reportsFile(ctx).delete()
             macroFile(ctx).delete()
+            alertsFile(ctx).delete()
         }
         Log.i(TAG, "reports cleared")
     }

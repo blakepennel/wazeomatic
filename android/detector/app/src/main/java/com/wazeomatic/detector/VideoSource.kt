@@ -11,14 +11,15 @@ import java.io.File
 
 /**
  * Decodes an MP4 with MediaExtractor + MediaCodec (ByteBuffer/Image output, no surface) and
- * hands every [frameStep]-th frame to [onFrame] on the decode thread. Runs as fast as
- * inference allows, which is what we want for repeatable tests.
+ * hands every [frameStep]-th frame to [onFrame] on the decode thread, with its position in the clip in
+ * seconds (growing across loops, so time never runs backwards). Runs as fast as inference allows, which is
+ * what we want for repeatable tests; the scene rules run on the clip time, as they do on the desktop.
  */
 class VideoSource(
     private val file: File,
     private val frameStep: Int,
     private val loop: Boolean,
-    private val onFrame: (Bitmap) -> Unit,
+    private val onFrame: (Bitmap, Double) -> Unit,
     private val onStatus: (String) -> Unit,
 ) {
     @Volatile private var running = false
@@ -76,6 +77,8 @@ class VideoSource(
         var inputDone = false
         var decoded = 0L
         var pixels = IntArray(0)
+        var loopOffsetUs = 0L       // clip time of the loops already played
+        var lastPtsUs = 0L
         try {
             while (running) {
                 if (!inputDone) {
@@ -105,15 +108,20 @@ class VideoSource(
                         img.close()
                     }
                 }
-                if (info.size > 0) decoded++
+                if (info.size > 0) {
+                    decoded++
+                    lastPtsUs = info.presentationTimeUs
+                }
+                val ts = (loopOffsetUs + info.presentationTimeUs) / 1e6
                 codec.releaseOutputBuffer(outIdx, false)
-                bmp?.let { onFrame(it) }
+                bmp?.let { onFrame(it, ts) }
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                     if (!loop) {
                         onStatus("video finished (${decoded} frames)")
                         break
                     }
                     Log.i(TAG, "video looped after $decoded frames")
+                    loopOffsetUs += lastPtsUs + 33_333      // about one frame after the last one
                     ex.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     codec.flush()
                     inputDone = false

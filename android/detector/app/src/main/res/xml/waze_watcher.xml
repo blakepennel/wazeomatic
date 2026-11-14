@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Read only: window content of Waze and mock Waze, nothing else. No canPerformGestures, no key
+     event filtering, no touch exploration. WazeWatcherService throttles its reads to two a second. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/waze_watcher_description"
+    android:notificationTimeout="500"
+    android:packageNames="com.waze,com.wazeomatic.mockwaze" />

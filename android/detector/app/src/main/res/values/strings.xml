@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="waze_watcher_label">Wazeomatic Waze reader</string>
+    <string name="waze_watcher_description">Reads the alerts Waze shows on screen (for example \"Police, 0.3 mi\") so Wazeomatic does not send a report Waze already has. It only reads Waze\'s screen. It never taps, types, scrolls or changes anything in Waze or any other app, and it reads no other app.</string>
+</resources>

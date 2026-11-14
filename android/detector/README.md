@@ -27,12 +27,21 @@ cd android\detector
 |-----------|-------|
 | `hazard_yolo11n.onnx` + `hazard_yolo11n.labels.txt` | `hazard.onnx` + `hazard_labels.txt` |
 | `coco_yolo11n.onnx` + `coco_yolo11n.labels.txt` | `coco.onnx` + `coco_labels.txt` |
+| `vehicle_cls.onnx` + `vehicle_cls.labels.txt` (optional) | `vehicle_cls.onnx` + `vehicle_cls_labels.txt` |
+| `weather_cls.onnx` + `weather_cls.labels.txt` (optional) | `weather_cls.onnx` + `weather_cls_labels.txt` |
+| `surface_cls.onnx` + `surface_cls.labels.txt` (optional) | `surface_cls.onnx` + `surface_cls_labels.txt` |
 
 Other files: `.\gradlew.bat assembleDebug -PcocoModel=coco_yolo11n.int8.onnx -PhazardModel=...`
 (the labels file is looked up as `<name>.labels.txt`). Labels are one per line; if the file is
 missing the class names are read from the Ultralytics `names` metadata in the model. The input
 size comes from the model's input shape. Both models run when present and their detections are
 merged. With no model the app still runs and shows "model missing".
+
+The three classifiers (`tools/train_classifier.py`) are copied only as a model + labels pair; a
+missing one is left out of the build with a note in the Gradle log (and a stale asset from an earlier
+build is deleted), and the app switches that part off and says so on the status line
+(`vehicle: missing`, `weather: missing`, `surface: missing`). Other file names:
+`-PvehicleModel=...`, `-PweatherModel=...`, `-PsurfaceModel=...` (empty = leave it out).
 
 ## Install and launch
 
@@ -98,6 +107,49 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `dry_run` | true | passed to the macro |
 | `target_package` | "" | empty = implicit broadcast, e.g. `com.arlosoft.macrodroid` |
 | `tcp` / `tcp_port` | true / 8765 | JSON-lines listener, also runs next to camera/video |
+| `waze_reader` | true | before an event is sent, ask the Waze reader whether Waze already shows that report nearby; if so it is counted as a confirmation and not sent (same rule as `waze=` in `wazeomatic/report_manager.py`). Needs the accessibility service below |
+| `vehicle_classifier` / `vehicle_crops` | true / 4 | second stage on the COCO car / truck / bus boxes (needs `vehicle_cls.onnx` and the COCO model): police, ambulance, fire engine (`--no-vehicle` / `--vehicle-crops` on the desktop) |
+| `weather` | true | weather (whole frame) and road-surface (patch of road ahead) classifiers, twice a second (`--no-weather`) |
+| `scene_features` | traffic,crash,lanes,signals,weather | scene rules to run, a comma list like `--scene-features`; `none` switches the scene layer off (`--no-scene`), an empty list keeps only ego motion and the emergency-light check |
+| `police_other_side` | false | a police car far on the opposite side becomes Police > Other side (`--police-other-side`) |
+| `drive_side` | right | `left` mirrors the side rules for left-hand traffic (`--drive-side`) |
+| `use_gps_speed` | false | camera source: feed the GPS speed into the stopped / moving estimate. Only with this on does the app ask for location; the speed is used on the phone and no position is stored or sent |
+
+## Second stage and scene layer
+
+Per frame, in the order of `Pipeline.process` in `wazeomatic/pipeline.py`: detectors, then the vehicle
+classifier (`VehicleClassifier.kt`: the largest 4 COCO vehicles with confidence >= 0.35 and both sides
+>= 28 px, cropped with `square_crop`'s rule, `police_vehicle` / `ambulance` / `fire_truck` detections for
+probabilities >= 0.05), the scene classifiers (`SceneClassifier.kt`, `RoadSurface.kt`; every 0.5 s of
+frame time, classes of the surface model prefixed `surface_`), then `SceneAnalyzer.kt` (ego motion,
+flashing emergency lights, standstill / heavy traffic, crash, blocked lane, dark signals, weather), then
+the hood zone and the Report Manager. The scene rules run on the frame time: the clip position for the
+`video` source, `elapsedRealtime` for the camera. The status line shows the ego state (`ego stationary`,
+`ego slow`, `ego moving`) and any scene label active on the last frame; per-frame timings go to the
+`WazeomaticPerf` log as `vehicle=`, `weather=` and `scene=`. The image maths (`ImageOps.kt`) follows
+OpenCV's (grey, HSV, INTER_AREA), checked against cv2 numbers in `ClassifierTest`.
+
+Scene conditions (traffic, weather, crash, blocked lane, dark signal) use the longer per-type
+cooldowns of `SCENE_COOLDOWNS` in `wazeomatic/scene.py` (e.g. 900 s for heavy traffic) instead of
+`cooldown`, and their whole-frame `scene` detections skip the hood zone.
+
+## Waze reader (read only)
+
+`WazeWatcherService` is an accessibility service that only reads the screen of `com.waze` and
+`com.wazeomatic.mockwaze` (window content, no gestures, no key events, at most two reads a second)
+and never taps or changes anything. It parses the alert cards with `WazeText.kt` (the Kotlin twin of
+`wazeomatic/waze_reader.py`) into a process-wide `WazeAlerts` (TTL 120 s, 1200 m). Switch it on under
+Settings > Accessibility > "Wazeomatic Waze reader"; the app shows a hint while it is off. The status
+line shows what Waze has ahead and how many events were confirmed instead of sent. Logcat tag
+`WazeomaticWaze`: `WAZE_ALERT {json}` per new alert, `CONFIRMED {json}` per suppressed event.
+
+Debug builds also accept a test broadcast that feeds synthetic frames into the running pipeline
+(release builds do not register it):
+
+```powershell
+adb shell am broadcast -a com.wazeomatic.detector.INJECT_DETECTION -p com.wazeomatic.detector --es label police_vehicle --es confidence 0.9 --ei count 5
+# --ez reset true: fresh ReportManager (cooldowns gone); --ez clear_waze true: forget the Waze alerts seen so far
+```
 
 ## Outputs
 

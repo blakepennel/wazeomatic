@@ -52,13 +52,15 @@ object WazeMenu {
             o("Broken traffic light", R.drawable.ic_sub_traffic_light),
             o("Pothole", R.drawable.ic_sub_pothole),
             o("Object", R.drawable.ic_sub_object))),
+        // sub-tiles are the waze_subcategory strings of schema.py; no slippery-road icon of its own yet,
+        // it borrows the rain cloud of the hail tile
         Category("Bad weather", R.drawable.ic_cat_weather, "Report bad weather", listOf(
             o("Bad weather", R.drawable.ic_cat_weather),
-            o("Fog", R.drawable.ic_sub_weather_fog),
-            o("Hail", R.drawable.ic_sub_weather_hail),
+            o("Slippery road", R.drawable.ic_sub_weather_hail),
             o("Flood", R.drawable.ic_sub_weather_flood),
-            o("Ice", R.drawable.ic_sub_weather_ice),
-            o("Snow", R.drawable.ic_sub_weather_snow))),
+            o("Unplowed road", R.drawable.ic_sub_weather_snow),
+            o("Fog", R.drawable.ic_sub_weather_fog),
+            o("Icy road", R.drawable.ic_sub_weather_ice))),
         Category("Blocked lane", R.drawable.ic_cat_blocked_lane, "Report blocked lane", listOf(
             o("Blocked lane", R.drawable.ic_cat_blocked_lane),
             o("Left lane", R.drawable.ic_sub_lane_left),
@@ -81,16 +83,64 @@ object WazeMenu {
     /** The specific hazard tiles (everything under Hazard except Hazard itself). */
     val hazardSubtypes: List<String> get() = category("Hazard")!!.subLabels
 
-    /** hazard_type (contract key from schema.py) -> menu path. */
-    val hazardTypes: Map<String, MenuPath> = mapOf(
+    /** hazard_type (contract key from schema.py) -> menu path. Every key of HAZARD_TYPES is here. */
+    val hazardTypes: Map<String, MenuPath> = linkedMapOf(
         "HAZARD_ON_ROAD_POTHOLE" to MenuPath("Hazard", "Pothole"),
         "HAZARD_ON_ROAD_CONSTRUCTION" to MenuPath("Hazard", "Construction"),
         "HAZARD_ON_ROAD_OBJECT" to MenuPath("Hazard", "Object"),
+        "HAZARD_ON_ROAD_TRAFFIC_LIGHT" to MenuPath("Hazard", "Broken traffic light"),
         "HAZARD_SHOULDER_CAR_STOPPED" to MenuPath("Hazard", "Car on shoulder"),
         "HAZARD_SHOULDER_ANIMALS" to MenuPath("Hazard", ""),
         "POLICE" to MenuPath("Police"),
+        "POLICE_OTHER_SIDE" to MenuPath("Police", "Other side"),
         "CRASH" to MenuPath("Crash"),
+        "CRASH_OTHER_SIDE" to MenuPath("Crash", "Other side"),
+        "TRAFFIC_HEAVY" to MenuPath("Traffic", "Heavy"),
+        "TRAFFIC_STANDSTILL" to MenuPath("Traffic", "Standstill"),
+        "WEATHER_FOG" to MenuPath("Bad weather", "Fog"),
+        "WEATHER_FLOOD" to MenuPath("Bad weather", "Flood"),
+        "WEATHER_SLIPPERY" to MenuPath("Bad weather", "Slippery road"),
+        "WEATHER_ICE" to MenuPath("Bad weather", "Icy road"),
+        "WEATHER_UNPLOWED" to MenuPath("Bad weather", "Unplowed road"),
+        "BLOCKED_LANE_LEFT" to MenuPath("Blocked lane", "Left lane"),
+        "BLOCKED_LANE_CENTER" to MenuPath("Blocked lane", "Center lane"),
+        "BLOCKED_LANE_RIGHT" to MenuPath("Blocked lane", "Right lane"),
     )
+
+    /**
+     * Title of the alert card another driver's report of each type shows (SHOW_ALERT). English wording in
+     * the style of Waze's alert cards; wazeomatic/waze_reader.py must classify every one back to its key
+     * (tools/emulator/test_run_e2e.py checks it).
+     */
+    val alertTitles: Map<String, String> = linkedMapOf(
+        "HAZARD_ON_ROAD_POTHOLE" to "Pothole",
+        "HAZARD_ON_ROAD_CONSTRUCTION" to "Construction",
+        "HAZARD_ON_ROAD_OBJECT" to "Object on road",
+        "HAZARD_ON_ROAD_TRAFFIC_LIGHT" to "Broken traffic light",
+        "HAZARD_SHOULDER_CAR_STOPPED" to "Car stopped on shoulder",
+        "HAZARD_SHOULDER_ANIMALS" to "Animal on the road",
+        "POLICE" to "Police",
+        "POLICE_OTHER_SIDE" to "Police on the other side",
+        "CRASH" to "Crash",
+        "CRASH_OTHER_SIDE" to "Crash on the other side",
+        "TRAFFIC_HEAVY" to "Heavy traffic",
+        "TRAFFIC_STANDSTILL" to "Standstill traffic",
+        "WEATHER_FOG" to "Fog",
+        "WEATHER_FLOOD" to "Flood",
+        "WEATHER_SLIPPERY" to "Slippery road",
+        "WEATHER_ICE" to "Icy road",
+        "WEATHER_UNPLOWED" to "Unplowed road",
+        "BLOCKED_LANE_LEFT" to "Left lane closed",
+        "BLOCKED_LANE_CENTER" to "Center lane closed",
+        "BLOCKED_LANE_RIGHT" to "Right lane closed",
+    )
+
+    /** Icon for an alert card: the sub-tile's icon when the path has one, else the category's. */
+    fun iconFor(hazardType: String): Int {
+        val path = hazardTypes[hazardType] ?: return R.drawable.ic_cat_hazard
+        val cat = category(path.category) ?: return R.drawable.ic_cat_hazard
+        return cat.options.firstOrNull { path.item.isNotEmpty() && it.label == path.item }?.icon ?: cat.icon
+    }
 
     fun category(label: String): Category? = categories.firstOrNull { it.label == label }
 

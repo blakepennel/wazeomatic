@@ -59,6 +59,7 @@ class MainActivity : Activity() {
     private lateinit var toastView: LinearLayout
     private lateinit var speed: SpeedometerView
     private lateinit var badge: TextView
+    private lateinit var alertCard: AlertCard
 
     var page = Page.NONE
         private set
@@ -75,7 +76,11 @@ class MainActivity : Activity() {
 
     private val controlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (Config.applyExtras(context, intent)) AutoMacroService.sync(context)
+            when (intent.action) {
+                AlertSpec.ACTION_SHOW -> showAlert(intent)
+                AlertSpec.ACTION_CLEAR -> clearAlerts()
+                else -> if (Config.applyExtras(context, intent)) AutoMacroService.sync(context)
+            }
         }
     }
 
@@ -100,13 +105,18 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        val f = IntentFilter(Config.ACTION_SET_TIMING)
+        val f = IntentFilter(Config.ACTION_SET_TIMING).apply {
+            addAction(AlertSpec.ACTION_SHOW)
+            addAction(AlertSpec.ACTION_CLEAR)
+        }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(controlReceiver, f, Context.RECEIVER_EXPORTED)
         else registerReceiver(controlReceiver, f)
     }
 
     override fun onStop() {
         unregisterReceiver(controlReceiver)
+        // an alert card is part of the map screen; it does not outlive it
+        if (alertCard.current != null) alertCard.dismiss("cleared")
         super.onStop()
     }
 
@@ -178,6 +188,12 @@ class MainActivity : Activity() {
             background = roundRect(0xB3202124.toInt(), dpf(8f))
         }
         root.addView(badge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+
+        // alert card of another driver's report (SHOW_ALERT); added before the sheet so the sheet covers it
+        alertCard = AlertCard(this) { spec, why ->
+            ReportLog.alert(this, if (why == "cleared") "cleared" else "dismissed", spec, why)
+        }
+        root.addView(alertCard, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         // bottom: white card with the "Where to?" search field
         bottomBar = LinearLayout(this).apply {
@@ -311,10 +327,32 @@ class MainActivity : Activity() {
             marginEnd = dpf(11.6f).toInt(); topMargin = topInset + dp(16)
         }
         (badge.layoutParams as FrameLayout.LayoutParams).topMargin = topInset + dp(22)
+        // below the 51 dp menu button with a gap, far above the report button and the sheet
+        (alertCard.layoutParams as FrameLayout.LayoutParams).apply {
+            topMargin = topInset + dp(84); marginStart = dp(14); marginEnd = dp(14)
+        }
         (toastView.layoutParams as FrameLayout.LayoutParams).apply {
             marginStart = dp(16); bottomMargin = barH + dp(12)
         }
         root.requestLayout()
+    }
+
+    // ---------------------------------------------------------------- alert cards
+
+    private fun showAlert(intent: Intent) {
+        val spec = AlertSpec.fromIntent(intent)
+        if (spec == null) {
+            @Suppress("DEPRECATION")
+            ReportLog.alert(this, "ignored", null, "unknown alert_type '${intent.extras?.get("alert_type")}'")
+            return
+        }
+        alertCard.show(spec)
+        ReportLog.alert(this, "shown", spec)
+    }
+
+    private fun clearAlerts() {
+        if (alertCard.current != null) alertCard.dismiss("cleared")
+        else ReportLog.alert(this, "cleared", null, "no alert on screen")
     }
 
     // ---------------------------------------------------------------- sheet

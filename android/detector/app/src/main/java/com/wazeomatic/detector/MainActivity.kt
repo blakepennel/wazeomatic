@@ -39,6 +39,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
     private lateinit var batteryHint: LinearLayout
+    private lateinit var wazeHint: LinearLayout
     private lateinit var eventsAdapter: ArrayAdapter<String>
     private var pendingStart = false
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -60,6 +61,21 @@ class MainActivity : Activity(), PipelineBus.Listener {
     override fun onResume() {
         super.onResume()
         refreshBatteryHint()
+        refreshWazeHint()
+    }
+
+    /** Shown while the Waze reader is wanted (setting on) but its accessibility service is switched off. */
+    private fun refreshWazeHint() {
+        val off = Settings.load(this).wazeReader && !WazeWatcherService.isEnabled(this)
+        wazeHint.visibility = if (off) View.VISIBLE else View.GONE
+    }
+
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (e: Exception) {
+            statusText.text = "could not open the accessibility settings: ${e.message}"
+        }
     }
 
     /** Shown while battery optimisation is on for the app; the system may then stop it behind Waze. */
@@ -113,6 +129,20 @@ class MainActivity : Activity(), PipelineBus.Listener {
                 setOnClickListener { openBatterySettings() }
             }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         }
+        wazeHint = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding((8 * dp).toInt(), 0, (8 * dp).toInt(), 0)
+            addView(TextView(this@MainActivity).apply {
+                text = "Waze reader is off: turn on \"Wazeomatic Waze reader\" in Accessibility"
+                setTextColor(Color.rgb(255, 190, 80)); textSize = 13f
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(Button(this@MainActivity).apply {
+                text = "Accessibility"
+                setOnClickListener { openAccessibilitySettings() }
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        }
         overlay = OverlayView(this)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         fun btn(label: String, onClick: () -> Unit) = Button(this).apply {
@@ -131,6 +161,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
         root.addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(statsText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(batteryHint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(wazeHint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(overlay, LinearLayout.LayoutParams(MATCH_PARENT, 0, 3f))
         root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(list, LinearLayout.LayoutParams(MATCH_PARENT, 0, 2f))
@@ -176,6 +207,13 @@ class MainActivity : Activity(), PipelineBus.Listener {
         ) {
             needed.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // location only when the user switched on "use GPS speed" (camera source; the speed stays on the phone)
+        if (s.useGpsSpeed && s.source == "camera" &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
         if (needed.isEmpty()) {
             DetectorService.start(this)
         } else {
@@ -188,7 +226,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_PERMS && pendingStart) {
             pendingStart = false
-            // notifications are optional; the service reports a missing camera permission itself
+            // notifications and location are optional; the service reports a missing camera permission itself
             DetectorService.start(this)
         }
     }
@@ -226,6 +264,27 @@ class MainActivity : Activity(), PipelineBus.Listener {
         val dry = CheckBox(this).apply { text = "Dry run (macro should not submit)"; isChecked = s.dryRun; form.addView(this) }
         val tcp = CheckBox(this).apply { text = "TCP listener on port ${s.tcpPort}"; isChecked = s.tcpEnabled; form.addView(this) }
         val stopped = CheckBox(this).apply { text = "Stopped-vehicle heuristic (experimental)"; isChecked = s.stoppedVehicle; form.addView(this) }
+        val wazeReader = CheckBox(this).apply {
+            text = "Skip reports Waze already shows (needs the Waze reader in Accessibility)"
+            isChecked = s.wazeReader; form.addView(this)
+        }
+        val vehicleCls = CheckBox(this).apply {
+            text = "Vehicle classifier: police / ambulance / fire (needs vehicle_cls.onnx)"
+            isChecked = s.vehicleClassifier; form.addView(this)
+        }
+        val weatherCls = CheckBox(this).apply {
+            text = "Weather and road-surface classifiers (need weather_cls / surface_cls.onnx)"
+            isChecked = s.weather; form.addView(this)
+        }
+        val features = field("Scene features (${SceneLabels.FEATURES.joinToString(",")}, or none)", s.sceneFeatures, false)
+        val policeSide = CheckBox(this).apply {
+            text = "Report police far on the other side as Police > Other side"
+            isChecked = s.policeOtherSide; form.addView(this)
+        }
+        val gps = CheckBox(this).apply {
+            text = "Use GPS speed for stopped / moving (asks for location; nothing is sent)"
+            isChecked = s.useGpsSpeed; form.addView(this)
+        }
 
         AlertDialog.Builder(this)
             .setTitle("Settings")
@@ -243,7 +302,14 @@ class MainActivity : Activity(), PipelineBus.Listener {
                     dryRun = dry.isChecked,
                     tcpEnabled = tcp.isChecked,
                     stoppedVehicle = stopped.isChecked,
+                    wazeReader = wazeReader.isChecked,
+                    vehicleClassifier = vehicleCls.isChecked,
+                    weather = weatherCls.isChecked,
+                    sceneFeatures = features.text.toString().trim().lowercase().replace(" ", ""),
+                    policeOtherSide = policeSide.isChecked,
+                    useGpsSpeed = gps.isChecked,
                 ).save(this)
+                refreshWazeHint()
                 if (PipelineBus.running) requestStart() // restart with the new settings
             }
             .setNegativeButton("Cancel", null)

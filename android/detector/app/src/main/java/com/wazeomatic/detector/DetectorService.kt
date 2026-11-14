@@ -6,10 +6,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -38,11 +43,15 @@ class DetectorService : LifecycleService() {
     private var worker: HandlerThread? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // status line = main text | frame warning | stalled Ns | battery state (guarded by statusLock)
+    // status line = main text | frame warning | stalled Ns | Waze reader | scene | battery state (guarded by statusLock)
     private val statusLock = Any()
     private var statusMain = ""
     private var frameWarning: String? = null
     private var stallNote: String? = null
+    private var wazeNote: String? = null
+    private var sceneNote: String? = null
+    /** GPS speed into the ego-motion estimate (setting use_gps_speed, camera source only). */
+    private var locationListener: LocationListener? = null
     private var batteryNote: String? = null
     private var notifBase = ""
     private var lastNotifText = ""
@@ -56,12 +65,17 @@ class DetectorService : LifecycleService() {
             val since = watchSinceMs
             val note = if (since == 0L) null else
                 RunHealth.stallNote(SystemClock.elapsedRealtime(), maxOf(since, PipelineBus.lastFrameAtMs))
+            val waze = wazeStatus()
+            val scene = pipeline?.sceneStatus()
             val changed = synchronized(statusLock) {
                 val was = stallNote
                 stallNote = note
                 if (was == null && note != null) Log.w(TAG, "no frame processed for ${RunHealth.STALL_AFTER_MS / 1000} s")
                 if (was != null && note == null) Log.i(TAG, "frames are arriving again (was $was)")
-                was != note
+                val wazeChanged = waze != wazeNote || scene != sceneNote
+                wazeNote = waze
+                sceneNote = scene
+                was != note || wazeChanged
             }
             if (changed) publishStatus()
             mainHandler.postDelayed(this, HEARTBEAT_MS)
@@ -78,6 +92,7 @@ class DetectorService : LifecycleService() {
         val s = Settings.load(this)
         val camOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val useCamera = s.source == "camera" && camOk
+        val useGps = useCamera && s.useGpsSpeed && locationGranted()
         stopReason = null
         val unrestricted = try {
             getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
@@ -92,7 +107,7 @@ class DetectorService : LifecycleService() {
         if (unrestricted) Log.i(TAG, "battery: unrestricted")
         else Log.w(TAG, "battery: restricted (battery optimisation is on for this app, the system may stop it in the background)")
         try {
-            goForeground(useCamera)
+            goForeground(useCamera, useGps)
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
             stopReason = "could not start foreground service: ${e.message}"
@@ -101,8 +116,46 @@ class DetectorService : LifecycleService() {
             return START_NOT_STICKY
         }
         stopPipeline()
-        startPipeline(s, camOk)
+        startPipeline(s, camOk, useGps)
         return START_NOT_STICKY
+    }
+
+    private fun locationGranted() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** GPS speed (m/s) into the pipeline once a second; positions are not kept or sent anywhere. */
+    @SuppressLint("MissingPermission")
+    private fun startGpsSpeed(p: Pipeline) {
+        if (p.scene == null) return
+        val lm = getSystemService(LocationManager::class.java) ?: return
+        if (!lm.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+            Log.w(TAG, "gps speed: no GPS provider on this device")
+            return
+        }
+        // every method spelled out: on Android 10 the provider callbacks are not default methods yet
+        val l = object : LocationListener {
+            override fun onLocationChanged(loc: Location) {
+                val ts = loc.elapsedRealtimeNanos / 1e9      // same clock as the camera frames
+                p.setGpsSpeed(if (loc.hasSpeed()) loc.speed.toDouble() else null, ts)
+            }
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+        }
+        try {
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, l, mainLooper)
+            locationListener = l
+            Log.i(TAG, "gps speed: on (speed only, used on the phone)")
+        } catch (e: Exception) {
+            Log.w(TAG, "gps speed: could not request updates: ${e.message}")
+        }
+    }
+
+    private fun stopGpsSpeed() {
+        val l = locationListener ?: return
+        locationListener = null
+        try { getSystemService(LocationManager::class.java)?.removeUpdates(l) } catch (_: Exception) {}
     }
 
     private fun buildNotification(text: String): Notification {
@@ -119,11 +172,13 @@ class DetectorService : LifecycleService() {
             .build()
     }
 
-    private fun goForeground(useCamera: Boolean) {
+    private fun goForeground(useCamera: Boolean, useGps: Boolean) {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Detector", NotificationManager.IMPORTANCE_LOW))
         val n = buildNotification(synchronized(statusLock) { lastNotifText })
-        val type = if (useCamera) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        var type = if (useCamera) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        // location in the background (Waze in front) needs the location type; only with the permission granted
+        if (useGps) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         ServiceCompat.startForeground(this, NOTIF_ID, n, type)
     }
 
@@ -140,7 +195,7 @@ class DetectorService : LifecycleService() {
     private fun publishStatus() {
         val notif: String?
         synchronized(statusLock) {
-            PipelineBus.postStatus(listOfNotNull(statusMain, frameWarning, stallNote, batteryNote).joinToString(" | "))
+            PipelineBus.postStatus(listOfNotNull(statusMain, frameWarning, stallNote, wazeNote, sceneNote, batteryNote).joinToString(" | "))
             val t = notificationText()
             notif = if (t != lastNotifText) t else null
             if (notif != null) lastNotifText = t
@@ -153,6 +208,42 @@ class DetectorService : LifecycleService() {
             }
         }
     }
+
+    /** "Waze ahead: Police 483 m | confirmed 1", null when the reader is off or has nothing to say. */
+    private fun wazeStatus(): String? {
+        if (!wazeReaderOn) return null
+        val confirmed = pipeline?.alreadyReported ?: 0
+        return listOfNotNull(
+            WazeAlerts.shared.summary().ifEmpty { null },
+            if (confirmed > 0) "confirmed $confirmed" else null,
+        ).joinToString(" | ").ifEmpty { null }
+    }
+
+    /**
+     * Test hook, registered in debug builds only: am broadcast -a com.wazeomatic.detector.INJECT_DETECTION
+     * --es label police_vehicle --ef confidence 0.9 --ei count 5 [--ez reset true] [--ez clear_waze true]
+     */
+    private val injectReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val p = pipeline
+            if (p == null) {
+                Log.w(TAG, "inject: no pipeline running")
+                return
+            }
+            @Suppress("DEPRECATION")
+            fun str(k: String): String? = intent.extras?.get(k)?.toString()
+            val label = str("label") ?: return
+            val conf = str("confidence")?.toFloatOrNull() ?: 0.9f
+            val count = str("count")?.toFloatOrNull()?.toInt() ?: 5
+            fun flag(k: String) = str(k)?.let { it.equals("true", true) || it == "1" } ?: false
+            val reset = flag("reset")
+            val clearWaze = flag("clear_waze")
+            // off the main thread, like real frames
+            Thread({ p.inject(label, conf, count.coerceIn(0, 100), reset, clearWaze) }, "inject").start()
+        }
+    }
+    private var injectRegistered = false
+    @Volatile private var wazeReaderOn = false
 
     /** Camera or video is about to deliver frames: start counting towards "stalled". */
     private fun watchFrames(on: Boolean) {
@@ -179,9 +270,15 @@ class DetectorService : LifecycleService() {
         }
     }
 
-    private fun startPipeline(s: Settings, camOk: Boolean) {
+    private fun startPipeline(s: Settings, camOk: Boolean, useGps: Boolean) {
         PipelineBus.running = true
+        wazeReaderOn = s.wazeReader
         acquireWakeLock()
+        if (BuildConfig.DEBUG && !injectRegistered) {
+            ContextCompat.registerReceiver(this, injectReceiver, IntentFilter(ACTION_INJECT), ContextCompat.RECEIVER_EXPORTED)
+            injectRegistered = true
+            Log.i(TAG, "debug build: $ACTION_INJECT accepted")
+        }
         mainHandler.postDelayed(heartbeat, HEARTBEAT_MS)
         val rep = Reporter(this, s.dryRun, s.targetPackage)
         reporter = rep
@@ -205,14 +302,19 @@ class DetectorService : LifecycleService() {
                 return@post
             }
             pipeline = p
-            val base = p.modelStatus + if (s.tcpEnabled) " | tcp:${s.tcpPort}" else ""
+            val gpsNote = when {
+                !s.useGpsSpeed || s.source != "camera" -> ""
+                useGps -> " | gps speed"
+                else -> " | gps speed: no location permission"
+            }
+            val base = p.modelStatus + (if (s.tcpEnabled) " | tcp:${s.tcpPort}" else "") + gpsNote
             setStatus(base)
             when (s.source) {
                 "video" -> {
                     val dir = getExternalFilesDir(null) ?: filesDir
                     val f = if (s.video.startsWith("/")) File(s.video) else File(dir, s.video)
                     watchFrames(true)
-                    video = VideoSource(f, s.frameStep, s.loop, { bmp -> p.process(bmp) }) { st ->
+                    video = VideoSource(f, s.frameStep, s.loop, { bmp, ts -> p.process(bmp, ts) }) { st ->
                         // only a playing video is expected to deliver frames ("video <name>")
                         if (st != "video ${f.name}") watchFrames(false)
                         setStatus("$base | $st")
@@ -226,6 +328,7 @@ class DetectorService : LifecycleService() {
                     Handler(mainLooper).post {
                         if (pipeline !== p) return@post
                         watchFrames(true)
+                        if (useGps) startGpsSpeed(p)
                         val onWarning = { w: String? ->
                             synchronized(statusLock) { frameWarning = w }
                             publishStatus()
@@ -249,12 +352,13 @@ class DetectorService : LifecycleService() {
         worker?.quitSafely()
         worker?.join(5000)
         worker = null
+        stopGpsSpeed()
         camera?.stop(); camera = null
         video?.stop(); video = null
         tcp?.stop(); tcp = null
         pipeline?.close(); pipeline = null
         reporter = null
-        synchronized(statusLock) { frameWarning = null; stallNote = null }
+        synchronized(statusLock) { frameWarning = null; stallNote = null; sceneNote = null }
         releaseWakeLock()
     }
 
@@ -275,6 +379,10 @@ class DetectorService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        if (injectRegistered) {
+            try { unregisterReceiver(injectReceiver) } catch (_: Exception) {}
+            injectRegistered = false
+        }
         stopPipeline()
         PipelineBus.running = false
         PipelineBus.postStatus(stopReason ?: "stopped")
@@ -287,6 +395,7 @@ class DetectorService : LifecycleService() {
         private const val NOTIF_ID = 1
         private const val WAKE_TAG = "wazeomatic:detector"
         private const val HEARTBEAT_MS = 1000L
+        const val ACTION_INJECT = "com.wazeomatic.detector.INJECT_DETECTION"
 
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, DetectorService::class.java))

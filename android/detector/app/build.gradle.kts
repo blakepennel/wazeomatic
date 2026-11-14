@@ -39,6 +39,10 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+    buildFeatures {
+        // BuildConfig.DEBUG gates the test-only INJECT_DETECTION receiver
+        buildConfig = true
+    }
 }
 
 dependencies {
@@ -63,14 +67,47 @@ val cocoModel = (findProperty("cocoModel") as String?) ?: "coco_yolo11n.onnx"
 // ships the single v3 nano. The older 4-class models no longer help it (docs/model-research.md);
 // -PhazardModel2=hazard_yolo11s_v3.onnx fuses the v3 small where the phone can afford it.
 val hazardModel2 = (findProperty("hazardModel2") as String?) ?: ""
+// optional classifiers (tools/train_classifier.py): asset name -> source file in models/. A missing file
+// only switches that part off in the app (the status line says so); the build never fails over one.
+// Override with e.g. -PvehicleModel=vehicle_cls_v2.onnx, or "" to leave it out.
+val classifierModels = linkedMapOf(
+    "vehicle_cls" to ((findProperty("vehicleModel") as String?) ?: "vehicle_cls.onnx"),
+    "weather_cls" to ((findProperty("weatherModel") as String?) ?: "weather_cls.onnx"),
+    "surface_cls" to ((findProperty("surfaceModel") as String?) ?: "surface_cls.onnx"),
+)
 
 val syncModels by tasks.registering(Copy::class) {
     description = "Copy models/*.onnx and label files into app/src/main/assets"
     doFirst {
+        val assets = layout.projectDirectory.dir("src/main/assets")
         if (hazardModel2.isBlank()) {
             // a previous build with a second model leaves its assets behind; Copy never deletes
-            layout.projectDirectory.file("src/main/assets/hazard2.onnx").asFile.delete()
-            layout.projectDirectory.file("src/main/assets/hazard2_labels.txt").asFile.delete()
+            assets.file("hazard2.onnx").asFile.delete()
+            assets.file("hazard2_labels.txt").asFile.delete()
+        }
+        for ((asset, src) in classifierModels) {
+            val present = src.isNotBlank() && File(repoModels, src).exists() &&
+                File(repoModels, src.removeSuffix(".onnx") + ".labels.txt").exists()
+            if (!present) {
+                if (src.isNotBlank()) logger.lifecycle("syncModels: $src (+ .labels.txt) not in models/, $asset is left out")
+                assets.file("$asset.onnx").asFile.delete()
+                assets.file("${asset}_labels.txt").asFile.delete()
+            }
+        }
+    }
+    for ((asset, src) in classifierModels) {
+        if (src.isBlank()) continue
+        val labels = src.removeSuffix(".onnx") + ".labels.txt"
+        // only copied as a pair: a model without its class names is useless
+        if (File(repoModels, src).exists() && File(repoModels, labels).exists()) {
+            from(repoModels) {
+                include(src)
+                rename { "$asset.onnx" }
+            }
+            from(repoModels) {
+                include(labels)
+                rename { "${asset}_labels.txt" }
+            }
         }
     }
     from(repoModels) {

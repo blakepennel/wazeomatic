@@ -6,7 +6,8 @@ import kotlin.math.sqrt
 
 // Port of wazeomatic/report_manager.py: persistence window, per-type cooldown, global
 // cooldown, the (optional) stopped-vehicle heuristic, per-label confidence floors and the
-// optional spatial tracking (hits must chain through overlapping boxes). Same defaults.
+// optional spatial tracking (hits must chain through overlapping boxes), the longer cooldowns of
+// scene conditions and the Waze check (a hazard Waze already shows is counted, not sent). Same defaults.
 
 data class ReportConfig(
     val window: Int = 10,
@@ -23,6 +24,9 @@ data class ReportConfig(
     // ignore boxes whose bottom edge is in the lowest 10 % of the frame: the car's own bonnet reflection
     val hoodFrac: Float = 0.10f,
     val cooldownS: Double = 60.0,
+    /** Longer per-type cooldowns for conditions that last minutes: one report per traffic jam or fog
+     *  bank, not one a minute for as long as it lasts. Overrides [cooldownS] for these types. */
+    val cooldownByHazard: Map<String, Double> = SCENE_COOLDOWNS,
     /** Between any two events. The macro files at most one report a minute in total, so a sooner
      *  event would be dropped there unseen; holding it back here keeps the loss visible ([ReportManager.heldBack]). */
     val globalCooldownS: Double = 60.0,
@@ -38,9 +42,41 @@ data class ReportConfig(
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
 val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f)
 
+/** Same values as SCENE_COOLDOWNS in wazeomatic/scene.py (seconds). */
+val SCENE_COOLDOWNS: Map<String, Double> = mapOf(
+    "TRAFFIC_HEAVY" to 900.0, "TRAFFIC_STANDSTILL" to 900.0,
+    "WEATHER_FOG" to 1800.0, "WEATHER_FLOOD" to 900.0, "WEATHER_SLIPPERY" to 1800.0, "WEATHER_ICE" to 1800.0,
+    "WEATHER_UNPLOWED" to 1800.0, "CRASH" to 300.0, "CRASH_OTHER_SIDE" to 300.0,
+    "BLOCKED_LANE_LEFT" to 300.0, "BLOCKED_LANE_CENTER" to 300.0, "BLOCKED_LANE_RIGHT" to 300.0,
+    "HAZARD_ON_ROAD_TRAFFIC_LIGHT" to 600.0,
+)
+
+/** A hazard that qualified while Waze already showed the same report nearby: counted, not sent. */
+data class Confirmation(
+    val hazardType: String,
+    val confidence: Double,
+    val label: String,
+    val ts: Double,
+    val frameIndex: Int,
+    val waze: WazeAlert,
+) {
+    /** Same keys as the confirmation dicts of report_manager.py. */
+    fun toJson(): String = "{" +
+        "\"hazard_type\":" + WazeText.quote(hazardType) + "," +
+        "\"confidence\":" + String.format(java.util.Locale.US, "%.3f", confidence) + "," +
+        "\"label\":" + WazeText.quote(label) + "," +
+        "\"ts\":" + String.format(java.util.Locale.US, "%.3f", ts) + "," +
+        "\"frame_index\":" + frameIndex + "," +
+        "\"waze\":" + waze.toJson() +
+        "}"
+}
+
 class ReportManager(
     val cfg: ReportConfig = ReportConfig(),
     val source: String = "phone",
+    /** Read-only view of the Waze screen: a hazard Waze already shows nearby is a confirmation, not a new report. */
+    private val waze: WazeAlerts? = null,
+    // last, so tests can pass the clock as a trailing lambda
     private val clock: () -> Double = ::nowSeconds,
 ) {
     private class Hit(val frame: Int, val conf: Float, val bbox: BBox, val label: String)
@@ -66,6 +102,12 @@ class ReportManager(
     private val held = HashSet<String>()
     private var hoodFracDynamic = 0f
 
+    /** Events not sent because Waze already showed them ([confirmations] has the details). */
+    @Volatile var alreadyReported = 0
+        private set
+    private val confirmationList = ArrayList<Confirmation>()
+    val confirmations: List<Confirmation> get() = confirmationList
+
     /** Active hood zone: the configured minimum or a larger value learnt by [HoodEstimator]. */
     val hoodFrac: Float get() = maxOf(cfg.hoodFrac, hoodFracDynamic)
 
@@ -87,7 +129,8 @@ class ReportManager(
         for (d in detections) {
             val hazard = hazardFor(d) ?: continue
             if (d.confidence < minConf(d.label)) continue
-            if (inHoodZone(d)) continue
+            // scene labels are whole-frame boxes, the hood zone does not apply to them
+            if (d.model != "scene" && inHoodZone(d)) continue
             accepted.getOrPut(hazard) { ArrayList() }.add(d)
             val prev = best[hazard]
             if (prev == null || d.confidence > prev.confidence) best[hazard] = d
@@ -104,8 +147,20 @@ class ReportManager(
         val events = ArrayList<HazardEvent>()
         for ((hazard, tr) in tracks) {
             val hits = qualifyingHits(tr) ?: continue
-            if (now - tr.lastEmittedTs < cfg.cooldownS) continue
+            if (now - tr.lastEmittedTs < (cfg.cooldownByHazard[hazard] ?: cfg.cooldownS)) continue
             if (hazard == "HAZARD_SHOULDER_CAR_STOPPED" && !stoppedVehicleConfirmed(tr)) continue
+            val cover = waze?.covering(hazard)
+            if (cover != null) {
+                // Waze already shows it: count the agreement, mute the type for a cooldown, send nothing.
+                // The global cooldown is left alone because no report goes out.
+                val top = hits.maxByOrNull { it.conf } ?: continue
+                alreadyReported++
+                confirmationList.add(Confirmation(hazard, top.conf.toString().toDouble(), top.label, now, frame, cover))
+                tr.lastEmittedTs = now
+                tr.hits.clear()
+                tr.tracklets.clear()
+                continue
+            }
             if (now - lastGlobalTs < cfg.globalCooldownS) {
                 if (held.add(hazard)) heldBack++
                 continue

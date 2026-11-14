@@ -126,6 +126,31 @@ adb shell am broadcast -a com.wazeomatic.HAZARD_DETECTED --es hazard_type HAZARD
 Use `-p com.wazeomatic.mockwaze` on SET_TIMING when the app is not open (then only the manifest
 receiver can get it, and only for broadcasts aimed at our package).
 
+## Alert cards (what other drivers reported)
+
+While the map screen is open, `SHOW_ALERT` puts a Waze-style alert card below the menu button:
+title, distance, "Reported N min ago" and, with `still_there`, a "Still there?" line whose Yes / No
+only dismiss the card. Every text is a TextView, so `uiautomator dump` and the detector's read-only
+Waze reader see it. The card stays clear of the report button and is drawn under the report sheet,
+so the sheet's tap coordinates do not change. `CLEAR_ALERTS` hides it, and it is hidden when the map
+screen goes to the background.
+
+| extra | default | |
+|---|---|---|
+| `alert_type` | (required) | a `hazard_type` key of `wazeomatic/schema.py`; the title comes from `WazeMenu.alertTitles` |
+| `distance` | "" | text as shown, e.g. `0.3 mi` |
+| `minutes_ago` | 0 | "Reported just now" / "Reported N min ago" |
+| `still_there` | false | add the "Still there?" prompt |
+| `duration_ms` | 8000 | hide after this (0 = until cleared) |
+
+```powershell
+adb shell am broadcast -a com.wazeomatic.mockwaze.SHOW_ALERT -p com.wazeomatic.mockwaze --es alert_type POLICE --es distance "'0.3 mi'" --ei minutes_ago 2
+adb shell am broadcast -a com.wazeomatic.mockwaze.CLEAR_ALERTS -p com.wazeomatic.mockwaze
+```
+
+Every card shown, dismissed or cleared is a line in `files/alerts.jsonl` (next to `reports.jsonl`,
+cleared with it by `clear_reports`) and in logcat tag `MockWazeAlert`.
+
 ## Rehearsing the real MacroDroid macro
 
 On a real phone with MacroDroid, install this APK next to Waze, point the macro's
