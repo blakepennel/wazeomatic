@@ -8,8 +8,8 @@ Three layers, in order:
    ``cooldown_s`` seconds. This mirrors the macro's own one-report-per-minute guard and
    stops the same pothole being reported ten times while we drive over it.
 3. **Heuristics** - a hood exclusion zone (boxes touching the bottom edge of the frame are
-   the car's own bonnet reflection, not road), and the stopped-vehicle-on-shoulder check
-   (experimental, off by default).
+   the car's own bonnet reflection, not road), livery and pet checks, debris that must lie on the
+   road, and the stopped-vehicle-on-shoulder check (experimental, off by default).
 4. **Spatial consistency** (``track_iou`` > 0) - the hits that make up a report must come from
    boxes that overlap frame to frame, i.e. from one object the car is approaching, not from a
    flicker here and a flicker there. Per-label confidence floors (``min_confidence_by_label``)
@@ -29,7 +29,8 @@ from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 # worker: a pedestrian in an orange or yellow shirt looks like hi-vis; 0.6 dropped the one such Construction
 # report on the held-out Argoverse clips and cost no Construction event on the val clips (docs/waze-coverage.md)
-DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
+# debris: 0.5 keeps 89 % of Object reports on Lost and Found frames right at 55 % recall (0.4: 84 %, 59 %)
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
 # per-type overrides of ReportConfig.min_hits. Police: two classifier hits above the 0.85 floor in ten frames;
 # with the classifiers at their trained 160 px input that found 7 of the 9 police cars on the held-out
 # Argoverse clips with no false report on the other 154, where three hits found 5 (docs/waze-coverage.md)
@@ -86,6 +87,12 @@ class ReportConfig:
     # animal loose on the road (the one Animal report on 38 minutes of held-out Argoverse city clips)
     pet_labels: tuple[str, ...] = ("dog", "cat")
     pet_reach: float = 0.75          # horizontal gap to the person's box, in person heights
+    # an object lying on the road touches the road: a box of these labels whose bottom edge is above road_top
+    # (a vent on a building front) is not on the road, nor is one mostly inside a person or a vehicle (trouser
+    # legs, a roof box); the two Object reports on the held-out Argoverse clips were one of each
+    road_labels: tuple[str, ...] = ("debris",)
+    road_top: float = 0.35           # the horizon row (0.5 on a level mount) less 0.15 for tilt
+    on_object_inside: float = 0.5
     vehicle_min_area: float = 0.02   # bbox area fraction - close enough to matter
     vehicle_min_growth: float = 1.35 # area must grow by this factor across the window
 
@@ -181,6 +188,10 @@ class ReportManager:
                                                          for v in vehicles):
                 continue
             if d.label in self.cfg.pet_labels and any(_beside(d.bbox, p, self.cfg.pet_reach) for p in people):
+                continue
+            if d.label in self.cfg.road_labels and (
+                    d.bbox[1] + d.bbox[3] / 2 < self.cfg.road_top or
+                    any(_inside(d.bbox, o) >= self.cfg.on_object_inside for o in people + vehicles)):
                 continue
             accepted[hazard].append(d)
             if hazard not in best or d.confidence > best[hazard].confidence:

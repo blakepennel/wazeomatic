@@ -152,9 +152,9 @@ def test_default_pothole_floor_is_045():
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import Detection
 
-    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
+    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
     cfg = ReportConfig(global_cooldown_s=0)
-    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6}
+    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
     rm = ReportManager(cfg, clock=lambda: 1000.0)
     weak = Detection("pothole", 0.42, (0.5, 0.5, 0.1, 0.1))
     for i in range(3):
@@ -181,6 +181,18 @@ def test_dog_on_a_walk_is_not_an_animal_on_the_road():
     far = Detection("person", 0.9, (0.3, 0.45, 0.03, 0.09))
     rm, _ = make(window=10)
     assert [e.hazard_type for _ in range(3) for e in rm.update([dog, far])] == ["HAZARD_SHOULDER_ANIMALS"]
+
+
+def test_debris_must_lie_on_the_road():
+    # Argoverse 2583a8ee: a vent on a building front; 5bc5e7b0: the trouser legs of a man crossing
+    vent = Detection("debris", 0.8, (0.93, 0.21, 0.1, 0.09))
+    legs = Detection("debris", 0.8, (0.48, 0.82, 0.05, 0.05))
+    walker = Detection("person", 0.9, (0.48, 0.75, 0.06, 0.2))
+    rm, _ = make(window=10)
+    assert all(rm.update([vent, legs, walker]) == [] for _ in range(5))
+    # the same box on the road with nobody standing in it is reported
+    rm, _ = make(window=10)
+    assert [e.hazard_type for _ in range(3) for e in rm.update([legs])] == ["HAZARD_ON_ROAD_OBJECT"]
 
 
 def test_police_needs_two_hits_by_default():

@@ -197,6 +197,25 @@ class ReportManagerTest {
     }
 
     @Test
+    fun debrisMustLieOnTheRoad() {
+        // Argoverse 2583a8ee: a vent on a building front; 5bc5e7b0: the trouser legs of a man crossing
+        val vent = det("debris", 0.8f, BBox(0.93f, 0.21f, 0.1f, 0.09f))
+        val legs = det("debris", 0.8f, BBox(0.48f, 0.82f, 0.05f, 0.05f))
+        val walker = det("person", 0.9f, BBox(0.48f, 0.75f, 0.06f, 0.2f))
+        val m = rm()
+        repeat(5) { assertTrue(m.update(listOf(vent, legs, walker)).isEmpty()) }
+        // the same box on the road with nobody standing in it is reported
+        val clear = rm()
+        assertEquals(listOf("HAZARD_ON_ROAD_OBJECT"), (1..3).flatMap { clear.update(listOf(legs)) }.map { it.hazardType })
+    }
+
+    @Test
+    fun settingsPutTheRoadLineBelowTheHorizon() {
+        assertEquals(0.35f, Settings().reportConfig().roadTop, 1e-6f)
+        assertEquals(0.38f, Settings(cameraGeometry = "47.2,1.44,0.53").reportConfig().roadTop, 1e-6f)
+    }
+
+    @Test
     fun policeNeedsTwoHitsByDefault() {
         // same rule as DEFAULT_MIN_HITS_BY_HAZARD in report_manager.py
         assertEquals(mapOf("POLICE" to 2), ReportConfig().minHitsByHazard)
@@ -352,7 +371,7 @@ class ReportManagerTest {
 
     @Test
     fun defaultPotholeFloorIs045() {
-        assertEquals(mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f), ReportConfig().minConfidenceByLabel)
+        assertEquals(mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f), ReportConfig().minConfidenceByLabel)
         val m = rm(ReportConfig(globalCooldownS = 0.0))
         for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.42f)), frameIndex = i).isEmpty())
         var ev: List<HazardEvent> = emptyList()

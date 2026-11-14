@@ -101,6 +101,8 @@ def main(argv=None) -> int:
                        track_iou=args.track_iou, track_grow=args.track_grow,
                        cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown, hood_frac=args.hood_frac,
                        class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
+    if getattr(args, "camera_geometry", None):
+        cfg.road_top = float(args.camera_geometry.split(",")[2]) - 0.15     # debris must lie below the horizon
     waze = reader = None
     if args.waze_reader is not None:
         from .waze_reader import AdbWazeReader, WazeAlerts

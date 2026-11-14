@@ -46,12 +46,18 @@ data class ReportConfig(
     val petLabels: Set<String> = setOf("dog", "cat"),
     /** Horizontal gap to the person's box, in person heights. */
     val petReach: Float = 0.75f,
+    // an object lying on the road touches the road: a box of these labels whose bottom edge is above roadTop
+    // (a vent on a building front) is not on the road, nor is one mostly inside a person or a vehicle
+    val roadLabels: Set<String> = setOf("debris"),
+    /** The horizon row (0.5 on a level mount) less 0.15 for tilt; Settings derives it from cameraGeometry. */
+    val roadTop: Float = 0.35f,
+    val onObjectInside: Float = 0.5f,
     val vehicleMinArea: Float = 0.02f,
     val vehicleMinGrowth: Float = 1.35f,
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
-val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f)
+val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f)
 
 /** Same value as DEFAULT_MIN_HITS_BY_HAZARD in wazeomatic/report_manager.py: two classifier hits above the
  *  police floor in ten frames (measured with the classifiers at their trained 160 px input). */
@@ -151,6 +157,8 @@ class ReportManager(
             if (d.model != "scene" && inHoodZone(d)) continue
             if (d.label in cfg.liveryLabels && vehicles.any { inside(d.bbox, it) >= cfg.liveryInside }) continue
             if (d.label in cfg.petLabels && people.any { beside(d.bbox, it, cfg.petReach) }) continue
+            if (d.label in cfg.roadLabels && (d.bbox.cy + d.bbox.h / 2f < cfg.roadTop ||
+                    (people + vehicles).any { inside(d.bbox, it) >= cfg.onObjectInside })) continue
             accepted.getOrPut(hazard) { ArrayList() }.add(d)
             val prev = best[hazard]
             if (prev == null || d.confidence > prev.confidence) best[hazard] = d
