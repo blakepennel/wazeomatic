@@ -1,6 +1,7 @@
 """Run the detectors over a folder of clips once and store every frame's boxes, for replaying rules quickly.
 
     python tools/cache_detections.py --clips <datasets>/argoverse2/clips --out runs/cache/argoverse.jsonl
+    python tools/cache_detections.py --clips <datasets>/argoverse2/clips --clip-half 1 --out runs/cache/argo_h1.jsonl
 
 One JSON line per frame: clip name, frame time, frame width and height, and the detections (label, confidence,
 normalised cx, cy, w, h) of the hazard model and the COCO model with the shipped settings. Scene rules that need
@@ -28,11 +29,17 @@ def main() -> None:
     ap.add_argument("--clips", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--step", type=int, default=1)
+    ap.add_argument("--clip-half", type=int, choices=[0, 1],
+                    help="only the clips of this half (the split of tools/mine_vehicle_crops.py --clip-half)")
     args = ap.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
     dap = argparse.ArgumentParser()
     add_detector_args(dap)
     det = build_detectors(DetectorSpec.from_args(dap.parse_args(extra)))
     clips = sorted(p for p in Path(args.clips).rglob("*") if p.suffix.lower() in VIDEO_EXT)
+    if args.clip_half is not None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from mine_vehicle_crops import clip_half
+        clips = [p for p in clips if clip_half(p.stem) == args.clip_half]
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         for clip in clips:
