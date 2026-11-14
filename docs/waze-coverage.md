@@ -162,7 +162,7 @@ are left out.
 |---|---|
 | Construction | 81 of 86 work-zone clips reported (recall 0.94); 3 of the 17 clips without a work zone get one (precision 0.96) |
 | Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
-| Broken traffic light, Crash, Traffic | none |
+| Pothole, Broken traffic light, Crash, Traffic | none (Argoverse has no pothole labels, so this only says there was no false one) |
 | Police | 7 of 9, none false (the table above) |
 
 Construction reports without a labelled work zone, checked by eye: striped delineator posts on the pavement
