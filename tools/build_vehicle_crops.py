@@ -17,6 +17,8 @@ Sources (all under the datasets root):
   them are police cars; ``--exclude`` takes a list of crop names checked by hand and moved out of civilian
   (``tools/mine_vehicle_crops.py`` writes it).
 * ``mined/<class>`` (optional): crops from dashcam frames confirmed by hand, the in-domain positives.
+* ``mined_tracks/<class>/<track>/`` (optional, tools/mine_vehicle_tracks.py): every frame of a vehicle track
+  confirmed by hand, near and far, front and rear. A track stays on one side of the split (crops ``mt_*``).
 
 Crops are cut with ``wazeomatic.classifiers.square_crop`` (box grown 12 % per side, letterboxed), the rule the
 pipeline uses at run time. Photos of a vehicle filling the frame do not look like a car 40 m ahead, so every
@@ -42,7 +44,7 @@ from wazeomatic.paths import datasets_root  # noqa: E402
 VEHICLE_COCO = {2: "car", 5: "bus", 7: "truck"}
 CLASSES = ("civilian", "police", "ambulance", "fire")
 SOURCES = ("police", "ambulance", "fire", "civilian_hard", "civilian_taxi", "openimages", "oi_civilian", "bdd",
-           "mined")
+           "mined", "tracks")
 
 
 def split_of(key: str, val_frac: float) -> str:
@@ -115,6 +117,7 @@ def main() -> None:
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--exclude", help="text file of civilian crop names to leave out (hand-checked police)")
     ap.add_argument("--mined-repeat", type=int, default=6, help="extra copies of each hand-confirmed train crop")
+    ap.add_argument("--track-repeat", type=int, default=1, help="extra degraded copies of each train track frame")
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--sources", nargs="+", default=list(SOURCES), choices=list(SOURCES),
@@ -255,6 +258,20 @@ def main() -> None:
                 # few but in-domain: repeat them (degraded) so they weigh against thousands of photos
                 for k in range(args.mined_repeat):
                     wr.put(split, cls, f"mn_{p.stem}_d{k}", degrade(im, rng) if k % 2 else cv2.flip(im, 1))
+    # ------------------------------------------------------------------ hand-confirmed dashcam tracks
+    tracks = root / "mined_tracks"
+    for cls in CLASSES if "tracks" in args.sources else ():
+        for d in sorted(p for p in (tracks / cls).iterdir() if p.is_dir()) if (tracks / cls).exists() else []:
+            split = split_of(d.name, args.val_frac)
+            for p in sorted(d.glob("*.jpg")):
+                im = cv2.imread(str(p))
+                if im is None:
+                    continue
+                im = cv2.resize(im, (args.size, args.size))
+                wr.put(split, cls, f"mt_{d.name}_{p.stem}", im)
+                if split == "train":
+                    for k in range(args.track_repeat):
+                        wr.put(split, cls, f"mt_{d.name}_{p.stem}_d{k}", degrade(im, rng))
     if "mined" in args.sources and exclude:
         # BDD civilian crops already written from frames whose vehicle was confirmed by hand as police etc.
         gone = 0

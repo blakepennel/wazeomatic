@@ -14,6 +14,8 @@ Stage 2 (--stage images): for the top ``--logs`` logs download the calibration, 
     python tools/fetch_argoverse_hazards.py --stage images --logs 60 --every 5
     python tools/fetch_argoverse_hazards.py --stage images --logs 200 --skip 100   # the next 200
     python tools/fetch_argoverse_hazards.py --stage clips      # one mp4 per log, for the clip evaluations
+    python tools/fetch_argoverse_hazards.py --stage images --logs 300 --skip 300 --min-tracks 0
+    python tools/fetch_argoverse_hazards.py --stage clips --clips-out clips_mine   # new logs only, for mining
 
 Stage 3 (--stage clips): every downloaded log as ``<datasets>/argoverse2/clips/<first 8 of the log id>.mp4``
 at 5 fps, 1280 px wide, with the top 15 % (sky) and the bottom 20 % (bonnet) of the portrait front camera cut
@@ -150,9 +152,13 @@ def stage_images(n_logs: int, every: int, workers: int, min_tracks: int, skip: i
         print(f"  [{i + 1}/{len(chosen)}] {log}: {len(frames[::every])} frames, {r['hazard_tracks']} tracks")
 
 
-def stage_clips() -> None:
+def stage_clips(out_name: str = "clips") -> None:
+    """One mp4 per downloaded log in ``<argoverse2>/<out_name>``. With another folder than ``clips``, logs that
+    already have a clip in ``clips`` are left out, so new logs can be mined without touching the clips the
+    evaluations score."""
     import cv2
-    out = OUT / "clips"
+    out = OUT / out_name
+    taken = {p.name for p in (OUT / "clips").glob("*.mp4")} if out_name != "clips" else set()
     out.mkdir(parents=True, exist_ok=True)
     made = 0
     for split in ("train", "val"):
@@ -160,7 +166,7 @@ def stage_clips() -> None:
         for log in sorted(root.iterdir()) if root.exists() else []:
             frames = sorted((log / "sensors" / "cameras" / CAMERA).glob("*.jpg"))
             dst = out / f"{log.name[:8]}.mp4"
-            if not frames or dst.exists():
+            if not frames or dst.exists() or dst.name in taken:
                 continue
             first = cv2.imread(str(frames[0]))
             h, w = first.shape[:2]
@@ -184,6 +190,7 @@ def main() -> None:
     ap.add_argument("--min-tracks", type=int, default=3)
     ap.add_argument("--skip", type=int, default=0, help="start after this many logs of the ranking (fetch more later)")
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--clips-out", default="clips", help="clips: folder under argoverse2/ (see stage_clips)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     if args.stage == "annotations":
@@ -191,7 +198,7 @@ def main() -> None:
     elif args.stage == "rank":
         rank_logs()
     elif args.stage == "clips":
-        stage_clips()
+        stage_clips(args.clips_out)
     else:
         stage_images(args.logs, args.every, args.workers, args.min_tracks, args.skip)
 

@@ -70,7 +70,7 @@ def eval_crops(args) -> dict:
         out["police_operating_points"] = ops
         # at fixed thresholds, the shipped floor among them: police recall, how often a civilian vehicle is called
         # police by where the crop comes from (bdd = dashcam frames, oc = Open Images photos, cm = Commons
-        # look-alikes, tx = Commons taxis, mn = hand-checked dashcam crops), and how often an ambulance or fire engine is
+        # look-alikes, tx = Commons taxis, mn = hand-checked dashcam crops, mt = hand-checked dashcam tracks), and how often an ambulance or fire engine is
         src = np.array(srcs)
         at = {}
         for thr in (0.8, 0.85, 0.9):
