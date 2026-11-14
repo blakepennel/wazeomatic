@@ -4,6 +4,12 @@
     python tools/train_classifier.py weather      # <datasets>/scene_weather  -> models/weather_cls.onnx
     python tools/train_classifier.py surface      # <datasets>/scene_surface  -> models/surface_cls.onnx
     python tools/train_classifier.py vehicle --model yolo11s-cls.pt --imgsz 160 --epochs 40 --name vehicle_s
+    python tools/train_classifier.py vehicle --res-jitter 0.5 --name vehicle_v7    # half the crops also soft
+
+``--res-jitter P`` trains on a copy of the set (``<data>_rj``, hard links to the originals) where a share P of
+the training crops gets a second, softened version: scaled down to 20-70 % and back up, then saved at JPEG
+quality 40-90. A dashcam shows the same police car as a sharp 300 px box close by and as a soft 40 px box
+far away; the classifier should not depend on which (docs/waze-coverage.md, the missed police cars).
 
 The ONNX file takes ``[N, 3, imgsz, imgsz]`` RGB in [0, 1] (dynamic batch) and returns class probabilities;
 the class names go to ``<model>.labels.txt`` in output order (wazeomatic/classifiers.py reads them). Without
@@ -12,6 +18,8 @@ the class names go to ``<model>.labels.txt`` in output order (wazeomatic/classif
 from __future__ import annotations
 
 import argparse
+import os
+import random
 import shutil
 import sys
 from pathlib import Path
@@ -27,6 +35,41 @@ PRESETS = {
 }
 
 
+def res_jitter_copy(data: Path, share: float, seed: int = 0) -> Path:
+    """``<data>_rj``: train/ and val/ hard-linked from ``data``, plus a softened copy of ``share`` of the
+    training images (``*_rj.jpg``). Made once; delete the folder to rebuild it."""
+    import cv2
+
+    out = data.with_name(data.name + "_rj")
+    if (out / "done.txt").exists():
+        return out
+    rng = random.Random(seed)
+    n = 0
+    for split in ("train", "val"):
+        for src in sorted((data / split).rglob("*.jpg")):
+            dst = out / src.relative_to(data)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.exists():
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
+            if split == "train" and rng.random() < share:
+                im = cv2.imread(str(src))
+                if im is None:
+                    continue
+                h, w = im.shape[:2]
+                s = rng.uniform(0.2, 0.7)
+                small = cv2.resize(im, (max(8, int(w * s)), max(8, int(h * s))), interpolation=cv2.INTER_AREA)
+                soft = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+                cv2.imwrite(str(dst.with_name(dst.stem + "_rj.jpg")), soft,
+                            [cv2.IMWRITE_JPEG_QUALITY, rng.randint(40, 90)])
+                n += 1
+    (out / "done.txt").write_text(f"{n} softened copies, share {share}, seed {seed}\n", encoding="utf-8")
+    print(f"res-jitter set {out}: {n} softened copies")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("task", choices=list(PRESETS))
@@ -40,10 +83,14 @@ def main() -> None:
     ap.add_argument("--device", default="0")
     ap.add_argument("--ship", action="store_true", help="also copy the export to the model the pipeline loads")
     ap.add_argument("--export-only", help="skip training, export this .pt")
+    ap.add_argument("--res-jitter", type=float, default=0.0,
+                    help="add a softened copy of this share of the training crops (see the module docstring)")
     args = ap.parse_args()
     pre = PRESETS[args.task]
     data = Path(args.data) if args.data else datasets_root() / pre["data"]
     imgsz = args.imgsz or pre["imgsz"]
+    if args.res_jitter > 0 and not args.export_only:
+        data = res_jitter_copy(data, args.res_jitter)
     name = args.name or f"{args.task}_{Path(args.model).stem.replace('-cls', '')}"
     from ultralytics import YOLO
 
