@@ -148,3 +148,12 @@ def test_topview_skips_a_covered_road():
     car = Detection("car", 0.9, (0.5, 0.6, 0.3, 0.2))
     assert s(img, 0.0, [car]) is None and s.skipped == 1
     assert s(img, 0.1, []) == {"surface_dry": np.float32(0.4), "surface_wet": np.float32(0.6)}
+
+
+def test_dynamic_input_runs_at_the_trained_size():
+    # Ultralytics writes the training size into the export; a dynamic-shape model must not fall back to 128
+    from wazeomatic.classifiers import trained_size
+    assert trained_size({"imgsz": "[160, 160]"}) == 160
+    assert trained_size({"imgsz": "224"}) == 224
+    assert trained_size({"stride": "32"}) is None
+    assert trained_size({"imgsz": "[0, 0]"}) is None

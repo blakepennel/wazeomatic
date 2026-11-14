@@ -92,6 +92,15 @@ class ClassifierTest {
         assertEquals(listOf("civilian", "police"), OnnxClassifier.parseLabels("civilian\r\n\npolice\n"))
     }
 
+    @Test
+    fun dynamicInputRunsAtTheTrainedSize() {
+        // Ultralytics writes the training size into the export; a dynamic-shape model must not fall back to 128
+        assertEquals(160, OnnxClassifier.trainedSize(mapOf("imgsz" to "[160, 160]")))
+        assertEquals(224, OnnxClassifier.trainedSize(mapOf("imgsz" to "224")))
+        assertEquals(null, OnnxClassifier.trainedSize(mapOf("stride" to "32")))
+        assertEquals(null, OnnxClassifier.trainedSize(mapOf("imgsz" to "[0, 0]")))
+    }
+
     private class FakeClassifier(override val labels: List<String>, override val size: Int = 64, val row: (Int) -> FloatArray) : ImageClassifier {
         val seen = ArrayList<RgbImage>()
         override val lastMs = 1.5

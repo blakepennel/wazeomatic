@@ -15,6 +15,7 @@ The Kotlin twins are ``VehicleClassifier.kt`` and ``SceneClassifier.kt``; keep t
 from __future__ import annotations
 
 import math
+import re
 import time
 from pathlib import Path
 from typing import Optional, Sequence
@@ -61,8 +62,15 @@ def square_crop(img: np.ndarray, bbox: tuple[float, float, float, float], pad: f
     return out
 
 
+def trained_size(meta: dict) -> Optional[int]:
+    """Square input size from Ultralytics export metadata ("imgsz": "[160, 160]" or "160"), else None."""
+    nums = re.findall(r"\d+", str(meta.get("imgsz", "")))
+    return int(nums[0]) if nums and int(nums[0]) > 0 else None
+
+
 class OnnxClassifier:
-    def __init__(self, model_path: str | Path, threads: int = 2, providers: Optional[Sequence[str]] = None):
+    def __init__(self, model_path: str | Path, threads: int = 2, providers: Optional[Sequence[str]] = None,
+                 size: Optional[int] = None):
         if ort is None:
             raise SystemExit("onnxruntime is not installed")
         self.path = Path(model_path)
@@ -73,7 +81,12 @@ class OnnxClassifier:
         self.session = ort.InferenceSession(str(self.path), so, providers=list(providers or ["CPUExecutionProvider"]))
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
-        self.size = int(inp.shape[2]) if isinstance(inp.shape[2], int) else 128
+        # a fixed input wins; a dynamic one (train_classifier exports dynamic=True) runs at the size the model
+        # was trained at, which Ultralytics writes into the metadata as "imgsz": "[160, 160]"
+        if isinstance(inp.shape[2], int):
+            self.size = int(inp.shape[2])
+        else:
+            self.size = int(size or trained_size(self.session.get_modelmeta().custom_metadata_map) or 128)
         self.dynamic_batch = not isinstance(inp.shape[0], int)
         self.labels = read_labels(self.path)
         self.last_ms = 0.0

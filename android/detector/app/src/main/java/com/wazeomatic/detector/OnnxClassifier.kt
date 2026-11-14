@@ -45,7 +45,10 @@ class OnnxClassifier(
         val inp = session.inputInfo.entries.first()
         inputName = inp.key
         val shape = (inp.value.info as TensorInfo).shape
-        size = if (shape.size == 4 && shape[2] > 0) shape[2].toInt() else 128
+        // a fixed input wins; a dynamic one (train_classifier exports dynamic=True) runs at the size the model
+        // was trained at, which Ultralytics writes into the metadata as "imgsz": "[160, 160]"
+        size = if (shape.size == 4 && shape[2] > 0) shape[2].toInt()
+        else trainedSize(runCatching { session.metadata.customMetadata }.getOrNull().orEmpty()) ?: 128
         dynamicBatch = shape.isEmpty() || shape[0] <= 0
         val outShape = (session.outputInfo.values.first().info as TensorInfo).shape
         val classes = outShape.lastOrNull() ?: -1
@@ -96,6 +99,10 @@ class OnnxClassifier(
                 FloatArray(r.size) { (e[it] / s).toFloat() }
             }
         }
+
+        /** Square input size from Ultralytics export metadata ("imgsz": "[160, 160]" or "160"), else null. */
+        fun trainedSize(meta: Map<String, String>): Int? =
+            Regex("\\d+").find(meta["imgsz"].orEmpty())?.value?.toIntOrNull()?.takeIf { it > 0 }
 
         /** Labels file text (one class per line, output order) to a list. */
         fun parseLabels(text: String): List<String> = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
