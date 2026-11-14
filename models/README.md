@@ -10,6 +10,10 @@ published](#why-the-weights-are-not-published). Build them locally with the step
 | `hazard_yolo11n_v3.onnx` | The same model under its versioned name. |
 | `hazard_yolo11s_v3.onnx` | YOLO11s trained on the same v3 set, 640 px, six classes. Not the default: about 3x the compute of the nano. Use it with `--hazard-model` on the desktop or `-PhazardModel` / `-PhazardModel2` in the Android build. |
 | `coco_yolo11n.onnx` | Stock COCO YOLO11n, 416 px, used for vehicles, people and animals. |
+| `vehicle_cls.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px, four classes (ambulance, civilian, fire, police). A copy of `vehicle_v4.onnx`. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
+| `vehicle_yolo11n.onnx`, `vehicle_v2.onnx`, `vehicle_v3.onnx`, `vehicle_v4.onnx` | The four rounds of the vehicle classifier (see below); only v4 is loaded. |
+| `weather_cls.onnx` | Whole-frame weather: YOLO11n-cls, 224 px, four classes (clear, fog, rain, snow). A copy of `weather_yolo11n.onnx`. Feeds the Fog and Slippery road rules. |
+| `surface_cls.onnx` (optional) | Road-surface patch classifier (dry, wet, water, slush, snow, ice) for Flood, Icy road, Unplowed road and Slippery road. Without it those rules stay silent. |
 
 Each model has a `<name>.labels.txt` next to it (one class per line, in output order).
 
@@ -56,6 +60,30 @@ COCO model (downloads the stock `yolo11n.pt` through ultralytics, so it needs
 ```powershell
 python tools/export_onnx.py --coco             # models/coco_yolo11n_416.onnx, copied to models/coco_yolo11n.onnx
 ```
+
+Second-stage classifiers (image-folder sets, then `tools/train_classifier.py`):
+
+```powershell
+python tools/fetch_commons_vehicles.py         # police / ambulance / fire photos from Wikimedia Commons
+python tools/fetch_openimages.py               # Open Images Ambulance, Car, Taxi, Van boxes
+python tools/build_vehicle_crops.py            # <datasets>/vehicle_crops
+python tools/train_classifier.py vehicle --ship
+python tools/build_scene_sets.py weather       # BDD100K frames by weather label, plus synthetic fog in train
+python tools/train_classifier.py weather --ship
+python tools/fetch_rscd.py; python tools/build_scene_sets.py surface
+python tools/train_classifier.py surface --ship
+```
+
+The vehicle classifier took four rounds. v1 learnt photo style instead of livery: every police picture was a
+hand-held photo and every civilian car a dashcam crop, so it called 22 % of hand-held civilian look-alikes
+police. v2 added Open Images photos of ordinary cars, taxis and vans as civilian. v3 added crops mined from
+40,000 BDD100K dashcam frames: `tools/mine_vehicle_crops.py scan` scores every vehicle with the current model,
+`sheets` lays the high scorers out as contact sheets, and the ones checked by hand go to
+`<datasets>/mined_vehicles/<class>` (51 police, 23 ambulance, 1 fire engine, 279 civilian look-alikes) with an
+exclude list that takes the real police cars out of the civilian negatives. v4 added ambulances from the UK,
+Japan, Germany, France, Australia and the Netherlands (Commons): v3 called Battenberg and box-bodied
+ambulances police, because police crops outnumbered ambulance crops four to one. Measured numbers are in
+[docs/waze-coverage.md](../docs/waze-coverage.md#measured).
 
 ## Retired files
 

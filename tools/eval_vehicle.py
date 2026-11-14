@@ -35,9 +35,10 @@ def eval_crops(args) -> dict:
     root = Path(args.data) if args.data else datasets_root() / "vehicle_crops" / "val"
     clf = OnnxClassifier(args.model, threads=8)
     names = clf.labels
-    ys, ps = [], []
+    ys, ps, srcs = [], [], []
     for ci, cls in enumerate(names):
         files = sorted((root / cls).glob("*.jpg"))
+        srcs += [f.name.split("_", 1)[0] for f in files]
         for i in range(0, len(files), 64):
             batch = [cv2.resize(cv2.imread(str(f)), (clf.size, clf.size), interpolation=cv2.INTER_AREA)
                      for f in files[i:i + 64]]
@@ -60,6 +61,23 @@ def eval_crops(args) -> dict:
             thr = float(civ[k]) if len(civ) else 1.0
             ops[f"fpr_{fpr}"] = {"threshold": round(thr, 4), "police_recall": round(float((pol > thr).mean()), 4)}
         out["police_operating_points"] = ops
+        # at fixed thresholds, the shipped floor among them: police recall, how often a civilian vehicle is called
+        # police by where the crop comes from (bdd = dashcam frames, oc = Open Images photos, cm = Commons
+        # look-alikes, mn = hand-checked dashcam crops), and how often an ambulance or fire engine is
+        src = np.array(srcs)
+        at = {}
+        for thr in (0.8, 0.85, 0.9):
+            row = {"police_recall": round(float((pol >= thr).mean()), 4)}
+            for prefix in sorted(set(src[y == ci])):
+                m = (y == ci) & (src == prefix)
+                row[f"civilian_{prefix}_fpr"] = round(float((p[m, pi] >= thr).mean()), 5)
+                row[f"civilian_{prefix}_n"] = int(m.sum())
+            for other in ("ambulance", "fire"):
+                if other in names:
+                    m = y == names.index(other)
+                    row[f"{other}_as_police"] = round(float((p[m, pi] >= thr).mean()), 4)
+            at[str(thr)] = row
+        out["at_threshold"] = at
         out["confusion"] = {names[a]: {names[b]: int(((y == a) & (pred == b)).sum()) for b in range(len(names))}
                             for a in range(len(names))}
     return out
