@@ -1,0 +1,5 @@
+damp
+dry
+slush
+snow
+wet

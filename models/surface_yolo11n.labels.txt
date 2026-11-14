@@ -1,0 +1,6 @@
+dry
+ice
+slush
+snow
+water
+wet
