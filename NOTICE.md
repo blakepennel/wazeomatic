@@ -7,8 +7,9 @@ things the project is built on or trained with. Those keep their own terms, list
 
 No model weights and no dataset are in this repository or in any release of it. `models/*.onnx` is
 git-ignored; the models are built locally with the documented pipeline
-([models/README.md](models/README.md)). That is deliberate: two of the training sources below do
-not allow a free redistribution of what is derived from them.
+([models/README.md](models/README.md)). That is deliberate: several of the training sources below
+(StarLine, Argoverse 2, BDD100K, Lost and Found) do not allow a free redistribution of what is derived from
+them.
 
 ## Software
 
@@ -33,13 +34,28 @@ Sizes, download locations and how each is used are in [docs/model-research.md](d
 | ROADWork (Ghosh et al., Carnegie Mellon University) | Open Data Commons Attribution 1.0 | Attribution; images it draws from other sources keep their own terms |
 | Argoverse 2 Sensor Dataset (Argo AI) | CC BY-NC-SA 4.0 | **Non-commercial** and share-alike. A model trained on it must not be used commercially. |
 | Potholes Detection (Roboflow Universe export) | CC BY 4.0 | Attribution |
+| Lost and Found (Pinggera et al., IROS 2016; mirror kumuji/lost_and_found) | Research use per the dataset page; the mirror states none | The `debris` class. Treated as research and course use only. |
+
+## Datasets used to train the classifiers
+
+The vehicle classifier (police, ambulance, fire engine), the weather classifier and the road-surface
+classifier ([docs/waze-coverage.md](docs/waze-coverage.md)).
+
+| Dataset | Licence | What that means here |
+|---|---|---|
+| Wikimedia Commons photos of police cars, ambulances, fire engines and look-alike vehicles (`tools/fetch_commons_vehicles.py`) | Per file: CC0, public domain, CC BY or CC BY-SA only; other files are skipped | Attribution per file; author and licence of each photo are written to `meta.jsonl` next to it. Share-alike files make a redistributed dataset CC BY-SA. |
+| Open Images V7 boxes, Ambulance and Deer (`tools/fetch_openimages.py`) | Annotations CC BY 4.0; images CC BY 2.0 as listed by Open Images | Attribution |
+| BDD100K (Yu et al., UC Berkeley), weather attribute via the dronefreak mirrors | BDD100K data licence: educational, research and not-for-profit use; commercial use only for BDD and BAIR Commons members | **Non-commercial.** Used for the weather classes and as civilian-vehicle negatives. |
+| RSCD, Road Surface Condition Dataset (Zhao et al., Tsinghua University), mirror rezzzq/RSCD-1million | MIT on the mirror card | Attribution; cite the original paper |
 
 ## Test footage
 
 Not committed either. `tools/fetch_test_videos.py` downloads two CC0 dashcam clips from Wikimedia
 Commons. The UK Road DashCam clips (aap9002, MIT) and the Argoverse 2 sequences (CC BY-NC-SA 4.0)
 used for the real-footage checks are fetched by hand as described in
-[assets/videos/README.md](assets/videos/README.md).
+[assets/videos/README.md](assets/videos/README.md). The emergency-vehicle clips used to test police and
+crash reporting come from Wikimedia Commons under CC BY / CC BY-SA (`tools/fetch_commons_videos.py`
+records author and licence per clip).
 
 ## Waze
 

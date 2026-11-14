@@ -43,11 +43,25 @@ The macro is started by a broadcast from the detector. The contract is fixed and
 | `HAZARD_ON_ROAD_OBJECT` | Hazard, Object |
 | `HAZARD_SHOULDER_CAR_STOPPED` | Hazard, Car on shoulder |
 | `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype) |
+| `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | Hazard, Broken traffic light |
 | `POLICE` | Police |
+| `POLICE_OTHER_SIDE` | Police, Other side |
 | `CRASH` | Crash |
+| `CRASH_OTHER_SIDE` | Crash, Other side |
+| `TRAFFIC_HEAVY` | Traffic, Heavy |
+| `TRAFFIC_STANDSTILL` | Traffic, Standstill |
+| `WEATHER_FOG` | Bad weather, Fog |
+| `WEATHER_FLOOD` | Bad weather, Flood |
+| `WEATHER_SLIPPERY` | Bad weather, Slippery road |
+| `WEATHER_ICE` | Bad weather, Icy road |
+| `WEATHER_UNPLOWED` | Bad weather, Unplowed road |
+| `BLOCKED_LANE_LEFT` | Blocked lane, Left lane |
+| `BLOCKED_LANE_CENTER` | Blocked lane, Center lane |
+| `BLOCKED_LANE_RIGHT` | Blocked lane, Right lane |
 
-The detector's six model classes (pothole, cone, construction sign, delineator, barricade, worker)
-only ever produce the first two values, so those two branches are the ones that matter first.
+Construction and pothole are the most frequent, then police, so those branches matter first. The
+tiles are tapped by their label; check each label against the installed Waze before enabling a branch
+(the sub-tiles of Traffic, Police, Crash and Bad weather are not confirmed on the real phone yet).
 
 To check the branches, open Waze with the phone connected over adb and run
 

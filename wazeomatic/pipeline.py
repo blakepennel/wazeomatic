@@ -26,6 +26,10 @@ COLORS = {
     "truck": (200, 200, 200),
     "bus": (200, 200, 200),
     "person": (255, 0, 255),
+    "police_vehicle": (255, 80, 0),
+    "ambulance": (255, 255, 255),
+    "fire_truck": (0, 0, 200),
+    "emergency_lights": (255, 0, 160),
 }
 
 
@@ -37,6 +41,8 @@ def draw(frame: np.ndarray, dets: Iterable[Detection], events: Iterable[HazardEv
         y = int((1 - hood_frac) * h)
         cv2.line(out, (0, y), (w, y), (80, 80, 255), 1)
     for d in dets:
+        if d.model == "scene":
+            continue
         cx, cy, bw, bh = d.bbox
         x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
         x2, y2 = int((cx + bw / 2) * w), int((cy + bh / 2) * h)
@@ -65,6 +71,7 @@ class PipelineStats:
     started: float = field(default_factory=time.time)
     ended: str = "running"            # completed | interrupted | error
     held_back: int = 0                # hazards that qualified during another report's cooldown
+    already_reported: int = 0         # hazards Waze already showed nearby (confirmations, nothing sent)
     error: str = ""                   # what stopped the run when ended == "error"
 
     def summary(self) -> dict:
@@ -82,6 +89,7 @@ class PipelineStats:
             "detections": self.detections,
             "events": self.events,
             "held_back": self.held_back,
+            "already_reported": self.already_reported,
             "infer_ms_mean": round(sum(ms) / len(ms), 2) if ms else 0.0,
             "infer_ms_p50": round(pct(ms, 0.5), 2),
             "infer_ms_p90": round(pct(ms, 0.9), 2),
@@ -95,8 +103,13 @@ class PipelineStats:
 class Pipeline:
     def __init__(self, detectors: Sequence[OnnxDetector], manager: ReportManager, sinks: Sequence,
                  show: bool = False, record_path: Optional[str | Path] = None, record_fps: float = 10.0,
-                 on_frame=None, parallel: bool = True, hood: Optional[HoodEstimator] = None):
+                 on_frame=None, parallel: bool = True, hood: Optional[HoodEstimator] = None,
+                 vehicle_classifier=None, scene_classifier=None, scene=None):
         self.detectors = list(detectors)
+        # second stage and scene layer (classifiers.py, scene.py); each is optional
+        self.vehicle_classifier = vehicle_classifier
+        self.scene_classifier = scene_classifier
+        self.scene = scene
         # learns how much of the bottom of the frame is the car itself (dashboard, hood)
         self.hood = hood
         # independent models (hazard, COCO) run side by side; ONNX Runtime releases the GIL
@@ -125,8 +138,19 @@ class Pipeline:
             for det in self.detectors:
                 dets.extend(det(frame.image))
         ms = float(sum(det.last_ms for det in self.detectors))
+        if self.vehicle_classifier is not None:
+            dets.extend(self.vehicle_classifier(frame.image, dets))
+            ms += self.vehicle_classifier.last_ms
+        weather = None
+        if self.scene_classifier is not None:
+            weather = self.scene_classifier(frame.image, frame.ts)
+            ms += self.scene_classifier.last_ms
+        if self.scene is not None:
+            dets.extend(self.scene.update(frame.ts, frame.image, dets, weather))
         if self.hood is not None:
             self.manager.set_hood_frac(self.hood.update(frame.image))
+        if self.scene_classifier is not None and hasattr(self.scene_classifier, "set_hood_frac"):
+            self.scene_classifier.set_hood_frac(self.manager.hood_frac)
         events = self.manager.update(dets, frame_index=frame.index)
         self.stats.latency_ms.append((time.perf_counter() - t0) * 1000.0)
         for ev in events:
@@ -136,12 +160,18 @@ class Pipeline:
         self.stats.detections += len(dets)
         self.stats.events += len(events)
         self.stats.held_back = self.manager.held_back
+        self.stats.already_reported = self.manager.already_reported
         self.stats.infer_ms.append(ms)
         now = time.time()
         self.recent_events += [(now, e) for e in events]
         self.recent_events = [(t, e) for t, e in self.recent_events if now - t < 3.0]
         if self.show or self.record_path or self.on_frame:
             info = f"frame {frame.index}  t={frame.ts:6.1f}s  infer {ms:5.1f} ms  dets {len(dets)}"
+            if self.scene is not None:
+                info += f"  ego {self.scene.state.get('ego', '?')}"
+            waze = getattr(self.manager, "waze", None)
+            if waze is not None and waze.summary():
+                info += "  " + waze.summary()
             vis = draw(frame.image, dets, [e for _, e in self.recent_events], info, hood_frac=self.manager.hood_frac)
             if self.record_path:
                 if self._writer is None:

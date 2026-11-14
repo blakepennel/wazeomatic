@@ -1,0 +1,168 @@
+import numpy as np
+
+from wazeomatic.scene import EgoMotion, EmergencyLights, SceneAnalyzer, SceneConfig, _alternations, lamp_fractions
+from wazeomatic.schema import DEFAULT_CLASS_TO_HAZARD, HAZARD_TYPES, Detection
+
+CAR = (0.5, 0.5, 0.3, 0.3)
+
+
+def frame_with_bar(colour_bgr=None, h=360, w=640):
+    img = np.full((h, w, 3), 90, np.uint8)
+    if colour_bgr is not None:      # a light bar across the top of the car box
+        y1, x1 = int((0.5 - 0.15) * h), int((0.5 - 0.15) * w)
+        img[y1:y1 + 12, x1:x1 + int(0.3 * w)] = colour_bgr
+    return img
+
+
+def test_every_scene_label_maps_to_a_hazard():
+    for label, key in DEFAULT_CLASS_TO_HAZARD.items():
+        assert key in HAZARD_TYPES, label
+
+
+def test_lamp_fractions_colours():
+    f = lamp_fractions(frame_with_bar((255, 40, 0)), CAR, top_frac=0.6)
+    assert f["blue"] > 0.02 and f["red"] == 0
+    f = lamp_fractions(frame_with_bar((0, 0, 255)), CAR, top_frac=0.6)
+    assert f["red"] > 0.02 and f["blue"] == 0
+
+
+def test_alternations():
+    assert _alternations([0, 1, 0, 1, 0, 1], 0.5) == 5
+    assert _alternations([1, 1, 1, 1, 1], 0.1) == 0
+    assert _alternations([0, 0, 1, 1, 1, 1], 0.5) == 1     # brake lights coming on once
+
+
+def test_light_bar_flashing_is_detected_and_brake_lights_are_not():
+    car = [Detection("car", 0.9, CAR)]
+    lights = EmergencyLights()
+    hits = []
+    for i in range(20):        # red / blue alternating at 10 fps
+        img = frame_with_bar((255, 40, 0) if i % 2 else (0, 0, 255))
+        hits += lights.update(i * 0.1, img, car)
+    assert hits and hits[-1].label == "emergency_lights"
+    steady = EmergencyLights()
+    hits = []
+    for i in range(20):
+        hits += steady.update(i * 0.1, frame_with_bar((0, 0, 255)), car)
+    assert hits == []
+
+
+def texture(shift, h=180, w=320):
+    rng = np.random.default_rng(0)
+    base = (rng.random((h, w * 2)) * 255).astype(np.uint8)
+    base = np.repeat(np.repeat(base[::4, ::4], 4, 0), 4, 1)[:h, : w * 2]
+    g = base[:, shift:shift + w]
+    return np.dstack([g, g, g])
+
+
+def test_ego_motion_stationary_vs_moving():
+    still, moving = EgoMotion(), EgoMotion()
+    for i in range(10):
+        still.update(i * 0.1, texture(0), [])
+        moving.update(i * 0.1, texture(i * 6), [])
+    assert still.state(1.0) == "stationary"
+    assert moving.state(1.0) != "stationary"
+    gps = EgoMotion()
+    gps.set_gps_speed(20.0, 0.0)
+    assert gps.state(1.0) == "moving"
+
+
+def run_scene(cfg, frames, dets_fn, weather_fn=None, dt=0.5, image=None):
+    sa = SceneAnalyzer(cfg)
+    labels = []
+    img = texture(0) if image is None else image
+    for i in range(frames):
+        t = i * dt
+        out = sa.update(t, img, dets_fn(t), weather_fn(t) if weather_fn else None)
+        labels.append({d.label for d in out})
+    return labels
+
+
+def queue_ahead(t):
+    return [Detection("car", 0.9, (0.5, 0.55, 0.25, 0.2)), Detection("car", 0.8, (0.2, 0.55, 0.1, 0.1)),
+            Detection("car", 0.8, (0.8, 0.55, 0.1, 0.1))]
+
+
+def test_standstill_after_long_stop():
+    labels = run_scene(SceneConfig(enabled=("traffic",)), 170, queue_ahead)
+    assert "scene_traffic_standstill" not in labels[100]          # 50 s: could be a red light
+    assert "scene_traffic_standstill" in labels[-1]               # 85 s stopped behind a car
+
+
+def test_red_light_vetoes_standstill():
+    def with_red(t):
+        img_dets = queue_ahead(t)
+        return img_dets + [Detection("traffic light", 0.9, (0.5, 0.2, 0.04, 0.14))]
+    sa = SceneAnalyzer(SceneConfig(enabled=("traffic",)))
+    img = texture(0).copy()
+    h, w = img.shape[:2]
+    img[int(0.14 * h):int(0.18 * h), int(0.485 * w):int(0.515 * w)] = (0, 0, 255)    # lit red lamp
+    last = set()
+    for i in range(170):
+        last = {d.label for d in sa.update(i * 0.5, img, with_red(i * 0.5))}
+    assert "scene_traffic_standstill" not in last
+
+
+def test_dark_signals_need_two_heads_and_no_lit_one():
+    two_dark = lambda t: [Detection("traffic light", 0.9, (0.4, 0.2, 0.04, 0.14)),
+                          Detection("traffic light", 0.9, (0.6, 0.2, 0.04, 0.14))]
+    grey = np.full((180, 320, 3), 60, np.uint8)            # unlit housings
+    labels = run_scene(SceneConfig(enabled=("signals",)), 12, two_dark, image=grey)
+    assert "scene_dark_signal" in labels[-1] and "scene_dark_signal" not in labels[3]
+    one_dark = lambda t: two_dark(t)[:1]
+    assert all("scene_dark_signal" not in s
+               for s in run_scene(SceneConfig(enabled=("signals",)), 12, one_dark, image=grey))
+    lit = grey.copy()
+    lit[int(0.14 * 180):int(0.18 * 180), int(0.585 * 320):int(0.615 * 320)] = (0, 200, 0)   # one green lamp
+    assert all("scene_dark_signal" not in s
+               for s in run_scene(SceneConfig(enabled=("signals",)), 12, two_dark, image=lit))
+
+
+def test_blocked_lane_side():
+    def cones(xs):
+        return lambda t: [Detection("cone", 0.8, (x, 0.7, 0.03, 0.06)) for x in xs]
+    right = run_scene(SceneConfig(enabled=("lanes",)), 4, cones([0.55, 0.62, 0.7, 0.78]))
+    assert "scene_lane_right" in right[-1]
+    left = run_scene(SceneConfig(enabled=("lanes",)), 4, cones([0.22, 0.3, 0.38, 0.46]))
+    assert "scene_lane_left" in left[-1]
+    shoulder = run_scene(SceneConfig(enabled=("lanes",)), 4, cones([0.85, 0.9, 0.95]))
+    assert all(not any(lab.startswith("scene_lane") for lab in s) for s in shoulder)
+
+
+def test_weather_needs_hold_time():
+    fog = lambda t: {"clear": 0.05, "fog": 0.95}
+    labels = run_scene(SceneConfig(enabled=("weather",)), 60, lambda t: [], fog)
+    assert "scene_fog" not in labels[20] and "scene_fog" in labels[-1]
+    brief = lambda t: {"fog": 0.95 if t < 5 else 0.0, "clear": 0.05 if t < 5 else 1.0}
+    assert all("scene_fog" not in s for s in run_scene(SceneConfig(enabled=("weather",)), 60, lambda t: [], brief))
+
+
+def test_crash_needs_responders_on_scene():
+    def responders(t):
+        grow = 1 + t * 0.2
+        return [Detection("ambulance", 0.9, (0.6, 0.5, 0.1 * grow, 0.1 * grow), model="vehicle"),
+                Detection("police_vehicle", 0.9, (0.7, 0.5, 0.08 * grow, 0.08 * grow), model="vehicle")]
+    sa = SceneAnalyzer(SceneConfig(enabled=("crash",)))
+    sa.lights.update = lambda t, img, dets: [Detection("emergency_lights", 0.8, d.bbox, model="lights")
+                                             for d in dets if d.label != "car"]
+    out = set()
+    for i in range(12):
+        out = {d.label for d in sa.update(i * 0.5, texture(i * 6), responders(i * 0.5))}
+    assert "scene_crash" in out
+    # police alone at the roadside is a traffic stop: Police, not Crash
+    sb = SceneAnalyzer(SceneConfig(enabled=("crash",)))
+    sb.lights.update = sa.lights.update
+    out = set()
+    for i in range(12):
+        out = {d.label for d in sb.update(i * 0.5, texture(i * 6), responders(i * 0.5)[1:])}
+    assert "scene_crash" not in out
+
+
+def test_slippery_needs_rain_and_wet_road():
+    both = lambda t: {"rain": 0.9, "clear": 0.1, "surface_wet": 0.7, "surface_dry": 0.3}
+    rain_only = lambda t: {"rain": 0.9, "clear": 0.1, "surface_dry": 0.95, "surface_wet": 0.05}
+    wet_only = lambda t: {"clear": 0.95, "rain": 0.05, "surface_wet": 0.9}
+    cfg = SceneConfig(enabled=("weather",))
+    assert "scene_slippery" in run_scene(cfg, 140, lambda t: [], both)[-1]
+    for fn in (rain_only, wet_only):
+        assert all("scene_slippery" not in s for s in run_scene(cfg, 140, lambda t: [], fn))

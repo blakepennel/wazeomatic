@@ -60,15 +60,31 @@ Source file: [diagrams/02_sequence.mmd](diagrams/02_sequence.mmd).
 
 ### hazard_type values
 
-| hazard_type | Waze menu (schema.py) | Sprint 1 |
-|-------------|------------------------|----------|
-| `HAZARD_ON_ROAD_POTHOLE` | Hazard > Pothole | yes |
-| `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction | yes |
-| `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype; Waze removed Animals) | yes |
-| `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder | experimental |
-| `HAZARD_ON_ROAD_OBJECT` | Hazard > Object | not detected yet |
-| `POLICE` | Police | deferred |
-| `CRASH` | Crash | deferred |
+| hazard_type | Waze menu (schema.py) |
+|-------------|------------------------|
+| `HAZARD_ON_ROAD_POTHOLE` | Hazard > Pothole |
+| `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction |
+| `HAZARD_ON_ROAD_OBJECT` | Hazard > Object |
+| `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | Hazard > Broken traffic light |
+| `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder |
+| `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype; Waze removed Animals) |
+| `POLICE` | Police |
+| `POLICE_OTHER_SIDE` | Police > Other side |
+| `CRASH` | Crash |
+| `CRASH_OTHER_SIDE` | Crash > Other side |
+| `TRAFFIC_HEAVY` | Traffic > Heavy |
+| `TRAFFIC_STANDSTILL` | Traffic > Standstill |
+| `WEATHER_FOG` | Bad weather > Fog |
+| `WEATHER_FLOOD` | Bad weather > Flood |
+| `WEATHER_SLIPPERY` | Bad weather > Slippery road |
+| `WEATHER_ICE` | Bad weather > Icy road |
+| `WEATHER_UNPLOWED` | Bad weather > Unplowed road |
+| `BLOCKED_LANE_LEFT` | Blocked lane > Left lane |
+| `BLOCKED_LANE_CENTER` | Blocked lane > Center lane |
+| `BLOCKED_LANE_RIGHT` | Blocked lane > Right lane |
+
+What fires each one, and its default, is in [waze-coverage.md](waze-coverage.md). The keys of sprint 1 are
+unchanged; the macro can add the new branches one at a time, since a key with no branch does nothing.
 
 Since the 2024 redesign the Hazard tile opens a flat list: Construction, Car on shoulder, Broken traffic light, Pothole, Object ([Waze Help](https://support.google.com/waze/answer/13739290?hl=en)). Hazard itself is preselected, so an animal is reported as a plain Hazard. The macro taps by the label the installed Waze shows; the `hazard_type` keys never change.
 

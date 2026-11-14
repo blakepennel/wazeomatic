@@ -30,6 +30,12 @@ from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45}
 
 
+def _scene_cooldowns() -> dict[str, float]:
+    from .scene import SCENE_COOLDOWNS   # scene imports cv2; keep it out of the module import path
+
+    return SCENE_COOLDOWNS
+
+
 def default_label_floor_spec() -> str:
     """The shipped per-label floors as a CLI string (``"pothole=0.45"``): the default value of
     ``--report-class-conf`` so the command-line tools run the same operating point as the phone."""
@@ -52,6 +58,9 @@ class ReportConfig:
     hood_frac: float = 0.10          # ignore boxes whose bottom edge is in the lowest 10 % of the frame
                                      # (the car's own hood / dashboard reflection looks like a pothole)
     cooldown_s: float = 60.0         # per hazard type
+    # longer per-type cooldowns for conditions that last minutes (scene.SCENE_COOLDOWNS): one report per
+    # traffic jam or fog bank, not one a minute for as long as it lasts
+    cooldown_by_hazard: dict[str, float] = field(default_factory=lambda: dict(_scene_cooldowns()))
     global_cooldown_s: float = 60.0  # between any two events. The macro files at most one report a
                                      # minute in total (docs/pipeline-to-macro.md), so anything sent
                                      # sooner would be dropped there unseen; holding it back here
@@ -101,10 +110,15 @@ def _associated(a: tuple, b: tuple, iou_thr: float, grow: float) -> bool:
 
 class ReportManager:
     def __init__(self, config: ReportConfig | None = None, source: str = "sim",
-                 clock: Callable[[], float] | None = None):
+                 clock: Callable[[], float] | None = None, waze=None):
         import time
 
         self.cfg = config or ReportConfig()
+        # read-only view of the Waze screen (waze_reader.WazeAlerts): a hazard Waze already shows nearby is
+        # a confirmation, not a new report
+        self.waze = waze
+        self.already_reported = 0
+        self.confirmations: list[dict] = []
         self.source = source
         self.clock = clock or time.time
         self._tracks: dict[str, _Track] = defaultdict(_Track)
@@ -128,7 +142,7 @@ class ReportManager:
             hazard = self._hazard_for(d)
             if hazard is None or d.confidence < self._min_conf(d.label):
                 continue
-            if self._in_hood_zone(d):
+            if d.model != "scene" and self._in_hood_zone(d):
                 continue
             accepted[hazard].append(d)
             if hazard not in best or d.confidence > best[hazard].confidence:
@@ -147,9 +161,21 @@ class ReportManager:
             hits = self._qualifying_hits(tr)
             if hits is None:
                 continue
-            if now - tr.last_emitted_ts < self.cfg.cooldown_s:
+            if now - tr.last_emitted_ts < self.cfg.cooldown_by_hazard.get(hazard, self.cfg.cooldown_s):
                 continue
             if hazard == "HAZARD_SHOULDER_CAR_STOPPED" and not self._stopped_vehicle_confirmed(tr):
+                continue
+            cover = self.waze.covering(hazard) if self.waze is not None else None
+            if cover is not None:
+                # Waze already shows it: count the agreement, mute the type for a cooldown, send nothing.
+                # The global cooldown is left alone because no report goes out.
+                _, conf, _, label = max(hits, key=lambda h: h[1])
+                self.already_reported += 1
+                self.confirmations.append({"hazard_type": hazard, "confidence": round(conf, 3), "label": label,
+                                           "ts": now, "frame_index": self._frame, "waze": cover.to_dict()})
+                tr.last_emitted_ts = now
+                tr.hits.clear()
+                tr.tracklets.clear()
                 continue
             if now - self._last_global_ts < self.cfg.global_cooldown_s:
                 if hazard not in self._held:

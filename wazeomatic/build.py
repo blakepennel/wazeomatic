@@ -164,3 +164,66 @@ def build_detectors(spec: DetectorSpec) -> list:
         else:
             print(f"[warn] coco model not found at {spec.coco_model}; running without it", file=sys.stderr)
     return out
+
+
+DEFAULT_VEHICLE_MODEL = ROOT / "models" / "vehicle_cls.onnx"
+DEFAULT_WEATHER_MODEL = ROOT / "models" / "weather_cls.onnx"
+DEFAULT_SURFACE_MODEL = ROOT / "models" / "surface_cls.onnx"
+SCENE_FEATURES = ("traffic", "crash", "lanes", "signals", "weather")
+
+
+def add_scene_args(ap) -> None:
+    """Flags for the second stage (vehicle classifier), the weather classifier and the scene rules."""
+    ap.add_argument("--vehicle-model", help=f"police / ambulance / fire classifier for COCO vehicles "
+                                            f"(default {DEFAULT_VEHICLE_MODEL.relative_to(ROOT)} if present)")
+    ap.add_argument("--no-vehicle", action="store_true", help="no vehicle classifier: no police, ambulance, fire")
+    ap.add_argument("--vehicle-crops", type=int, default=4, help="largest vehicles classified per frame")
+    ap.add_argument("--weather-model", help=f"whole-frame weather classifier "
+                                            f"(default {DEFAULT_WEATHER_MODEL.relative_to(ROOT)} if present)")
+    ap.add_argument("--surface-model", help=f"road-surface classifier (default "
+                                            f"{DEFAULT_SURFACE_MODEL.relative_to(ROOT)} if present)")
+    ap.add_argument("--no-weather", action="store_true", help="no weather and no road-surface classifier")
+    ap.add_argument("--no-scene", action="store_true", help="no scene rules (traffic, crash, lanes, signals, weather)")
+    ap.add_argument("--scene-features", default=",".join(SCENE_FEATURES),
+                    help="comma list of scene rules to run: " + ",".join(SCENE_FEATURES))
+    ap.add_argument("--police-other-side", action="store_true",
+                    help="report a police car far on the opposite side as Police > Other side")
+    ap.add_argument("--drive-side", default="right", choices=["right", "left"])
+
+
+def _optional_model(explicit: str | None, default: Path, what: str):
+    if explicit:
+        p = Path(explicit)
+        if not p.exists():
+            raise SystemExit(f"{what} not found: {p} (see models/README.md)")
+        return p
+    if default.exists():
+        return default
+    print(f"[warn] {what} not found at {default}; reports that need it are off", file=sys.stderr)
+    return None
+
+
+def build_second_stage(args):
+    """(vehicle classifier, weather classifier, scene analyzer) from the add_scene_args flags; any may be None."""
+    from .classifiers import RoadSurface, SceneClassifier, SceneClassifiers, VehicleClassifier
+    from .scene import SceneAnalyzer, SceneConfig
+
+    vehicle = weather = scene = None
+    if not getattr(args, "no_vehicle", False) and not getattr(args, "no_coco", False):
+        p = _optional_model(getattr(args, "vehicle_model", None), DEFAULT_VEHICLE_MODEL, "vehicle classifier")
+        if p is not None:
+            vehicle = VehicleClassifier(p, max_crops=getattr(args, "vehicle_crops", 4))
+    if not getattr(args, "no_weather", False):
+        p = _optional_model(getattr(args, "weather_model", None), DEFAULT_WEATHER_MODEL, "weather classifier")
+        q = _optional_model(getattr(args, "surface_model", None), DEFAULT_SURFACE_MODEL, "road-surface classifier")
+        parts = [SceneClassifier(p) if p is not None else None, RoadSurface(q) if q is not None else None]
+        if any(parts):
+            weather = SceneClassifiers(*parts)
+    if not getattr(args, "no_scene", False):
+        feats = tuple(f.strip() for f in str(getattr(args, "scene_features", "")).split(",") if f.strip())
+        unknown = [f for f in feats if f not in SCENE_FEATURES]
+        if unknown:
+            raise SystemExit(f"unknown --scene-features {unknown}; choose from {SCENE_FEATURES}")
+        scene = SceneAnalyzer(SceneConfig(enabled=feats, drive_side=getattr(args, "drive_side", "right"),
+                                          police_other_side=bool(getattr(args, "police_other_side", False))))
+    return vehicle, weather, scene

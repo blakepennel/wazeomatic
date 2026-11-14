@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-from .build import DetectorSpec, add_detector_args, build_detectors
+from .build import DetectorSpec, add_detector_args, add_scene_args, build_detectors, build_second_stage
 from .fusion import parse_class_thresholds
 from .hood import HoodEstimator
 from .pipeline import Pipeline
@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("source", help="video path, or camera index with --camera")
     ap.add_argument("--camera", action="store_true")
     add_detector_args(ap)
+    add_scene_args(ap)
     ap.add_argument("--classes", default=str(ROOT / "configs" / "classes.yaml"))
     ap.add_argument("--prefetch", type=int, default=2, help="frames decoded ahead on a background thread (0 = off)")
     ap.add_argument("--step", type=int, default=3, help="use every Nth frame (30 fps / 3 = 10 inferences/s)")
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "its own DRY_RUN is off too); without it every broadcast carries dry_run=true")
     ap.add_argument("--adb-dry-run", action="store_true",
                     help="accepted for old command lines; dry run is already the default")
+    # read-only Waze screen
+    ap.add_argument("--waze-reader", nargs="?", const="", default=None, metavar="SERIAL",
+                    help="read the Waze (or mock Waze) screen of an adb device, read only, and do not send a "
+                         "hazard Waze already shows nearby; optional device serial")
+    ap.add_argument("--waze-interval", type=float, default=2.0, help="seconds between screen reads")
     # output
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--record", help="write annotated video here")
@@ -95,7 +101,18 @@ def main(argv=None) -> int:
                        track_iou=args.track_iou, track_grow=args.track_grow,
                        cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown, hood_frac=args.hood_frac,
                        class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
-    manager = ReportManager(cfg, source=args.event_source)
+    waze = reader = None
+    if args.waze_reader is not None:
+        from .waze_reader import AdbWazeReader, WazeAlerts
+
+        waze = WazeAlerts()
+        reader = AdbWazeReader(waze, serial=args.waze_reader or None, adb=args.adb, interval_s=args.waze_interval,
+                               on_new=lambda a: print("[waze] " + json.dumps(a.to_dict()), file=sys.stderr)).start()
+    manager = ReportManager(cfg, source=args.event_source, waze=waze)
+    vehicle_clf, weather_clf, scene = build_second_stage(args)
+    for name, part in (("vehicle classifier", vehicle_clf), ("weather classifier", weather_clf)):
+        if part is not None:
+            print(f"[info] {name}: {part.clf.path.name}, {part.clf.labels}", file=sys.stderr)
     hood = None if args.no_auto_hood else HoodEstimator(min_frac=args.hood_frac)
     if args.adb_live and args.adb_dry_run:
         raise SystemExit("--adb-live and --adb-dry-run contradict each other")
@@ -119,8 +136,13 @@ def main(argv=None) -> int:
         source = Prefetch(source, depth=args.prefetch)
 
     pipe = Pipeline(detectors, manager, sinks, show=args.show, record_path=args.record,
-                    record_fps=source.effective_fps, parallel=not args.no_parallel, hood=hood)
+                    record_fps=source.effective_fps, parallel=not args.no_parallel, hood=hood,
+                    vehicle_classifier=vehicle_clf, scene_classifier=weather_clf, scene=scene)
     stats = pipe.run(source)
+    if reader is not None:
+        reader.stop()
+    for c in manager.confirmations:
+        print("[confirmed] " + json.dumps(c), file=sys.stderr)
     source.release()
     summary = stats.summary()
     print("[stats] " + json.dumps(summary), file=sys.stderr)
