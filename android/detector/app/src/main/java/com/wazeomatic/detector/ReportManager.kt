@@ -40,7 +40,7 @@ data class ReportConfig(
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
-val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f)
+val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f)
 
 /** Same values as SCENE_COOLDOWNS in wazeomatic/scene.py (seconds). */
 val SCENE_COOLDOWNS: Map<String, Double> = mapOf(
@@ -202,7 +202,11 @@ class ReportManager(
 
     private fun inHoodZone(d: Detection): Boolean {
         val hood = hoodFrac
-        return hood > 0f && (d.bbox.cy + d.bbox.h / 2f) > (1f - hood)
+        if (hood <= 0f) return false
+        // a police car or ambulance close by reaches the bottom of the frame; only a vehicle box that lies
+        // entirely in the hood zone is the car itself
+        if (d.model == "vehicle") return (d.bbox.cy - d.bbox.h / 2f) > (1f - hood)
+        return (d.bbox.cy + d.bbox.h / 2f) > (1f - hood)
     }
 
     private fun inShoulder(d: Detection): Boolean {

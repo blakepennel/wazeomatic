@@ -27,7 +27,7 @@ from typing import Callable, Iterable, Optional
 from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 
 
-DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45}
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85}
 
 
 def _scene_cooldowns() -> dict[str, float]:
@@ -256,7 +256,13 @@ class ReportManager:
     def _in_hood_zone(self, d: Detection) -> bool:
         cy, h = d.bbox[1], d.bbox[3]
         hood = self.hood_frac
-        return hood > 0 and (cy + h / 2) > (1.0 - hood)
+        if hood <= 0:
+            return False
+        if d.model == "vehicle":
+            # a police car or ambulance close by reaches the bottom of the frame; only a vehicle box that lies
+            # entirely in the hood zone is the car itself
+            return (cy - h / 2) > (1.0 - hood)
+        return (cy + h / 2) > (1.0 - hood)
 
     def _in_shoulder(self, d: Detection) -> bool:
         cx, cy, w, h = d.bbox

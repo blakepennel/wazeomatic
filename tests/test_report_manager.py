@@ -126,13 +126,23 @@ def test_hood_zone_ignored():
     assert len(rm2.update([det("pothole", 0.9, (0.49, 0.88, 0.15, 0.10))])) == 1
 
 
+def test_hood_zone_keeps_close_vehicles():
+    rm, _ = make(window=10, min_hits=1)
+    # a police car beside us reaches the bottom edge of the frame: still a police car
+    close = Detection("police_vehicle", 0.95, (0.7, 0.78, 0.4, 0.43), model="vehicle")
+    assert len(rm.update([close])) == 1
+    # a vehicle box wholly inside the hood zone is our own bonnet
+    rm2, _ = make(window=10, min_hits=1)
+    assert rm2.update([Detection("police_vehicle", 0.95, (0.5, 0.96, 0.4, 0.05), model="vehicle")]) == []
+
+
 def test_default_pothole_floor_is_045():
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import Detection
 
-    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45}
+    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85}
     cfg = ReportConfig(global_cooldown_s=0)
-    assert cfg.min_confidence_by_label == {"pothole": 0.45}
+    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85}
     rm = ReportManager(cfg, clock=lambda: 1000.0)
     weak = Detection("pothole", 0.42, (0.5, 0.5, 0.1, 0.1))
     for i in range(3):

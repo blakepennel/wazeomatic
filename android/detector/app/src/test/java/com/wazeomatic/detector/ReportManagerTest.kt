@@ -172,6 +172,16 @@ class ReportManagerTest {
     }
 
     @Test
+    fun hoodZoneKeepsCloseVehicles() {
+        // a police car beside us reaches the bottom edge of the frame: still a police car
+        val m = rm(ReportConfig(minHits = 1))
+        assertEquals(1, m.update(listOf(Detection("police_vehicle", 0.95f, BBox(0.7f, 0.78f, 0.4f, 0.43f), "vehicle"))).size)
+        // a vehicle box wholly inside the hood zone is our own bonnet
+        val m2 = rm(ReportConfig(minHits = 1))
+        assertTrue(m2.update(listOf(Detection("police_vehicle", 0.95f, BBox(0.5f, 0.96f, 0.4f, 0.05f), "vehicle"))).isEmpty())
+    }
+
+    @Test
     fun trackingRejectsSpatiallyInconsistentHits() {
         val m = rm(ReportConfig(trackIou = 0.3f, globalCooldownS = 0.0))
         val spots = listOf(0.1f to 0.1f, 0.9f to 0.1f, 0.5f to 0.8f)
@@ -297,8 +307,14 @@ class ReportManagerTest {
     }
 
     @Test
+    fun settingsShipTheReportManagerFloors() {
+        // the app builds its ReportConfig from Settings: its default string must carry every shipped floor
+        assertEquals(ReportConfig().minConfidenceByLabel, Settings().reportConfig().minConfidenceByLabel)
+    }
+
+    @Test
     fun defaultPotholeFloorIs045() {
-        assertEquals(mapOf("pothole" to 0.45f), ReportConfig().minConfidenceByLabel)
+        assertEquals(mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f), ReportConfig().minConfidenceByLabel)
         val m = rm(ReportConfig(globalCooldownS = 0.0))
         for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.42f)), frameIndex = i).isEmpty())
         var ev: List<HazardEvent> = emptyList()
