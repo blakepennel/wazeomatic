@@ -209,7 +209,7 @@ are left out.
 | Construction | 85 of 86 work-zone clips reported (recall 0.99); 3 of the 17 clips without a work zone get one (precision 0.97). The v3 model: 81 of 86, the same 3 false |
 | Animal | none (a dog on a walk beside its owner was reported before the pet rule) |
 | Object | none (two false ones before the debris road rules: a vent on a building front and the legs of a man crossing) |
-| Pothole, Broken traffic light, Crash, Traffic | none (Argoverse has no pothole labels, so this only says there was no false one) |
+| Pothole, Broken traffic light, Crash, Traffic | none (Argoverse has no pothole labels, so this only says there was no false one; a real dashcam pothole is in the next section) |
 | Police | 12 of 13, none false (vehicle v8; the table above) |
 
 Construction reports without a labelled work zone, checked by eye: striped delineator posts on the pavement
@@ -226,6 +226,19 @@ camera like a dashcam: with `--data <datasets>/laf_yolo` on 120 frames with an o
 jittered frames each), 66 of 120 obstacles are reported and 8 of the 120 frames without one get a report
 (recall 0.55, precision 0.89). The debris floor of 0.5 is chosen on these frames (0.4: 0.59 / 0.84; 0.6: 0.50 /
 0.92), so they are in-sample for it; how v4 compares with v3 is in [model-research.md](model-research.md#hazard-v4-debris-2026-11-14).
+
+### Pothole on a real dashcam
+
+The pothole numbers in [model-research.md](model-research.md#training-and-evaluation-procedure) come from
+labelled still frames. The one public dashcam video with potholes found so far, `Dashcam-Front.mp4` of the
+Mendeley pothole set (tp95cdvgm8 v1, CC BY 4.0; 34 s, 1080p, a UK residential street, not redistributed here),
+gives **no report** with every rule on (`tools/eval_vehicle.py clips --hazard --step 1`): the pothole is
+missed, and nothing false is reported either. The potholes in it are shallow and small (frames 840-880, in the
+bottom fifth of the picture); the model gives them under 0.3 in the full frame and in the zoom crop. Moving the
+zoom crop down to rows 35-85 % raises the best pothole score in that stretch to 0.65, but every box above the
+0.45 floor is on the painted give-way triangle beside the potholes, not on a pothole, so the crop stays where it
+is. Small UK-style potholes seen from a car are a gap in the training data; footage from the team's own mount
+(sprint 2 item 6) is the planned fix.
 
 ### Weather
 
