@@ -17,7 +17,7 @@ built. Measured against the shipped v3 nano model:
 
 | Criterion | State |
 |---|---|
-| Pothole and cone mAP50 >= 0.5 | Cone 0.51: met. Pothole 0.39: **not met** (box AP50 on the 1,201-image held-out subset, zoom pass on). Pothole event recall is 0.59 at 0.98 precision. |
+| Pothole and cone mAP50 >= 0.5 | Met, in the metric the target was written in (Ultralytics `val`, the whole v3 validation split): the shipped v4 nano has pothole 0.68, cone 0.58. At the detector's 0.25 cut-off on the 1,201-image subset (`tools/eval_events.py`, zoom pass on) the same boxes give pothole 0.38, cone 0.51; pothole event recall there is 0.59 at 0.98 precision ([model-research.md](model-research.md#training-and-evaluation-procedure)). |
 | No more than one false event per test clip | Met: zero events on five hazard-free clips, twelve minutes. Daylight only. |
 | Phone latency under 100 ms per frame | **Unmeasured.** No number exists for the Pixel 9 Pro. |
 
