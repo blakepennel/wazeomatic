@@ -240,6 +240,16 @@ zoom crop down to rows 35-85 % raises the best pothole score in that stretch to 
 is. Small UK-style potholes seen from a car are a gap in the training data; footage from the team's own mount
 (sprint 2 item 6) is the planned fix.
 
+### Animal on a real dashcam
+
+`Metskitsed autoteel.webm` from Wikimedia Commons (CC0; 8 s, 1080p, a dashcam on a snowy forest road in
+Estonia) has a roe deer crossing the road about 20 m ahead for about a second (frames 80-102). With every rule
+on it gives **no report**. COCO has no deer class, and the deer in its winter coat against snow is found in
+1 of 17 frames by the shipped nano (dog 0.70), 2 by yolo11s and 3 by yolo11l (dog 0.54-0.66), short of the 3
+hits in 10 frames a report needs. A bigger COCO model does not close this, so the fix is an animal class trained on
+dashcam frames of deer, elk and moose; until then Animal is reported only for animals the COCO model knows
+when they stay in view, and a deer crossing quickly is likely to be missed.
+
 ### Weather
 
 The weather classifier on 2,425 BDD100K frames held out by file hash (`tools/eval_scene.py`), one frame at a
