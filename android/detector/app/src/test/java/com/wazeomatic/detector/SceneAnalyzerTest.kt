@@ -138,6 +138,39 @@ class SceneAnalyzerTest {
         Detection("car", 0.8f, BBox(0.8f, 0.55f, 0.1f, 0.1f)),
     )
 
+    /** Traffic rules on a scripted speed (the GPS hook sets the ego state); queueAhead in every frame. */
+    private fun runSpeeds(seconds: Double, dt: Double = 0.5, speed: (Int, Double) -> Double): List<Set<String>> {
+        val sa = SceneAnalyzer(SceneConfig(enabled = setOf("traffic")))
+        val img = texture(0)
+        return (0 until (seconds / dt).toInt()).map { i ->
+            val t = i * dt
+            sa.ego.setGpsSpeed(speed(i, t), t)
+            sa.update(t, img, queueAhead(t)).map { it.label }.toSet()
+        }
+    }
+
+    @Test
+    fun standstillSurvivesAFewSlowReadings() {
+        val labels = runSpeeds(85.0) { i, _ -> if (i % 12 == 0) 2.0 else 0.0 }
+        assertTrue("scene_traffic_standstill" in labels.last())
+        val creeping = runSpeeds(85.0) { i, _ -> if (i % 4 == 0) 2.0 else 0.0 }
+        assertFalse(creeping.any { "scene_traffic_standstill" in it })
+    }
+
+    @Test
+    fun freeDrivingThatReadsSlowIsNotHeavyTraffic() {
+        val pattern = List(14) { 3.0 } + List(5) { 10.0 } + listOf(0.0)
+        val labels = runSpeeds(170.0) { i, _ -> pattern[i % pattern.size] }
+        assertFalse(labels.any { "scene_traffic_heavy" in it })
+    }
+
+    @Test
+    fun stopAndGoIsHeavyTraffic() {
+        val labels = runSpeeds(170.0) { _, t -> if (t % 40 < 20) 0.0 else 3.0 }
+        assertTrue("scene_traffic_heavy" in labels.last())
+        assertFalse(labels.any { "scene_traffic_standstill" in it })
+    }
+
     @Test
     fun standstillAfterLongStop() {
         val labels = runScene(SceneConfig(enabled = setOf("traffic")), 170, ::queueAhead)

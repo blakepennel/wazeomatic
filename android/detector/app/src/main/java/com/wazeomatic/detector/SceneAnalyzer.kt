@@ -257,8 +257,11 @@ data class SceneConfig(
     val driveSide: String = "right",            // right-hand traffic (US); "left" mirrors the side rules
     // traffic
     val standstillS: Double = 75.0,
+    val standstillStationaryFrac: Double = 0.9,
+    val standstillMovingMax: Double = 0.01,
     val heavyWindowS: Double = 150.0,
-    val heavySlowFrac: Double = 0.75,
+    val heavySlowFrac: Double = 0.5,
+    val heavyStationaryFrac: Double = 0.3,
     val heavyMinStops: Int = 2,
     val heavyMinVehicles: Double = 3.0,
     val aheadMinArea: Double = 0.015,
@@ -356,16 +359,21 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
 
     private fun traffic(t: Double): List<Detection> {
         if (t - lastRed < cfg.redVetoS) return emptyList()
-        // standstill: every sample of the last standstill_s is stationary and most have a vehicle ahead
+        // the camera-only ego estimate tells stopped from moving but not slow from moving, so both rules lean
+        // on stationary time (scene.py has the numbers)
         val span = hist.filter { t - it.t <= cfg.standstillS }
         if (span.isNotEmpty() && t - span[0].t >= cfg.standstillS * 0.95) {
-            if (span.all { it.ego == "stationary" } && span.count { it.ahead } >= 0.7 * span.size) {
+            val n = span.size
+            if (span.count { it.ego == "stationary" } >= cfg.standstillStationaryFrac * n &&
+                span.count { it.ego == "moving" } <= cfg.standstillMovingMax * n &&
+                span.count { it.ahead } >= 0.7 * n) {
                 return listOf(whole("scene_traffic_standstill", 0.9))
             }
         }
         val win = hist.filter { t - it.t <= cfg.heavyWindowS }
         if (win.isNotEmpty() && t - win[0].t >= cfg.heavyWindowS * 0.95) {
             val slow = win.count { it.ego != "moving" }.toDouble() / win.size
+            val stationary = win.count { it.ego == "stationary" }.toDouble() / win.size
             var stops = 0
             var prev: String? = null
             for (s in win) {
@@ -373,7 +381,8 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
                 prev = s.ego
             }
             val meanVeh = win.sumOf { it.vehicles }.toDouble() / win.size
-            if (slow >= cfg.heavySlowFrac && stops >= cfg.heavyMinStops && meanVeh >= cfg.heavyMinVehicles) {
+            if (slow >= cfg.heavySlowFrac && stationary >= cfg.heavyStationaryFrac &&
+                stops >= cfg.heavyMinStops && meanVeh >= cfg.heavyMinVehicles) {
                 return listOf(whole("scene_traffic_heavy", min(1.0, 0.5 + 0.5 * slow)))
             }
         }

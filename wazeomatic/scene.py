@@ -259,8 +259,12 @@ class SceneConfig:
     drive_side: str = "right"             # right-hand traffic (US); "left" mirrors the side rules
     # traffic
     standstill_s: float = 75.0            # longer than a long red light
+    standstill_stationary_frac: float = 0.9   # share of standstill_s read as stationary
+    standstill_moving_max: float = 0.01       # share read as moving
     heavy_window_s: float = 150.0
-    heavy_slow_frac: float = 0.75         # share of the window spent slow or stopped
+    heavy_slow_frac: float = 0.5          # share of the window read slow or stopped (free city driving reads
+                                          # slow 70 % of the time, so this alone says little)
+    heavy_stationary_frac: float = 0.3    # share read stationary: what separates a jam from free driving
     heavy_min_stops: int = 2              # stop-and-go: separate stops inside the window
     heavy_min_vehicles: float = 3.0       # mean vehicles in view
     ahead_min_area: float = 0.015         # a vehicle "close ahead"
@@ -358,22 +362,30 @@ class SceneAnalyzer:
         if t - self._last_red < cfg.red_veto_s:
             return []
         out = []
-        # standstill: every sample of the last standstill_s is stationary and most have a vehicle ahead
+        # The camera-only ego estimate tells stopped from moving well but not slow from moving (its score stops
+        # rising above about 3 m/s at 5 fps; tools/eval_ego_argoverse.py), so both rules lean on stationary time.
+        # standstill: nearly every sample of the last standstill_s is stationary (a stop reads stationary on
+        # 91-97 % of frames, so "every one" almost never held), hardly any moving, most with a vehicle ahead
         span = [s for s in self._hist if t - s[0] <= cfg.standstill_s]
         if span and t - span[0][0] >= cfg.standstill_s * 0.95:
-            if all(s[1] == "stationary" for s in span) and sum(s[3] for s in span) >= 0.7 * len(span):
+            n = len(span)
+            if (sum(s[1] == "stationary" for s in span) >= cfg.standstill_stationary_frac * n
+                    and sum(s[1] == "moving" for s in span) <= cfg.standstill_moving_max * n
+                    and sum(s[3] for s in span) >= 0.7 * n):
                 out.append(_whole("scene_traffic_standstill", 0.9))
                 return out
         win = [s for s in self._hist if t - s[0] <= cfg.heavy_window_s]
         if win and t - win[0][0] >= cfg.heavy_window_s * 0.95:
             slow = sum(s[1] != "moving" for s in win) / len(win)
+            stationary = sum(s[1] == "stationary" for s in win) / len(win)
             stops, prev = 0, None
             for s in win:
                 if s[1] == "stationary" and prev not in (None, "stationary"):
                     stops += 1
                 prev = s[1]
             mean_veh = sum(s[2] for s in win) / len(win)
-            if slow >= cfg.heavy_slow_frac and stops >= cfg.heavy_min_stops and mean_veh >= cfg.heavy_min_vehicles:
+            if (slow >= cfg.heavy_slow_frac and stationary >= cfg.heavy_stationary_frac
+                    and stops >= cfg.heavy_min_stops and mean_veh >= cfg.heavy_min_vehicles):
                 out.append(_whole("scene_traffic_heavy", min(1.0, 0.5 + 0.5 * slow)))
         return out
 

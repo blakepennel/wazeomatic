@@ -21,8 +21,8 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Police > Other side | `POLICE_OTHER_SIDE` | police box entirely in the far-left 22 % of the frame (right-hand traffic) | off (`--police-other-side`) |
 | Crash | `CRASH` | an ambulance or fire engine, or two kinds of responder, with red / blue flashing lights on them, for 3 s: boxes that grow while we drive towards them, or that stand still while we stand (a responder driving past a waiting car is not a crash); ends as soon as they leave the frame | on |
 | Crash > Other side | `CRASH_OTHER_SIDE` | the same, entirely on the far left | on |
-| Traffic > Standstill | `TRAFFIC_STANDSTILL` | not moving for 75 s behind a vehicle, no red or amber signal seen in the last 20 s | on |
-| Traffic > Heavy | `TRAFFIC_HEAVY` | 150 s mostly slow or stopped, at least two separate stops, three or more vehicles in view, no red signal | on |
+| Traffic > Standstill | `TRAFFIC_STANDSTILL` | 75 s with at least 90 % of frames read as stopped and at most 1 % as moving, behind a vehicle, no red or amber signal seen in the last 20 s | on |
+| Traffic > Heavy | `TRAFFIC_HEAVY` | 150 s with at least 30 % of frames read as stopped and half read slow or stopped, at least two separate stops, three or more vehicles in view, no red signal | on |
 | Bad weather > Fog | `WEATHER_FOG` | weather classifier fog, smoothed, above 0.70 for 20 s | on |
 | Bad weather > Flood | `WEATHER_FLOOD` | road-surface classifier water above 0.85 for 8 s | off: no road-surface model ships (see Measured) |
 | Bad weather > Icy road | `WEATHER_ICE` | road-surface classifier ice above 0.80 for 10 s | off: no road-surface model ships |
@@ -226,6 +226,46 @@ camera like a dashcam: with `--data <datasets>/laf_yolo` on 120 frames with an o
 jittered frames each), 66 of 120 obstacles are reported and 8 of the 120 frames without one get a report
 (recall 0.55, precision 0.89). The debris floor of 0.5 is chosen on these frames (0.4: 0.59 / 0.84; 0.6: 0.50 /
 0.92), so they are in-sample for it; how v4 compares with v3 is in [model-research.md](model-research.md#hazard-v4-debris-2026-11-14).
+
+### Traffic: what the camera can tell about our own speed
+
+Both Traffic reports rest on the camera-only speed estimate (`EgoMotion`; GPS speed replaces it only when
+`use_gps_speed` is on, and it is off by default). Argoverse 2 logs carry the car's true pose, so every frame of
+the 163 held-out clips has a true speed (`tools/eval_ego_argoverse.py --cache runs/cache/argo_h1.jsonl`, 5 fps
+like the phone, first second of each clip and speeds within 0.3 m/s of a cut-off not scored):
+
+| true speed | frames | read stopped | read slow | read moving |
+|---|---|---|---|---|
+| stopped (< 0.8 m/s) | 1,047 | 91.4 % | 8.3 % | 0.3 % |
+| slow (0.8-6 m/s) | 3,482 | 11.2 % | 59.1 % | 29.6 % |
+| moving (> 6 m/s) | 5,216 | 5.5 % | 69.9 % | 24.6 % |
+
+The estimate tells stopped from moving, but not slow from moving: its score stops rising above about 3 m/s
+(median 1.6-1.8 at every speed from 3 to 15 m/s). The rules as first written leaned on exactly that. Replayed on
+150 s windows chained from held-out clips (no red-light veto, so a worst case), the old Heavy rule fired on
+293 of 462 windows of free-flowing traffic (mean true speed above 6 m/s), and the old Standstill rule, which
+wanted every frame of 75 s read as stopped, fired on 1 of 500 75 s windows chained from real stops. Both rules now count stopped time
+instead:
+
+| rule | fires on slow windows (mean < 4 m/s) | on free-flowing windows (> 6 m/s) |
+|---|---|---|
+| Heavy, old (slow share 0.75, two stops) | 241 of 459 | 293 of 462 |
+| Heavy, shipped (also 30 % stopped, slow share 0.5) | 215 of 459 | 1 of 462 |
+| Heavy, old rule on the true speed (what GPS would give) | 430 of 459 | 0 of 462 |
+
+| rule | fires on 75 s of real stops | on 75 s windows of driving |
+|---|---|---|
+| Standstill, old (every frame stopped) | 1 of 500 | 0 of 1,000 |
+| Standstill, shipped (90 % stopped, at most 1 % moving) | 499 of 500 | 0 of 1,000 |
+
+The thresholds were chosen on these windows. The other Argoverse cache (`runs/cache/argoverse.jsonl`, the first 100
+logs, 54 of them also in the held-out half) gives the same picture: old Heavy 311 of 471 free-flowing windows,
+shipped 4 of 471 with 406 of 463 slow ones; shipped Standstill 208 of 500 stop windows (old 68), none on
+driving. The stopped stretches are short (about 3 minutes in all, chained), the windows are made of 15 s clips joined end
+to end, and none of this is a real jam: it measures the speed estimate under the rules, not a Traffic report
+on a real jam, which still needs footage of one. The eight dashcam drives of `assets/videos` (14.6 min)
+give no Traffic report before or after the change. Turning on `use_gps_speed` is the bigger gain where the phone has a
+fix.
 
 ### Pothole on a real dashcam
 

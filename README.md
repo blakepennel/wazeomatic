@@ -148,6 +148,7 @@ The second stage and the scene rules are measured separately, each on data it wa
 | Object on the road | Lost and Found val frames (120 with a small obstacle, 120 without) | recall 0.55, precision 0.89; no report on the 163 held-out Argoverse clips |
 | Blocked lane | 100 Argoverse 2 logs scored against their 3D cone and drum labels | precision 0.77, recall 0.77, side right on 80 % of hits; no false report on 109 logs never used for tuning |
 | Animal, Pothole, Object, Broken traffic light, Crash, Traffic | the same 163 held-out clips (38 min of city driving) | no report |
+| Traffic (speed estimate under the rules) | 163 held-out Argoverse 2 clips with the car's true speed, chained into 150 s and 75 s windows | Heavy: 1 of 462 free-flowing windows (the first rule: 293), 215 of 459 slow ones; Standstill: 499 of 500 windows of real stops ([waze-coverage.md](docs/waze-coverage.md#traffic-what-the-camera-can-tell-about-our-own-speed)) |
 | Pothole, Animal | one real dashcam clip each (UK street with shallow potholes; roe deer crossing a snowy road) | both missed, nothing false reported: the gaps are in the training data ([waze-coverage.md](docs/waze-coverage.md#pothole-on-a-real-dashcam)) |
 | Fog / Slippery road | 2,425 held-out BDD100K frames, one frame at a time | fog threshold met on no clear frame, rain threshold on 1.5 % of clear and 70 % of rainy frames |
 

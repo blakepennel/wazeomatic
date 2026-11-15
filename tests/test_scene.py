@@ -83,6 +83,39 @@ def queue_ahead(t):
             Detection("car", 0.8, (0.8, 0.55, 0.1, 0.1))]
 
 
+def run_speeds(speed_fn, seconds, dt=0.5):
+    """Traffic rules on a scripted speed (the GPS hook sets the ego state); queue_ahead in every frame."""
+    sa = SceneAnalyzer(SceneConfig(enabled=("traffic",)))
+    labels = []
+    for i in range(int(seconds / dt)):
+        t = i * dt
+        sa.ego.set_gps_speed(speed_fn(i, t), t)
+        labels.append({d.label for d in sa.update(t, texture(0), queue_ahead(t))})
+    return labels
+
+
+def test_standstill_survives_a_few_slow_readings():
+    # a real stop reads stationary on 91-97 % of frames; one frame in twelve read slow must not hide it
+    labels = run_speeds(lambda i, t: 2.0 if i % 12 == 0 else 0.0, 85)
+    assert "scene_traffic_standstill" in labels[-1]
+    creeping = run_speeds(lambda i, t: 2.0 if i % 4 == 0 else 0.0, 85)      # a quarter of the time rolling
+    assert not any("scene_traffic_standstill" in s for s in creeping)
+
+
+def test_free_driving_that_reads_slow_is_not_heavy_traffic():
+    # what the camera-only estimate makes of ordinary city driving: mostly "slow", the odd stationary flicker
+    pattern = ["slow"] * 14 + ["moving"] * 5 + ["stationary"]
+    speed = {"slow": 3.0, "moving": 10.0, "stationary": 0.0}
+    labels = run_speeds(lambda i, t: speed[pattern[i % len(pattern)]], 170)
+    assert not any("scene_traffic_heavy" in s for s in labels)
+
+
+def test_stop_and_go_is_heavy_traffic():
+    labels = run_speeds(lambda i, t: 0.0 if t % 40 < 20 else 3.0, 170)        # 20 s stopped, 20 s crawling
+    assert "scene_traffic_heavy" in labels[-1]
+    assert not any("scene_traffic_standstill" in s for s in labels)
+
+
 def test_standstill_after_long_stop():
     labels = run_scene(SceneConfig(enabled=("traffic",)), 170, queue_ahead)
     assert "scene_traffic_standstill" not in labels[100]          # 50 s: could be a red light
