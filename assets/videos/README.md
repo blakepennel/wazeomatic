@@ -21,7 +21,7 @@ table of `docs/model-research.md`.
 
 | File | Source | Licence | Content |
 |------|--------|---------|---------|
-| `uk_dashcam_002_1080p.mp4`, `uk_dashcam_006_1080p.mp4` | [aap9002/UK-Road-DashCam](https://huggingface.co/datasets/aap9002/UK-Road-DashCam), 4K clips converted to 1080p | MIT | Hazard-free real footage, overcast suburban and rural England |
+| `uk_dashcam_002_1080p.mp4`, `uk_dashcam_006_1080p.mp4` | [aap9002/UK-Road-DashCam](https://huggingface.co/datasets/aap9002/UK-Road-DashCam), 4K clips converted to 1080p | MIT | Real footage, overcast suburban and rural England; hazard-free except a row of traffic cones on the right-hand verge of 006 at about 76 s (a Construction report there is correct) |
 | `argo_02678d04_clean.mp4` | Argoverse 2 sensor dataset, one validation log encoded as video | CC BY-NC-SA 4.0 | No hazards labelled |
 | `labelled/argo_2ff4f798_workzone.mp4` | Argoverse 2 sensor dataset, one validation log encoded as video | CC BY-NC-SA 4.0 | A real work zone (cones and barrels) |
 
