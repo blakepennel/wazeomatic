@@ -280,6 +280,20 @@ zoom crop down to rows 35-85 % raises the best pothole score in that stretch to 
 is. Small UK-style potholes seen from a car are a gap in the training data; footage from the team's own mount
 (sprint 2 item 6) is the planned fix.
 
+The other way round, hazard v4 makes one false Pothole report on real footage: 9 s into
+`assets/videos/uk_dashcam_006_1080p.mp4`, on wet asphalt with tyre tracks (scores 0.47-0.63 over about a
+second; v3 reports nothing there). The rest of the 14.6 minutes of dashcam drives give no false Pothole. What the floor
+buys (`tools/eval_events.py --zoom-crop --limit 120 --frames 8 --seed 1`, `runs/eval/pothole_floor_*`):
+
+| pothole floor | pothole event recall (synthetic clips) | precision | false Pothole, 14.6 min of real drives |
+|---|---|---|---|
+| 0.45 (shipped) | 0.56 | 0.99 | 1 |
+| 0.50 | 0.51 | 0.99 | 1 |
+| 0.55 | 0.43 | 0.99 | 0 |
+
+The floor stays at 0.45 until there is more real footage to weigh one false report against 13 points of
+recall; `report_class_conf` (phone) and `--report-class-conf pothole=0.55` (desktop) set it.
+
 ### Animal on a real dashcam
 
 `Metskitsed autoteel.webm` from Wikimedia Commons (CC0; 8 s, 1080p, a dashcam on a snowy forest road in
