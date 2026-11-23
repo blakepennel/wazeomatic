@@ -190,6 +190,8 @@ def add_scene_args(ap) -> None:
                     help="comma list of scene rules to run: " + ",".join(SCENE_FEATURES))
     ap.add_argument("--police-other-side", action="store_true",
                     help="report a police car far on the opposite side as Police > Other side")
+    ap.add_argument("--police-any-motion", action="store_true",
+                    help="report police cars that drive too (by default only one read as standing still counts)")
     ap.add_argument("--drive-side", default="right", choices=["right", "left"])
     ap.add_argument("--camera-geometry", metavar="HFOV,HEIGHT,HORIZON",
                     help="camera geometry for the blocked-lane rule: horizontal field of view in degrees, mount "
@@ -247,5 +249,6 @@ def build_second_stage(args):
         if unknown:
             raise SystemExit(f"unknown --scene-features {unknown}; choose from {SCENE_FEATURES}")
         scene = SceneAnalyzer(SceneConfig(enabled=feats, drive_side=getattr(args, "drive_side", "right"),
-                                          police_other_side=bool(getattr(args, "police_other_side", False)), **geo))
+                                          police_other_side=bool(getattr(args, "police_other_side", False)),
+                                          police_stopped_only=not getattr(args, "police_any_motion", False), **geo))
     return vehicle, weather, scene

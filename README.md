@@ -70,7 +70,7 @@ its thresholds and how well it is measured, is [docs/waze-coverage.md](docs/waze
 | An animal on or near the road | COCO model | Hazard (no animal subtype since 2024) |
 | A stopped car on the right shoulder (off by default) | COCO model + box growth | Hazard › Car on shoulder |
 | Two or more signal heads ahead, none lit | COCO model + lamp check | Hazard › Broken traffic light |
-| A police car | COCO vehicle + vehicle classifier | Police (› Other side, off by default) |
+| A police car standing still | COCO vehicle + vehicle classifier + motion check (optical flow) | Police (› Other side, off by default) |
 | An ambulance or fire engine with flashing lights, at the scene | vehicle classifier + light flicker + ego motion | Crash (› Other side) |
 | Stop-and-go or standing traffic for minutes | ego motion + COCO vehicles | Traffic › Heavy / Standstill |
 | Fog, steady rain | weather classifier | Bad weather › Fog / Slippery road |
@@ -142,7 +142,7 @@ The second stage and the scene rules are measured separately, each on data it wa
 
 | Report | Measured on | Result |
 | --- | --- | --- |
-| Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 12 of 13 police clips reported; no false Police report in the 150 clips without police (the earlier two-model pair: 7 of 13) |
+| Police | 163 held-out Argoverse 2 city clips (38 min), police cars checked by eye | 12 of 13 police clips reported; no false Police report in the 150 clips without police (the earlier two-model pair: 7 of 13). With the standing-still check (Waze's Police is for a police car that stands): all 11 clips with a standing police car that the classifier finds, the one driving police car held back, still none false |
 | Police, Crash | 14.6 min of dashcam drives | 0 false reports (one correct Police report: a parked police car in the work-zone log) |
 | Construction | 163 held-out Argoverse 2 city clips scored against their 3D cone, drum and flagger labels | recall 0.99, precision 0.97 (two of the three false reports are, on review, work zones the labels call bollards) |
 | Object on the road | Lost and Found val frames (120 with a small obstacle, 120 without) | recall 0.55, precision 0.89; no report on the 163 held-out Argoverse clips |

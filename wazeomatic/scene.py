@@ -275,6 +275,7 @@ class SceneConfig:
     crash_max_shift: float = 0.5       # standing still: box centre moves less than this many box widths
     other_side_x: float = 0.22            # emergency scene entirely left of this (right-hand traffic)
     police_other_side: bool = False       # relabel far-side police as Police > Other side (opt in)
+    police_stopped_only: bool = True      # Police only for a police car that stands (motion.PoliceMotion)
     # lanes
     lane_min_objects: int = 3
     lane_window_s: float = 3.0
@@ -306,6 +307,10 @@ class SceneAnalyzer:
         self.cfg = cfg or SceneConfig()
         self.ego = EgoMotion()
         self.lights = EmergencyLights()
+        self.motion = None
+        if self.cfg.police_stopped_only:
+            from .motion import MotionConfig, PoliceMotion
+            self.motion = PoliceMotion(MotionConfig(horizon_y=self.cfg.horizon_y, drive_side=self.cfg.drive_side))
         self._hist: deque = deque()            # (t, ego state, n vehicles, vehicle close ahead)
         self._last_red = -1e9
         self._emergency: deque = deque()       # (t, label, bbox, lights)
@@ -355,6 +360,15 @@ class SceneAnalyzer:
         if cfg.police_other_side:
             out += self._police_side(dets)
         return out
+
+    def gate_police(self, t: float, img: np.ndarray, dets: Sequence[Detection], hood_frac: float = 0.0
+                    ) -> list[Detection]:
+        """After ``update``: police boxes of cars not read as standing still are relabelled so that no Police
+        report counts them (Waze's Police report is for a police car that stands). The crash rule has already
+        seen them as they were."""
+        if self.motion is None:
+            return list(dets)
+        return self.motion.update(t, img, dets, str(self.state.get("ego", "moving")), hood_frac)
 
     # --------------------------------------------------------------------------- traffic
     def _traffic(self, t: float) -> list[Detection]:

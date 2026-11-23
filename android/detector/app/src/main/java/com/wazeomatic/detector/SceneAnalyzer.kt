@@ -272,6 +272,7 @@ data class SceneConfig(
     val crashMaxShift: Double = 0.5,      // standing still: box centre moves less than this many box widths
     val otherSideX: Double = 0.22,
     val policeOtherSide: Boolean = false,
+    val policeStoppedOnly: Boolean = true,  // Police only for a police car that stands (PoliceMotion)
     // lanes
     val laneMinObjects: Int = 3,
     val laneWindowS: Double = 3.0,
@@ -304,6 +305,8 @@ data class SceneConfig(
 class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     val ego = EgoMotion()
     var lights: EmergencyLights = EmergencyLights()
+    val motion: PoliceMotion? = if (cfg.policeStoppedOnly)
+        PoliceMotion(MotionConfig(horizonY = cfg.horizonY, driveSide = cfg.driveSide)) else null
 
     private class Sample(val t: Double, val ego: String, val vehicles: Int, val ahead: Boolean)
     private class Emergency(val t: Double, val label: String, val bbox: BBox, val lit: Boolean)
@@ -327,6 +330,15 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         private set
 
     val weather: Map<String, Double> get() = LinkedHashMap(weatherEma)
+
+    /**
+     * After [update]: police boxes of cars not read as standing still are relabelled so that no Police report
+     * counts them (Waze's Police report is for a police car that stands). The crash rule has seen them as they were.
+     */
+    fun gatePolice(t: Double, img: RgbImage, dets: List<Detection>, hoodFrac: Double = 0.0): List<Detection> {
+        val m = motion ?: return dets
+        return m.update(t, img, dets, (state["ego"] as? String) ?: "moving", hoodFrac)
+    }
 
     /** Extra detections for one frame: emergency_lights boxes and scene_* labels. */
     fun update(t: Double, img: RgbImage, dets: List<Detection>, weather: Map<String, Float>? = null): List<Detection> {

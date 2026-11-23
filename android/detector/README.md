@@ -113,6 +113,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `weather` | true | weather (whole frame) and road-surface (patch of road ahead) classifiers, twice a second (`--no-weather`) |
 | `scene_features` | traffic,crash,lanes,signals,weather | scene rules to run, a comma list like `--scene-features`; `none` switches the scene layer off (`--no-scene`), an empty list keeps only ego motion and the emergency-light check |
 | `police_other_side` | false | a police car far on the opposite side becomes Police > Other side (`--police-other-side`) |
+| `police_stopped_only` | true | Police only for a police car read as standing still (`PoliceMotion`, optical flow); false reports moving ones too (`--police-any-motion`) |
 | `drive_side` | right | `left` mirrors the side rules for left-hand traffic (`--drive-side`) |
 | `camera_geometry` | 70,1.3,0.5 | horizontal field of view (degrees), mount height (metres) and horizon row (fraction of the height) for the flat-road camera model of the blocked-lane rule and a top-view road-surface model (`--camera-geometry`); a malformed value falls back to the default |
 | `use_gps_speed` | false | camera source: feed the GPS speed into the stopped / moving estimate. Only with this on does the app ask for location; the speed is used on the phone and no position is stored or sent |

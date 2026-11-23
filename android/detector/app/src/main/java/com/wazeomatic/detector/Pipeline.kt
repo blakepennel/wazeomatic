@@ -207,6 +207,9 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             scene?.let { s ->
                 val t0 = System.nanoTime()
                 dets.addAll(s.update(ts, img, dets, weather))
+                val gated = s.gatePolice(ts, img, dets, reportManager.hoodFrac.toDouble())
+                dets.clear()
+                dets.addAll(gated)
                 lat["scene"] = (System.nanoTime() - t0) / 1e6
             }
         } catch (e: Exception) {

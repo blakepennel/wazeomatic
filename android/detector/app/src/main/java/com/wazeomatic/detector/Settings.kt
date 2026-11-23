@@ -45,6 +45,7 @@ data class Settings(
     val weather: Boolean = true,            // weather + road-surface classifiers (weather_cls / surface_cls.onnx)
     val sceneFeatures: String = SceneLabels.FEATURES.joinToString(","), // scene rules, like --scene-features; "none" = no scene layer
     val policeOtherSide: Boolean = false,   // report a police car far on the opposite side as Police > Other side
+    val policeStoppedOnly: Boolean = true,  // Police only for a police car read as standing still (PoliceMotion)
     val driveSide: String = "right",        // right | left (which side the far carriageway is on)
     val useGpsSpeed: Boolean = false,       // feed the GPS speed into the ego-motion estimate (asks for location)
     val cameraGeometry: String = "70,1.3,0.5", // HFOV deg, mount height m, horizon row (fraction), like --camera-geometry
@@ -61,6 +62,7 @@ data class Settings(
             enabled = SceneConfig.parseFeatures(raw),
             driveSide = if (driveSide == "left") "left" else "right",
             policeOtherSide = policeOtherSide,
+            policeStoppedOnly = policeStoppedOnly,
             hfovDeg = g[0],
             camHeightM = g[1],
             horizonY = g[2],
@@ -127,6 +129,7 @@ data class Settings(
             .putBoolean("weather", weather)
             .putString("scene_features", sceneFeatures)
             .putBoolean("police_other_side", policeOtherSide)
+            .putBoolean("police_stopped_only", policeStoppedOnly)
             .putString("drive_side", driveSide)
             .putBoolean("use_gps_speed", useGpsSpeed)
             .putString("camera_geometry", cameraGeometry)
@@ -180,6 +183,7 @@ data class Settings(
             weather = z("weather", weather),
             sceneFeatures = str("scene_features") ?: sceneFeatures,
             policeOtherSide = z("police_other_side", policeOtherSide),
+            policeStoppedOnly = z("police_stopped_only", policeStoppedOnly),
             driveSide = str("drive_side")?.trim()?.lowercase() ?: driveSide,
             useGpsSpeed = z("use_gps_speed", useGpsSpeed),
             cameraGeometry = str("camera_geometry")?.trim() ?: cameraGeometry,
@@ -193,7 +197,7 @@ data class Settings(
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
             "zoom_coco", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
-            "scene_features", "police_other_side", "drive_side", "use_gps_speed", "camera_geometry",
+            "scene_features", "police_other_side", "police_stopped_only", "drive_side", "use_gps_speed", "camera_geometry",
         )
 
         /** "70,1.3,0.5" -> [hfov, height, horizon], or null unless all three are numbers in a sane range. */
@@ -256,6 +260,7 @@ data class Settings(
                 weather = p.getBoolean("weather", d.weather),
                 sceneFeatures = p.getString("scene_features", d.sceneFeatures) ?: d.sceneFeatures,
                 policeOtherSide = p.getBoolean("police_other_side", d.policeOtherSide),
+                policeStoppedOnly = p.getBoolean("police_stopped_only", d.policeStoppedOnly),
                 driveSide = p.getString("drive_side", d.driveSide) ?: d.driveSide,
                 useGpsSpeed = p.getBoolean("use_gps_speed", d.useGpsSpeed),
                 cameraGeometry = p.getString("camera_geometry", d.cameraGeometry) ?: d.cameraGeometry,
