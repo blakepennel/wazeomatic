@@ -219,6 +219,10 @@ class EgoMotion:
     def set_gps_speed(self, mps: Optional[float], t: float) -> None:
         self.gps_mps, self._gps_t = mps, t
 
+    def gps_speed(self, t: float) -> Optional[float]:
+        """The GPS speed (m/s) when the last fix is under 5 s old, else None."""
+        return self.gps_mps if self.gps_mps is not None and t - self._gps_t < 5.0 else None
+
     @classmethod
     def grey_small(cls, img: np.ndarray) -> np.ndarray:
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
@@ -245,8 +249,8 @@ class EgoMotion:
 
     def state(self, t: float) -> str:
         """stationary | slow | moving"""
-        if self.gps_mps is not None and t - self._gps_t < 5.0:
-            v = self.gps_mps
+        v = self.gps_speed(t)
+        if v is not None:
             return "stationary" if v < self.stationary_mps else "slow" if v < self.slow_mps else "moving"
         f = self.flow
         return "stationary" if f < self.stationary_thr else "slow" if f < self.slow_thr else "moving"
@@ -273,9 +277,17 @@ class SceneConfig:
     crash_hold_s: float = 3.0
     crash_window_s: float = 10.0
     crash_max_shift: float = 0.5       # standing still: box centre moves less than this many box widths
-    other_side_x: float = 0.22            # emergency scene entirely left of this (right-hand traffic)
+    # the other side of the road: where the box meets the road lies this far to the left of the camera (right in
+    # left-hand traffic). On the Argoverse 2 lane maps (tools/eval_road_side.py, vehicle boxes 8-60 m ahead) 4 m
+    # is right on 0.86 of the boxes it calls and finds 0.54 of those truly on the other side; the old rule (the
+    # whole box in the left 22 % of the frame) 0.83 and 0.25. 3 m finds 0.70 at 0.81
+    other_side_m: float = 4.0
     police_other_side: bool = False       # relabel far-side police as Police > Other side (opt in)
     police_stopped_only: bool = True      # Police only for a police car that stands (motion.PoliceMotion)
+    # Hazard > Car on shoulder (shoulder.ShoulderCars): a vehicle standing beside the road on our side while we
+    # drive above 50 km/h (GPS, or the camera's own speed without GPS). Off by default: unmeasured on a highway
+    shoulder_cars: bool = False
+    shoulder_camera_speed: bool = True    # without GPS, open the fast-road condition on the camera speed
     # lanes
     lane_min_objects: int = 3
     lane_window_s: float = 3.0
@@ -311,6 +323,12 @@ class SceneAnalyzer:
         if self.cfg.police_stopped_only:
             from .motion import MotionConfig, PoliceMotion
             self.motion = PoliceMotion(MotionConfig(horizon_y=self.cfg.horizon_y, drive_side=self.cfg.drive_side))
+        self.shoulder = None
+        if self.cfg.shoulder_cars:
+            from .shoulder import ShoulderCars, ShoulderConfig
+            self.shoulder = ShoulderCars(ShoulderConfig(camera_speed=self.cfg.shoulder_camera_speed),
+                                         horizon_y=self.cfg.horizon_y, hfov_deg=self.cfg.hfov_deg,
+                                         cam_height_m=self.cfg.cam_height_m, drive_side=self.cfg.drive_side)
         self._hist: deque = deque()            # (t, ego state, n vehicles, vehicle close ahead)
         self._last_red = -1e9
         self._emergency: deque = deque()       # (t, label, bbox, lights)
@@ -348,7 +366,7 @@ class SceneAnalyzer:
         if "traffic" in cfg.enabled:
             out += self._traffic(t)
         if "crash" in cfg.enabled:
-            out += self._crash(t, dets, lights, ego)
+            out += self._crash(t, dets, lights, ego, w / h)
         if "lanes" in cfg.enabled:
             out += self._lanes(t, dets, w / h)
         if "signals" in cfg.enabled:
@@ -358,7 +376,7 @@ class SceneAnalyzer:
         if "weather" in cfg.enabled:
             out += self._weather_labels(t)
         if cfg.police_other_side:
-            out += self._police_side(dets)
+            out += self._police_side(dets, w / h)
         return out
 
     def gate_police(self, t: float, img: np.ndarray, dets: Sequence[Detection], hood_frac: float = 0.0
@@ -369,6 +387,27 @@ class SceneAnalyzer:
         if self.motion is None:
             return list(dets)
         return self.motion.update(t, img, dets, str(self.state.get("ego", "moving")), hood_frac)
+
+    def shoulder_cars(self, t: float, img: np.ndarray, dets: Sequence[Detection], hood_frac: float = 0.0
+                      ) -> list[Detection]:
+        """After ``update``: ``scene_car_on_shoulder`` boxes (``shoulder.ShoulderCars``), none when it is off."""
+        if self.shoulder is None:
+            return []
+        gps = self.ego.gps_speed(t)
+        out = self.shoulder.update(t, img, dets, str(self.state.get("ego", "moving")), gps_mps=gps,
+                                   gps_fresh=gps is not None, hood_frac=hood_frac)
+        self.state["fast_road"] = self.shoulder.highway
+        if self.shoulder.speed is not None:
+            self.state["speed"] = round(self.shoulder.speed, 1)
+        return out
+
+    def other_side(self, bbox, aspect: float) -> bool:
+        """The box meets the road at least ``other_side_m`` across the centre line from us (left in right-hand
+        traffic); False when it meets it at or above the horizon."""
+        g = self.ground_point(bbox, aspect)
+        if g is None:
+            return False
+        return (-g[1] if self.cfg.drive_side == "right" else g[1]) >= self.cfg.other_side_m
 
     # --------------------------------------------------------------------------- traffic
     def _traffic(self, t: float) -> list[Detection]:
@@ -404,7 +443,8 @@ class SceneAnalyzer:
         return out
 
     # --------------------------------------------------------------------------- crash
-    def _crash(self, t: float, dets: Sequence[Detection], lights: Sequence[Detection], ego: str) -> list[Detection]:
+    def _crash(self, t: float, dets: Sequence[Detection], lights: Sequence[Detection], ego: str,
+               aspect: float = 16 / 9) -> list[Detection]:
         cfg = self.cfg
         # the vehicle classifier scores every class on a box; a box is one responder, of its best class
         best: dict[tuple, Detection] = {}
@@ -443,21 +483,14 @@ class SceneAnalyzer:
         responders = (heavy >= 3 and lit >= 2) or (len(kinds) >= 2 and lit >= 2)
         if not (responders and on_scene):
             return []
-        xs = [e[2][0] + (e[2][2] / 2 if cfg.drive_side == "right" else -e[2][2] / 2) for e in self._emergency]
-        far = all(x < cfg.other_side_x for x in xs) if cfg.drive_side == "right" else \
-            all(x > 1 - cfg.other_side_x for x in xs)
+        far = all(self.other_side(e[2], aspect) for e in self._emergency)
         conf = min(1.0, 0.55 + 0.05 * lit + 0.05 * heavy)
         return [_whole("scene_crash_other_side" if far else "scene_crash", conf)]
 
-    def _police_side(self, dets: Sequence[Detection]) -> list[Detection]:
-        cfg, out = self.cfg, []
+    def _police_side(self, dets: Sequence[Detection], aspect: float = 16 / 9) -> list[Detection]:
+        out = []
         for d in dets:
-            if d.label != "police_vehicle":
-                continue
-            right_edge = d.bbox[0] + d.bbox[2] / 2
-            left_edge = d.bbox[0] - d.bbox[2] / 2
-            far = right_edge < cfg.other_side_x if cfg.drive_side == "right" else left_edge > 1 - cfg.other_side_x
-            if far:
+            if d.label == "police_vehicle" and self.other_side(d.bbox, aspect):
                 out.append(Detection("scene_police_other_side", d.confidence, d.bbox, model="scene"))
         return out
 

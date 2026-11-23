@@ -148,6 +148,7 @@ class Pipeline:
         if self.scene is not None:
             dets.extend(self.scene.update(frame.ts, frame.image, dets, weather))
             dets = self.scene.gate_police(frame.ts, frame.image, dets, self.manager.hood_frac)
+            dets.extend(self.scene.shoulder_cars(frame.ts, frame.image, dets, self.manager.hood_frac))
         if self.hood is not None:
             self.manager.set_hood_frac(self.hood.update(frame.image))
         if self.scene_classifier is not None and hasattr(self.scene_classifier, "set_hood_frac"):

@@ -139,7 +139,10 @@ class _Track:
         return self.boxes[-1][1]
 
 
-class PoliceMotion:
+class StandingTracker:
+    """Follows a chosen set of vehicle boxes from frame to frame and reads each as pending, stopped or moving
+    (the method in the module docstring). ``PoliceMotion`` and ``shoulder.ShoulderCars`` use it."""
+
     def __init__(self, cfg: MotionConfig | None = None):
         self.cfg = cfg or MotionConfig()
         self._prev: Optional[np.ndarray] = None
@@ -148,9 +151,11 @@ class PoliceMotion:
         self.last_road: Optional[tuple[float, float, float, float]] = None   # A, B, shift x, shift y
         self.last_tracks: list[_Track] = []
 
-    def update(self, t: float, img: np.ndarray, dets: Sequence[Detection], ego_state: str,
-               hood_frac: float = 0.0) -> list[Detection]:
-        """Returns ``dets`` with the police boxes of pending and moving tracks relabelled."""
+    def states(self, t: float, img: np.ndarray, dets: Sequence[Detection], targets: Sequence[Detection],
+               ego_state: str, hood_frac: float = 0.0, force_road: bool = False) -> list[_Track]:
+        """One frame: the track of each of ``targets`` (boxes out of ``dets``), with its state. Call it on every
+        frame, with no targets when there are none, so the frame-to-frame flow has the previous frame.
+        ``force_road`` fits the road (``last_road``) even when no target needs it."""
         cfg = self.cfg
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
         h = int(round(g.shape[0] * cfg.width / g.shape[1]))
@@ -159,14 +164,16 @@ class PoliceMotion:
         self._prev, self._prev_t = g, t
         self._tracks = [tr for tr in self._tracks if t - tr.last_t <= cfg.track_gap_s]
 
-        # police boxes, best score per box (the classifier may emit several classes on one box)
-        police = [d for d in dets if d.label == POLICE and d.confidence >= cfg.track_min_conf]
-        if not police:
-            self.last_tracks = []
-            return list(dets)
+        police = list(targets)
         stationary = ego_state == "stationary"
         h, w = g.shape
         dt = t - prev_t
+        road = None
+        if force_road and prev is not None and dt > 0 and not stationary:
+            road = self._road(prev, g, dets, dt, hood_frac) or False
+        if not police:
+            self.last_tracks = []
+            return []
         # where each track seen in the last frame should be now: its own corners followed with LK (a near car
         # moves a box width between frames at 5 fps, so the last box alone links poorly)
         follow, pred = {}, {}
@@ -192,7 +199,6 @@ class PoliceMotion:
                 continue
             assigned[k] = self._tracks[n]
             taken.add(n)
-        road = None
         for k, d in enumerate(police):
             tr = assigned.get(k)
             if tr is None:
@@ -215,18 +221,8 @@ class PoliceMotion:
             self._decide(tr)
 
         self.last_tracks = [assigned[k] for k in range(len(police))]     # for evaluation tools
-        out = []
-        index = {id(d): k for k, d in enumerate(police)}
-        held = {tuple(d.bbox): assigned[k].state for k, d in enumerate(police) if assigned[k].state != "stopped"}
-        for d in dets:
-            k = index.get(id(d))
-            state = assigned[k].state if k is not None else held.get(tuple(d.bbox)) if d.label == OTHER_SIDE else None
-            if state is None or state == "stopped":
-                out.append(d)
-            else:
-                tag = "_moving" if state == "moving" else "_pending"
-                out.append(Detection(label=d.label + tag, confidence=d.confidence, bbox=d.bbox, model=d.model))
-        return out
+        return self.last_tracks
+
 
     # ------------------------------------------------------------------------------------------- regimes
     def _still_check(self, tr: _Track, t: float) -> None:
@@ -324,6 +320,29 @@ class PoliceMotion:
         if spread is None:
             return None
         return resid, spread / dt / e
+
+
+class PoliceMotion(StandingTracker):
+    """Relabels the police boxes of cars not read as standing (``police_vehicle_pending`` / ``_moving``)."""
+
+    def update(self, t: float, img: np.ndarray, dets: Sequence[Detection], ego_state: str,
+               hood_frac: float = 0.0) -> list[Detection]:
+        """Returns ``dets`` with the police boxes of pending and moving tracks relabelled."""
+        police = [d for d in dets if d.label == POLICE and d.confidence >= self.cfg.track_min_conf]
+        tracks = self.states(t, img, dets, police, ego_state, hood_frac)
+        assigned = dict(enumerate(tracks))
+        out = []
+        index = {id(d): k for k, d in enumerate(police)}
+        held = {tuple(d.bbox): assigned[k].state for k, d in enumerate(police) if assigned[k].state != "stopped"}
+        for d in dets:
+            k = index.get(id(d))
+            state = assigned[k].state if k is not None else held.get(tuple(d.bbox)) if d.label == OTHER_SIDE else None
+            if state is None or state == "stopped":
+                out.append(d)
+            else:
+                tag = "_moving" if state == "moving" else "_pending"
+                out.append(Detection(label=d.label + tag, confidence=d.confidence, bbox=d.bbox, model=d.model))
+        return out
 
 
 def _spread(pa: np.ndarray, pb: np.ndarray, min_dx: float = 8.0, min_pairs: int = 10) -> Optional[float]:

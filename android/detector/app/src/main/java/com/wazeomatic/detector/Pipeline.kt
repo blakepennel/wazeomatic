@@ -210,6 +210,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
                 val gated = s.gatePolice(ts, img, dets, reportManager.hoodFrac.toDouble())
                 dets.clear()
                 dets.addAll(gated)
+                dets.addAll(s.shoulderCars(ts, img, dets, reportManager.hoodFrac.toDouble()))
                 lat["scene"] = (System.nanoTime() - t0) / 1e6
             }
         } catch (e: Exception) {

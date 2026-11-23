@@ -79,7 +79,8 @@ object Schema {
         "scene_lane_center" to "BLOCKED_LANE_CENTER",
         "scene_lane_right" to "BLOCKED_LANE_RIGHT",
         "scene_dark_signal" to "HAZARD_ON_ROAD_TRAFFIC_LIGHT",
-        // car/truck/bus only become a hazard through the stopped-vehicle heuristic
+        "scene_car_on_shoulder" to "HAZARD_SHOULDER_CAR_STOPPED",
+        // car/truck/bus are not mapped: a vehicle becomes Car on shoulder only through ShoulderCars
     )
 }
 

@@ -59,7 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--hood-frac", type=float, default=0.10, help="minimum hood/dashboard zone (fraction of height)")
     ap.add_argument("--no-auto-hood", action="store_true",
                     help="do not grow the hood zone from the static bottom rows of the video (wazeomatic/hood.py)")
-    ap.add_argument("--stopped-vehicle", action="store_true", help="enable experimental shoulder heuristic")
     ap.add_argument("--event-source", default="sim", choices=["sim", "pi", "phone"])
     # sinks
     ap.add_argument("--sink", action="append", default=[],
@@ -100,7 +99,7 @@ def main(argv=None) -> int:
                        min_confidence_by_label=parse_class_thresholds(args.report_class_conf),
                        track_iou=args.track_iou, track_grow=args.track_grow,
                        cooldown_s=args.cooldown, global_cooldown_s=args.global_cooldown, hood_frac=args.hood_frac,
-                       class_to_hazard=class_to_hazard, stopped_vehicle_enabled=args.stopped_vehicle)
+                       class_to_hazard=class_to_hazard)
     if getattr(args, "camera_geometry", None):
         cfg.road_top = float(args.camera_geometry.split(",")[2]) - 0.15     # debris must lie below the horizon
     waze = reader = None

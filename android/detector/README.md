@@ -92,7 +92,8 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `conf` | 0.40 | report min confidence (detector box threshold is min(0.35, conf), the desktop default) |
 | `cooldown` / `global_cooldown` | 60 / 60 | seconds per hazard type / between any two events; the second matches the macro, which files at most one report a minute, so a held-back hazard is counted here (`heldBack`) instead of vanishing there |
 | `min_hits` / `window` | 3 / 10 | persistence rule; Police needs 2 hits whatever `min_hits` says (`DEFAULT_MIN_HITS_BY_HAZARD` in `ReportManager.kt`) |
-| `stopped_vehicle` | false | experimental parked-car heuristic |
+| `shoulder_cars` | false | Hazard > Car on shoulder: a car, truck or bus standing beside the road on our side while we drive above 50 km/h (`ShoulderCars.kt`) |
+| `shoulder_camera_speed` | true | without a GPS speed, the camera's own speed estimate may open the 50 km/h condition (it reads about 0.87 of the true speed) |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
 | `zoom_coco` | false | also run the zoom pass on the COCO model (`--zoom-coco` on the desktop); off by default, the second pass is for the hazard model(s) |

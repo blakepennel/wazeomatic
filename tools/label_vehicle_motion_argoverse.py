@@ -15,6 +15,13 @@ Our own speed comes from the ego pose the same way.
 One JSON line per matched box: clip, frame time, detector box, label, confidence, track id, the track's ground
 speed (m/s), our speed (m/s) and the cuboid's distance ahead of the camera (m). Boxes without a matching cuboid
 (parked cars beyond the labelled range, false boxes) are left out.
+
+Where the log's vector map is on disk (``tools/fetch_argoverse_hazards.py --stage maps``) each line also says
+where the vehicle is on the road: ``in_lane`` (its centre lies in a vehicle, bus or bike lane segment; a car
+parked at the kerb or on a shoulder lies beside them) and ``side``, the direction of the nearest lane against
+ours: ``ours`` (within 45 degrees), ``other`` (the opposite carriageway), ``cross`` (a side street) or null (no
+lane within 8 m). ``lat_m`` is the cuboid centre's offset to our left (m, ego frame) and ``yaw`` its heading
+against ours (degrees).
 """
 from __future__ import annotations
 
@@ -61,6 +68,39 @@ def speed_at(ts: np.ndarray, xy: np.ndarray, t: float, half: float = 0.5) -> flo
     return float(np.linalg.norm(pb - pa) / (b - a))
 
 
+def _inside(poly: np.ndarray, x: float, y: float) -> bool:
+    """Point in polygon (ray casting), poly an (N, 2+) array of vertices."""
+    px, py = poly[:, 0], poly[:, 1]
+    qx, qy = np.roll(px, -1), np.roll(py, -1)
+    cross = (py > y) != (qy > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xs = px + (y - py) * (qx - px) / (qy - py)
+    return bool(np.count_nonzero(cross & (x < xs)) % 2)
+
+
+def road_context(avm, xy: np.ndarray, heading: np.ndarray) -> tuple[bool, str | None]:
+    """(in a lane, side of the road) of a city-frame point, against our heading (unit vector)."""
+    lanes = avm.get_nearby_lane_segments(xy, 8.0)
+    if not lanes:
+        return False, None
+    in_lane = any(_inside(ls.polygon_boundary, xy[0], xy[1]) for ls in lanes)
+    best, tangent = 1e9, None
+    for ls in lanes:
+        c = avm.get_lane_segment_centerline(ls.id)[:, :2]
+        if len(c) < 2:
+            continue
+        seg = c[1:] - c[:-1]
+        t = np.clip(((xy - c[:-1]) * seg).sum(1) / np.maximum((seg * seg).sum(1), 1e-9), 0, 1)
+        d = np.linalg.norm(c[:-1] + seg * t[:, None] - xy, axis=1)
+        k = int(np.argmin(d))
+        if d[k] < best:
+            best, tangent = d[k], seg[k] / max(np.linalg.norm(seg[k]), 1e-9)
+    if tangent is None:
+        return in_lane, None
+    cos = float(tangent @ heading)
+    return in_lane, "ours" if cos > 0.707 else "other" if cos < -0.707 else "cross"
+
+
 def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list[dict]:
     import pandas as pd
     from av2.geometry.camera.pinhole_camera import PinholeCamera
@@ -72,6 +112,11 @@ def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list
     cuboids = CuboidList.from_feather(log / "annotations.feather").cuboids
     poses = read_city_SE3_ego(log)
     pose_ts = sorted(poses)
+    avm = None
+    maps = list((log / "map").glob("log_map_archive_*.json"))
+    if maps:
+        from av2.map.map_api import ArgoverseStaticMap
+        avm = ArgoverseStaticMap.from_json(maps[0])
     W, H = cam.width_px, cam.height_px
     top, bot = int(H * CROP[0]), int(H * CROP[1])
     ch = bot - top
@@ -87,7 +132,8 @@ def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list
         p = pose.transform_point_cloud(np.array([[r.tx_m, r.ty_m, r.tz_m]]))[0]
         tracks[r.track_uuid].append((ts / 1e9, p[0], p[1]))
         if r.num_interior_pts > 0:
-            by_ts[ts].append((c, r.track_uuid))
+            yaw = np.degrees(np.arctan2(2 * (r.qw * r.qz + r.qx * r.qy), 1 - 2 * (r.qy ** 2 + r.qz ** 2)))
+            by_ts[ts].append((c, r.track_uuid, (float(r.ty_m), float(yaw), p[:2].copy(), pose)))
     track_arr = {}
     for k, v in tracks.items():
         v.sort()
@@ -109,7 +155,7 @@ def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list
         pose_cam = poses.get(cam_t) or poses[nearest(pose_ts, cam_t)]
         pose_lidar = poses.get(lidar_t) or poses[nearest(pose_ts, lidar_t)]
         proj = []
-        for c, tid in by_ts[lidar_t]:
+        for c, tid, ctx in by_ts[lidar_t]:
             uv, pts_cam, _ = cam.project_ego_to_img_motion_compensated(c.vertices_m, pose_cam, pose_lidar)
             if (pts_cam[:, 2] <= 0.5).any():
                 continue
@@ -118,7 +164,7 @@ def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list
             if x2 - x1 < 4 or y2 - y1 < 4:
                 continue
             box = ((x1 + x2) / 2 / W, (y1 + y2) / 2 / ch, (x2 - x1) / W, (y2 - y1) / ch)
-            proj.append((box, tid, float(pts_cam[:, 2].mean())))
+            proj.append((box, tid, float(pts_cam[:, 2].mean()), ctx))
         dets = [d for d in r["dets"] if d[0] in DET_LABELS and d[1] >= 0.35]
         pairs = sorted(((iou(tuple(d[2:6]), p[0]), i, j) for i, d in enumerate(dets) for j, p in enumerate(proj)),
                        reverse=True)
@@ -131,12 +177,16 @@ def label_clip(log: Path, rows: list[dict], max_dt_ns: int = 60_000_000) -> list
                 continue
             used_d.add(i)
             used_p.add(j)
-            d, (box, tid, depth) = dets[i], proj[j]
+            d, (box, tid, depth, (lat, yaw, cxy, pose)) = dets[i], proj[j]
             ts_arr, xy = track_arr[tid]
+            in_lane, side = (None, None)
+            if avm is not None:
+                in_lane, side = road_context(avm, cxy, pose.rotation[:2, 0] / np.linalg.norm(pose.rotation[:2, 0]))
             out.append({"clip": r["clip"], "t": r["t"], "bbox": d[2:6], "label": d[0], "conf": d[1],
                         "track": tid[:8], "speed": round(speed_at(ts_arr, xy, t_s), 3),
                         "ego_speed": round(speed_at(ego_ts, ego_xy, t_s), 3), "depth_m": round(depth, 2),
-                        "iou": round(ov, 3)})
+                        "iou": round(ov, 3), "lat_m": round(lat, 2), "yaw": round(yaw, 1),
+                        "in_lane": in_lane, "side": side})
     return out
 
 

@@ -5,7 +5,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 // Port of wazeomatic/report_manager.py: persistence window, per-type cooldown, global
-// cooldown, the (optional) stopped-vehicle heuristic, per-label confidence floors and the
+// cooldown, per-label confidence floors and the
 // optional spatial tracking (hits must chain through overlapping boxes), the longer cooldowns of
 // scene conditions and the Waze check (a hazard Waze already shows is counted, not sent). Same defaults.
 
@@ -33,9 +33,6 @@ data class ReportConfig(
      *  event would be dropped there unseen; holding it back here keeps the loss visible ([ReportManager.heldBack]). */
     val globalCooldownS: Double = 60.0,
     val classToHazard: Map<String, String> = Schema.DEFAULT_CLASS_TO_HAZARD,
-    val stoppedVehicleEnabled: Boolean = false,
-    val shoulderXMin: Float = 0.62f,
-    val shoulderYMin: Float = 0.40f,
     val vehicleLabels: Set<String> = setOf("car", "truck", "bus"),
     // red-and-white chevrons on the back of a works van look like a barricade; a box of these labels that lies
     // almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
@@ -52,8 +49,6 @@ data class ReportConfig(
     /** The horizon row (0.5 on a level mount) less 0.15 for tilt; Settings derives it from cameraGeometry. */
     val roadTop: Float = 0.35f,
     val onObjectInside: Float = 0.5f,
-    val vehicleMinArea: Float = 0.02f,
-    val vehicleMinGrowth: Float = 1.35f,
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
@@ -178,7 +173,6 @@ class ReportManager(
         for ((hazard, tr) in tracks.entries.sortedBy { it.value.lastEmittedTs }) {
             val hits = qualifyingHits(tr, cfg.minHitsByHazard[hazard] ?: cfg.minHits) ?: continue
             if (now - tr.lastEmittedTs < (cfg.cooldownByHazard[hazard] ?: cfg.cooldownS)) continue
-            if (hazard == "HAZARD_SHOULDER_CAR_STOPPED" && !stoppedVehicleConfirmed(tr)) continue
             val cover = waze?.covering(hazard)
             if (cover != null) {
                 // Waze already shows it: count the agreement, mute the type for a cooldown, send nothing.
@@ -219,11 +213,8 @@ class ReportManager(
     }
 
     fun hazardFor(d: Detection): String? {
-        cfg.classToHazard[d.label]?.let { return it }
-        if (cfg.stoppedVehicleEnabled && d.label in cfg.vehicleLabels && inShoulder(d)) {
-            return "HAZARD_SHOULDER_CAR_STOPPED"
-        }
-        return null
+        // car / truck / bus are not mapped: Car on shoulder comes from the scene rules (ShoulderCars)
+        return cfg.classToHazard[d.label]
     }
 
     /** A per-label floor can only raise the bar above minConfidence, never lower it. */
@@ -252,11 +243,6 @@ class ReportManager(
         // entirely in the hood zone is the car itself
         if (d.model == "vehicle") return (d.bbox.cy - d.bbox.h / 2f) > (1f - hood)
         return (d.bbox.cy + d.bbox.h / 2f) > (1f - hood)
-    }
-
-    private fun inShoulder(d: Detection): Boolean {
-        val b = d.bbox
-        return b.cx >= cfg.shoulderXMin && b.cy >= cfg.shoulderYMin && b.w * b.h >= cfg.vehicleMinArea
     }
 
     // ------------------------------------------------------------------ spatial tracking
@@ -307,16 +293,6 @@ class ReportManager(
         val dx = a.cx - b.cx
         val dy = a.cy - b.cy
         return sqrt(dx * dx + dy * dy) <= cfg.trackGrow * maxOf(a.w, a.h, b.w, b.h)
-    }
-
-    /** A parked car grows in the frame as we approach and stays on the right edge. */
-    private fun stoppedVehicleConfirmed(tr: Track): Boolean {
-        if (tr.hits.size < 2) return false
-        val first = tr.hits.first().bbox
-        val last = tr.hits.last().bbox
-        val a0 = first.w * first.h
-        val a1 = last.w * last.h
-        return a1 >= a0 * cfg.vehicleMinGrowth && last.cx >= first.cx - 0.02f
     }
 
     companion object {

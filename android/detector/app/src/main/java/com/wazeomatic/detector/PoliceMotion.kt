@@ -283,7 +283,8 @@ object Flow {
     }
 }
 
-class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
+/** Follows chosen vehicle boxes frame to frame and reads each as pending, stopped or moving (motion.StandingTracker). */
+open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
     class Track(t: Double, bbox: BBox) {
         val boxes = ArrayDeque<Triple<Double, BBox, Boolean>>()     // (t, box, we stood)
         val resid = ArrayDeque<DoubleArray>()                       // (residual, centre x, spread ratio)
@@ -299,9 +300,17 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
     private val tracks = ArrayList<Track>()
     var lastTracks: List<Track> = emptyList()
         private set
+    /** The last trustworthy road fit: A, B (spread rate = A * y + B), rotation shift x, y (px). */
+    var lastRoad: DoubleArray? = null
+        internal set   // tests set it
 
-    /** [dets] with the police boxes of pending and moving tracks relabelled (_pending / _moving). */
-    fun update(t: Double, img: RgbImage, dets: List<Detection>, egoState: String, hoodFrac: Double = 0.0): List<Detection> {
+    /**
+     * One frame: the track of each of [targets] (boxes out of [dets]) with its state. Call it on every frame, with
+     * no targets when there are none, so the flow has the previous frame. [forceRoad] fits the road even when no
+     * target needs it.
+     */
+    fun states(t: Double, img: RgbImage, dets: List<Detection>, targets: List<Detection>, egoState: String,
+               hoodFrac: Double = 0.0, forceRoad: Boolean = false): List<Track> {
         val h = max(16, Math.round(img.height.toDouble() * cfg.width / img.width).toInt())
         val g = GreyImage(cfg.width, h, ImageOps.greySmall(img, cfg.width, h))
         val levels = max(cfg.roadLk[1], cfg.carLk[1])
@@ -312,13 +321,19 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
         prevT = t
         tracks.removeAll { t - it.lastT > cfg.trackGapS }
 
-        val police = dets.filter { it.label == POLICE && it.confidence >= cfg.trackMinConf }
-        if (police.isEmpty()) {
-            lastTracks = emptyList()
-            return dets
-        }
+        val police = targets
         val stationary = egoState == "stationary"
         val dt = t - pt
+        var road: DoubleArray? = null
+        var roadTried = false
+        if (forceRoad && prevPyr != null && dt > 0 && !stationary) {
+            road = road(prevPyr, pyr, dets, dt, hoodFrac)
+            roadTried = true
+        }
+        if (police.isEmpty()) {
+            lastTracks = emptyList()
+            return lastTracks
+        }
         val follow = HashMap<Track, Pair<List<DoubleArray>, List<DoubleArray>>>()
         val pred = HashMap<Track, BBox>()
         for (tr in tracks) {
@@ -351,8 +366,6 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
             assigned[c.k] = tracks[c.n]
             taken.add(c.n)
         }
-        var road: DoubleArray? = null
-        var roadTried = false
         for ((k, d) in police.withIndex()) {
             val tr = assigned[k]
             if (tr == null) {
@@ -382,17 +395,7 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
             decide(tr)
         }
         lastTracks = police.indices.map { assigned[it]!! }
-        val held = HashMap<BBox, String>()
-        for ((k, d) in police.withIndex()) if (assigned[k]!!.state != "stopped") held[d.bbox] = assigned[k]!!.state
-        // identity, not equality: two equal detections are still two boxes
-        val ids = java.util.IdentityHashMap<Detection, Int>()
-        for ((k, d) in police.withIndex()) ids[d] = k
-        return dets.map { d ->
-            val k = ids[d]
-            val state = if (k != null) assigned[k]!!.state else if (d.label == OTHER_SIDE) held[d.bbox] else null
-            if (state == null || state == "stopped") d
-            else d.copy(label = d.label + if (state == "moving") "_moving" else "_pending")
-        }
+        return lastTracks
     }
 
     private fun stillCheck(tr: Track, t: Double) {
@@ -455,7 +458,7 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
             rx[i] = pb[i][0] - pa[i][0] - (pa[i][0] - fx) * e * dt
             ry[i] = pb[i][1] - pa[i][1] - (pa[i][1] - fy) * e * dt
         }
-        return doubleArrayOf(fit[0], fit[1], Flow.median(rx), Flow.median(ry))
+        return doubleArrayOf(fit[0], fit[1], Flow.median(rx), Flow.median(ry)).also { lastRoad = it }
     }
 
     /** The car's corners (inner 80 % of its box) followed from [a] into [b]. */
@@ -493,9 +496,36 @@ class PoliceMotion(val cfg: MotionConfig = MotionConfig()) {
     }
 
     companion object {
-        const val POLICE = "police_vehicle"
-        const val OTHER_SIDE = "scene_police_other_side"
         val MASK_LABELS = setOf("car", "truck", "bus", "person", "police_vehicle", "ambulance", "fire_truck",
             "bicycle", "motorcycle")
+    }
+}
+
+/** Relabels the police boxes of cars not read as standing (police_vehicle_pending / _moving). */
+class PoliceMotion(cfg: MotionConfig = MotionConfig()) : StandingTracker(cfg) {
+    /** [dets] with the police boxes of pending and moving tracks relabelled (_pending / _moving). */
+    fun update(t: Double, img: RgbImage, dets: List<Detection>, egoState: String, hoodFrac: Double = 0.0): List<Detection> {
+        val police = dets.filter { it.label == POLICE && it.confidence >= cfg.trackMinConf }
+        val tracks = states(t, img, dets, police, egoState, hoodFrac)
+        if (police.isEmpty()) return dets
+        val assigned = HashMap<Int, Track>()
+        for ((k, tr) in tracks.withIndex()) assigned[k] = tr
+
+        val held = HashMap<BBox, String>()
+        for ((k, d) in police.withIndex()) if (assigned[k]!!.state != "stopped") held[d.bbox] = assigned[k]!!.state
+        // identity, not equality: two equal detections are still two boxes
+        val ids = java.util.IdentityHashMap<Detection, Int>()
+        for ((k, d) in police.withIndex()) ids[d] = k
+        return dets.map { d ->
+            val k = ids[d]
+            val state = if (k != null) assigned[k]!!.state else if (d.label == OTHER_SIDE) held[d.bbox] else null
+            if (state == null || state == "stopped") d
+            else d.copy(label = d.label + if (state == "moving") "_moving" else "_pending")
+        }
+    }
+
+    companion object {
+        const val POLICE = "police_vehicle"
+        const val OTHER_SIDE = "scene_police_other_side"
     }
 }

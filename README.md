@@ -68,7 +68,7 @@ its thresholds and how well it is measured, is [docs/waze-coverage.md](docs/waze
 | A pothole in the lane ahead | hazard model | Hazard › Pothole |
 | Debris lying on the road | hazard model | Hazard › Object |
 | An animal on or near the road | COCO model | Hazard (no animal subtype since 2024) |
-| A stopped car on the right shoulder (off by default) | COCO model + box growth | Hazard › Car on shoulder |
+| A car standing beside the road while we drive above 50 km/h (off by default) | COCO model + optical flow + GPS or camera speed | Hazard › Car on shoulder |
 | Two or more signal heads ahead, none lit | COCO model + lamp check | Hazard › Broken traffic light |
 | A police car standing still | COCO vehicle + vehicle classifier + motion check (optical flow) | Police (› Other side, off by default) |
 | An ambulance or fire engine with flashing lights, at the scene | vehicle classifier + light flicker + ego motion | Crash (› Other side) |

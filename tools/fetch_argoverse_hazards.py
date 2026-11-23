@@ -22,6 +22,12 @@ at 5 fps, 1280 px wide, with the top 15 % (sky) and the bottom 20 % (bonnet) of 
 off, roughly a dashcam's view. ``tools/eval_vehicle.py``, ``tools/eval_lanes_argoverse.py`` and
 ``tools/mine_vehicle_crops.py --clips`` read these.
 
+Stage 4 (--stage maps): the vector map (lane segments with their direction, drivable area; about 180 KB) of
+every downloaded log, into ``<log>/map/``. ``tools/label_vehicle_motion_argoverse.py`` uses it to tell a
+vehicle in a travel lane from one parked beside the lanes, and our direction of travel from the other.
+
+    python tools/fetch_argoverse_hazards.py --stage maps
+
 Licence: Argoverse 2 is CC BY-NC-SA 4.0 (research use).
 """
 from __future__ import annotations
@@ -182,9 +188,25 @@ def stage_clips(out_name: str = "clips") -> None:
     print(f"{made} new clips in {out}")
 
 
+def stage_maps(workers: int) -> None:
+    logs = [p for split in ("train", "val") for p in (OUT / "logs" / split).glob("*") if p.is_dir()]
+    jobs = {}
+    with ThreadPoolExecutor(workers) as ex:
+        for log in logs:
+            if list((log / "map").glob("log_map_archive_*.json")):
+                continue
+            jobs[ex.submit(list_keys, f"{PREFIX}/{log.parent.name}/{log.name}/map/")] = log
+        keys = []
+        for f in as_completed(jobs):
+            keys += [(k, jobs[f]) for k, _ in f.result() if "log_map_archive_" in k]
+        print(f"{len(logs)} logs, {len(keys)} maps to fetch")
+        for f in as_completed([ex.submit(fetch, k, log / "map" / k.rsplit("/", 1)[-1]) for k, log in keys]):
+            f.result()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=["annotations", "rank", "images", "clips"], required=True)
+    ap.add_argument("--stage", choices=["annotations", "rank", "images", "clips", "maps"], required=True)
     ap.add_argument("--logs", type=int, default=60)
     ap.add_argument("--every", type=int, default=5, help="keep every Nth front frame (20 Hz source)")
     ap.add_argument("--min-tracks", type=int, default=3)
@@ -199,6 +221,8 @@ def main() -> None:
         rank_logs()
     elif args.stage == "clips":
         stage_clips(args.clips_out)
+    elif args.stage == "maps":
+        stage_maps(args.workers)
     else:
         stage_images(args.logs, args.every, args.workers, args.min_tracks, args.skip)
 

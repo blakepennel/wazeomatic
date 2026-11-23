@@ -102,19 +102,6 @@ def test_unmapped_labels_ignored():
     assert rm.update([det("toothbrush"), det("car")]) == []
 
 
-def test_stopped_vehicle_heuristic():
-    rm, clock = make(window=10, min_hits=3, global_cooldown_s=0, stopped_vehicle_enabled=True)
-    # car in the right shoulder region growing as we approach it
-    assert rm.update([det("car", 0.9, (0.8, 0.6, 0.15, 0.15))]) == []
-    assert rm.update([det("car", 0.9, (0.82, 0.62, 0.18, 0.18))]) == []
-    events = rm.update([det("car", 0.9, (0.85, 0.65, 0.22, 0.22))])
-    assert [e.hazard_type for e in events] == ["HAZARD_SHOULDER_CAR_STOPPED"]
-    # a car ahead in our lane (centre of frame) is never a shoulder hazard
-    rm2, _ = make(window=10, min_hits=3, global_cooldown_s=0, stopped_vehicle_enabled=True)
-    for _ in range(5):
-        assert rm2.update([det("car", 0.9, (0.5, 0.6, 0.2, 0.2))]) == []
-
-
 def test_event_json_and_intent_extras():
     rm, _ = make(window=10, min_hits=1)
     ev = rm.update([det("cone", 0.77)])[0]

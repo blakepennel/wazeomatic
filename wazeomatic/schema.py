@@ -103,8 +103,9 @@ DEFAULT_CLASS_TO_HAZARD: dict[str, str] = {
     "scene_lane_center": "BLOCKED_LANE_CENTER",
     "scene_lane_right": "BLOCKED_LANE_RIGHT",
     "scene_dark_signal": "HAZARD_ON_ROAD_TRAFFIC_LIGHT",
-    # "car"/"truck"/"bus" are NOT mapped directly: they only become a hazard through
-    # the stopped-vehicle heuristic in report_manager.py.
+    "scene_car_on_shoulder": "HAZARD_SHOULDER_CAR_STOPPED",
+    # "car"/"truck"/"bus" are NOT mapped directly: a vehicle becomes Car on shoulder only through
+    # shoulder.ShoulderCars (scene_car_on_shoulder: standing, beside the road, on a fast road).
 }
 
 

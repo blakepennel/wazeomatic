@@ -9,7 +9,7 @@ Three layers, in order:
    stops the same pothole being reported ten times while we drive over it.
 3. **Heuristics** - a hood exclusion zone (boxes touching the bottom edge of the frame are
    the car's own bonnet reflection, not road), livery and pet checks, debris that must lie on the
-   road, and the stopped-vehicle-on-shoulder check (experimental, off by default).
+   road. (Car on shoulder comes from the scene rules, ``shoulder.ShoulderCars``.)
 4. **Spatial consistency** (``track_iou`` > 0) - the hits that make up a report must come from
    boxes that overlap frame to frame, i.e. from one object the car is approaching, not from a
    flicker here and a flicker there. Per-label confidence floors (``min_confidence_by_label``)
@@ -74,10 +74,6 @@ class ReportConfig:
                                      # sooner would be dropped there unseen; holding it back here
                                      # keeps the loss visible (ReportManager.held_back)
     class_to_hazard: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_CLASS_TO_HAZARD))
-    # stopped-vehicle heuristic
-    stopped_vehicle_enabled: bool = False
-    shoulder_x_min: float = 0.62     # right-hand shoulder region of interest (normalized)
-    shoulder_y_min: float = 0.40
     vehicle_labels: tuple[str, ...] = ("car", "truck", "bus")
     # red-and-white chevrons on the back of a works van look like a barricade; a box of these labels that lies
     # almost wholly inside a vehicle box is the vehicle's livery, not a barrier on the road
@@ -93,8 +89,6 @@ class ReportConfig:
     road_labels: tuple[str, ...] = ("debris",)
     road_top: float = 0.35           # the horizon row (0.5 on a level mount) less 0.15 for tilt
     on_object_inside: float = 0.5
-    vehicle_min_area: float = 0.02   # bbox area fraction - close enough to matter
-    vehicle_min_growth: float = 1.35 # area must grow by this factor across the window
 
 
 @dataclass
@@ -214,8 +208,6 @@ class ReportManager:
                 continue
             if now - tr.last_emitted_ts < self.cfg.cooldown_by_hazard.get(hazard, self.cfg.cooldown_s):
                 continue
-            if hazard == "HAZARD_SHOULDER_CAR_STOPPED" and not self._stopped_vehicle_confirmed(tr):
-                continue
             cover = self.waze.covering(hazard) if self.waze is not None else None
             if cover is not None:
                 # Waze already shows it: count the agreement, mute the type for a cooldown, send nothing.
@@ -291,8 +283,6 @@ class ReportManager:
     def _hazard_for(self, d: Detection) -> Optional[str]:
         if d.label in self.cfg.class_to_hazard:
             return self.cfg.class_to_hazard[d.label]
-        if self.cfg.stopped_vehicle_enabled and d.label in self.cfg.vehicle_labels and self._in_shoulder(d):
-            return "HAZARD_SHOULDER_CAR_STOPPED"
         return None
 
     @property
@@ -315,15 +305,3 @@ class ReportManager:
             return (cy - h / 2) > (1.0 - hood)
         return (cy + h / 2) > (1.0 - hood)
 
-    def _in_shoulder(self, d: Detection) -> bool:
-        cx, cy, w, h = d.bbox
-        return cx >= self.cfg.shoulder_x_min and cy >= self.cfg.shoulder_y_min and w * h >= self.cfg.vehicle_min_area
-
-    def _stopped_vehicle_confirmed(self, tr: _Track) -> bool:
-        """A parked car on the shoulder grows in the frame as we approach it and stays
-        on the right edge; a car in the next lane moving with us does neither."""
-        if len(tr.hits) < 2:
-            return False
-        first, last = tr.hits[0][2], tr.hits[-1][2]
-        a0, a1 = first[2] * first[3], last[2] * last[3]
-        return a1 >= a0 * self.cfg.vehicle_min_growth and last[0] >= first[0] - 0.02

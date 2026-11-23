@@ -200,6 +200,9 @@ class EgoMotion(
         gpsT = t
     }
 
+    /** The GPS speed (m/s) when the last fix is under 5 s old, else null. */
+    fun gpsSpeed(t: Double): Double? = gpsMps?.takeIf { t - gpsT < 5.0 }
+
     fun update(t: Double, img: RgbImage, dets: List<Detection>): Double {
         val g = ImageOps.greySmall(img, W, H)
         val gw = W - 2
@@ -233,8 +236,8 @@ class EgoMotion(
 
     /** stationary | slow | moving */
     fun state(t: Double): String {
-        val v = gpsMps
-        if (v != null && t - gpsT < 5.0) return if (v < stationaryMps) "stationary" else if (v < slowMps) "slow" else "moving"
+        val v = gpsSpeed(t)
+        if (v != null) return if (v < stationaryMps) "stationary" else if (v < slowMps) "slow" else "moving"
         val f = flow
         return if (f < stationaryThr) "stationary" else if (f < slowThr) "slow" else "moving"
     }
@@ -270,9 +273,13 @@ data class SceneConfig(
     val crashHoldS: Double = 3.0,
     val crashWindowS: Double = 10.0,
     val crashMaxShift: Double = 0.5,      // standing still: box centre moves less than this many box widths
-    val otherSideX: Double = 0.22,
+    // the other side of the road: where the box meets the road lies this far to the left of the camera (right in
+    // left-hand traffic); same as scene.py other_side_m
+    val otherSideM: Double = 4.0,
     val policeOtherSide: Boolean = false,
     val policeStoppedOnly: Boolean = true,  // Police only for a police car that stands (PoliceMotion)
+    val shoulderCars: Boolean = false,      // Hazard > Car on shoulder (ShoulderCars), off by default like scene.py
+    val shoulderCameraSpeed: Boolean = true,
     // lanes
     val laneMinObjects: Int = 3,
     val laneWindowS: Double = 3.0,
@@ -307,6 +314,9 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     var lights: EmergencyLights = EmergencyLights()
     val motion: PoliceMotion? = if (cfg.policeStoppedOnly)
         PoliceMotion(MotionConfig(horizonY = cfg.horizonY, driveSide = cfg.driveSide)) else null
+    val shoulder: ShoulderCars? = if (cfg.shoulderCars)
+        ShoulderCars(ShoulderConfig(cameraSpeed = cfg.shoulderCameraSpeed), horizonY = cfg.horizonY,
+            hfovDeg = cfg.hfovDeg, camHeightM = cfg.camHeightM, driveSide = cfg.driveSide) else null
 
     private class Sample(val t: Double, val ego: String, val vehicles: Int, val ahead: Boolean)
     private class Emergency(val t: Double, val label: String, val bbox: BBox, val lit: Boolean)
@@ -340,6 +350,24 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         return m.update(t, img, dets, (state["ego"] as? String) ?: "moving", hoodFrac)
     }
 
+    /** After [update]: scene_car_on_shoulder boxes ([ShoulderCars]), none when it is off. */
+    fun shoulderCars(t: Double, img: RgbImage, dets: List<Detection>, hoodFrac: Double = 0.0): List<Detection> {
+        val sc = shoulder ?: return emptyList()
+        val gps = ego.gpsSpeed(t)
+        val out = sc.update(t, img, dets, (state["ego"] as? String) ?: "moving", gps, gps != null, hoodFrac)
+        val st = LinkedHashMap(state)
+        st["fast_road"] = sc.highway
+        sc.speed?.let { st["speed"] = Math.round(it * 10) / 10.0 }
+        state = st
+        return out
+    }
+
+    /** The box meets the road at least otherSideM across the centre line from us (left in right-hand traffic). */
+    fun otherSide(b: BBox, aspect: Double): Boolean {
+        val g = groundPoint(b, aspect) ?: return false
+        return (if (cfg.driveSide == "right") -g.second else g.second) >= cfg.otherSideM
+    }
+
     /** Extra detections for one frame: emergency_lights boxes and scene_* labels. */
     fun update(t: Double, img: RgbImage, dets: List<Detection>, weather: Map<String, Float>? = null): List<Detection> {
         val out = ArrayList<Detection>()
@@ -359,12 +387,12 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         state = mapOf("ego" to egoState, "flow" to Math.round(ego.flow * 10000) / 10000.0, "vehicles" to vehicles.size)
 
         if ("traffic" in cfg.enabled) out.addAll(traffic(t))
-        if ("crash" in cfg.enabled) out.addAll(crash(t, dets, lit, egoState))
+        if ("crash" in cfg.enabled) out.addAll(crash(t, dets, lit, egoState, w.toDouble() / h))
         if ("lanes" in cfg.enabled) out.addAll(lanes(t, dets, w.toDouble() / h))
         if ("signals" in cfg.enabled) out.addAll(signals(t, signals, colours))
         if ("weather" in cfg.enabled && weather != null) updateWeather(t, weather)
         if ("weather" in cfg.enabled) out.addAll(weatherLabels(t))
-        if (cfg.policeOtherSide) out.addAll(policeSide(dets))
+        if (cfg.policeOtherSide) out.addAll(policeSide(dets, w.toDouble() / h))
         activeLabels = out.filter { it.model == "scene" }.map { it.label }.distinct()
         return out
     }
@@ -401,7 +429,8 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         return emptyList()
     }
 
-    private fun crash(t: Double, dets: List<Detection>, lights: List<Detection>, ego: String): List<Detection> {
+    private fun crash(t: Double, dets: List<Detection>, lights: List<Detection>, ego: String,
+                      aspect: Double = 16.0 / 9.0): List<Detection> {
         // the vehicle classifier scores every class on a box; a box is one responder, of its best class
         val best = HashMap<BBox, Detection>()
         for (d in dets) {
@@ -434,21 +463,15 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
         // an ambulance or fire engine with lights, or two kinds of responder; police alone is a traffic stop
         val responders = (heavy >= 3 && lit >= 2) || (kinds.size >= 2 && lit >= 2)
         if (!(responders && onScene)) return emptyList()
-        val right = cfg.driveSide == "right"
-        val xs = emergency.map { it.bbox.cx + if (right) it.bbox.w / 2.0 else -it.bbox.w / 2.0 }
-        val far = if (right) xs.all { it < cfg.otherSideX } else xs.all { it > 1 - cfg.otherSideX }
+        val far = emergency.all { otherSide(it.bbox, aspect) }
         val conf = min(1.0, 0.55 + 0.05 * lit + 0.05 * heavy)
         return listOf(whole(if (far) "scene_crash_other_side" else "scene_crash", conf))
     }
 
-    private fun policeSide(dets: List<Detection>): List<Detection> {
+    private fun policeSide(dets: List<Detection>, aspect: Double = 16.0 / 9.0): List<Detection> {
         val out = ArrayList<Detection>()
         for (d in dets) {
-            if (d.label != "police_vehicle") continue
-            val rightEdge = d.bbox.cx + d.bbox.w / 2.0
-            val leftEdge = d.bbox.cx - d.bbox.w / 2.0
-            val far = if (cfg.driveSide == "right") rightEdge < cfg.otherSideX else leftEdge > 1 - cfg.otherSideX
-            if (far) out.add(Detection("scene_police_other_side", d.confidence, d.bbox, "scene"))
+            if (d.label == "police_vehicle" && otherSide(d.bbox, aspect)) out.add(Detection("scene_police_other_side", d.confidence, d.bbox, "scene"))
         }
         return out
     }

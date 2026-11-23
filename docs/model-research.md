@@ -80,7 +80,7 @@ Defined in `wazeomatic/schema.py`; model classes in `configs/classes.yaml`.
 | pothole | hazard | `HAZARD_ON_ROAD_POTHOLE` | Hazard > Pothole | yes |
 | cone, construction_sign, delineator, barricade, worker | hazard | `HAZARD_ON_ROAD_CONSTRUCTION` | Hazard > Construction | yes (barricade and worker since the v3 model) |
 | dog, horse, sheep, cow, bear | COCO | `HAZARD_SHOULDER_ANIMALS` | Hazard (no subtype; Waze removed Animals) | yes |
-| car, truck, bus + heuristic | COCO | `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder | experimental, off |
+| car, truck, bus, standing beside the road above 50 km/h | COCO | `HAZARD_SHOULDER_CAR_STOPPED` | Hazard > Car on shoulder | off (`--shoulder-cars`) |
 | debris (v4 model) | hazard | `HAZARD_ON_ROAD_OBJECT` | Hazard > Object | added later |
 | police_vehicle | vehicle classifier on COCO boxes | `POLICE` | Police | added later |
 | ambulance, fire_truck + flashing lights | vehicle classifier + scene rule | `CRASH` | Crash | added later |

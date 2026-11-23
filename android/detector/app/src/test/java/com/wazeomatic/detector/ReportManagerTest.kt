@@ -111,29 +111,13 @@ class ReportManagerTest {
     }
 
     @Test
-    fun stoppedVehicleHeuristic() {
-        val cfg = ReportConfig(stoppedVehicleEnabled = true)
-        // car on the right shoulder that grows as we approach
-        val m = rm(cfg)
-        val growing = listOf(0.15f, 0.17f, 0.20f).flatMap { s ->
-            m.update(listOf(det("car", 0.8f, BBox(0.8f, 0.6f, s, s))))
-        }
-        assertEquals(listOf("HAZARD_SHOULDER_CAR_STOPPED"), growing.map { it.hazardType })
-
-        // same size every frame (moving with us) -> no event
-        val m2 = rm(cfg)
-        val steady = (1..6).flatMap { m2.update(listOf(det("car", 0.8f, BBox(0.8f, 0.6f, 0.15f, 0.15f)))) }
-        assertTrue(steady.isEmpty())
-
-        // left side of the frame never counts
-        val m3 = rm(cfg)
-        val left = listOf(0.15f, 0.17f, 0.20f).flatMap { s -> m3.update(listOf(det("car", 0.8f, BBox(0.3f, 0.6f, s, s)))) }
-        assertTrue(left.isEmpty())
-
-        // heuristic off by default
-        val m4 = rm()
-        val off = listOf(0.15f, 0.17f, 0.20f).flatMap { s -> m4.update(listOf(det("car", 0.8f, BBox(0.8f, 0.6f, s, s)))) }
-        assertTrue(off.isEmpty())
+    fun carOnShoulderComesOnlyFromTheSceneLabel() {
+        val box = BBox(0.8f, 0.66f, 0.09f, 0.11f)
+        val m = rm(ReportConfig(globalCooldownS = 0.0))
+        val ev = (1..3).flatMap { m.update(listOf(Detection("scene_car_on_shoulder", 0.8f, box, "scene"))) }
+        assertEquals(listOf("HAZARD_SHOULDER_CAR_STOPPED"), ev.map { it.hazardType })
+        val m2 = rm(ReportConfig(globalCooldownS = 0.0, minHits = 1))
+        assertTrue((1..5).flatMap { m2.update(listOf(det("car", 0.9f, box))) }.isEmpty())
     }
 
     @Test

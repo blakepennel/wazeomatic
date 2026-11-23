@@ -263,7 +263,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
         val mount = field("Orientation (${MountOrientation.MODES.joinToString(", ")})", s.orientation, false)
         val dry = CheckBox(this).apply { text = "Dry run (macro should not submit)"; isChecked = s.dryRun; form.addView(this) }
         val tcp = CheckBox(this).apply { text = "TCP listener on port ${s.tcpPort}"; isChecked = s.tcpEnabled; form.addView(this) }
-        val stopped = CheckBox(this).apply { text = "Stopped-vehicle heuristic (experimental)"; isChecked = s.stoppedVehicle; form.addView(this) }
+        val stopped = CheckBox(this).apply { text = "Car on shoulder: standing vehicles beside the road above 50 km/h"; isChecked = s.shoulderCars; form.addView(this) }
         val wazeReader = CheckBox(this).apply {
             text = "Skip reports Waze already shows (needs the Waze reader in Accessibility)"
             isChecked = s.wazeReader; form.addView(this)
@@ -301,7 +301,7 @@ class MainActivity : Activity(), PipelineBus.Listener {
                     orientation = mount.text.toString().trim().lowercase().takeIf { it in MountOrientation.MODES } ?: s.orientation,
                     dryRun = dry.isChecked,
                     tcpEnabled = tcp.isChecked,
-                    stoppedVehicle = stopped.isChecked,
+                    shoulderCars = stopped.isChecked,
                     wazeReader = wazeReader.isChecked,
                     vehicleClassifier = vehicleCls.isChecked,
                     weather = weatherCls.isChecked,

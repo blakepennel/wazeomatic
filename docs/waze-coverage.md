@@ -14,13 +14,13 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 | Hazard > Pothole | `HAZARD_ON_ROAD_POTHOLE` | hazard model, class pothole, floor 0.55 | on |
 | Hazard > Construction | `HAZARD_ON_ROAD_CONSTRUCTION` | hazard model: cone, sign, delineator, barricade, worker (a worker needs 0.6) | on |
 | Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris (0.5), lying on the road: the box reaches below the horizon less 0.15 and is not mostly inside a person or vehicle box | on |
-| Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
+| Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | a COCO car, truck or bus read as standing still (optical flow against the road, as for Police) whose ground point lies 8-60 m ahead and 2.5-8 m to the right, while we drive at 50 km/h or more on 80 % of the last 15 s: GPS speed, or without GPS the camera's own speed (12 m/s, it reads low). See Measured | off (`--shoulder-cars`) |
 | Hazard > Broken traffic light | `HAZARD_ON_ROAD_TRAFFIC_LIGHT` | two or more signal heads close ahead, none lit, for 4 s; any lit head vetoes | on |
 | Hazard (animal) | `HAZARD_SHOULDER_ANIMALS` | COCO animal classes; deer show up as sheep, cow, horse or giraffe. A dog or cat beside a person on the same ground line is a pet on a walk and does not count | on |
 | Police | `POLICE` | vehicle classifier says police (0.85 or more) on one of the four largest COCO car / truck / bus boxes, 2 hits in 10 frames, and the car is read as standing still (Waze's Police is for a police car that stands; see Measured, `--police-any-motion` turns the check off) | on |
-| Police > Other side | `POLICE_OTHER_SIDE` | police box entirely in the far-left 22 % of the frame (right-hand traffic) | off (`--police-other-side`) |
+| Police > Other side | `POLICE_OTHER_SIDE` | police box whose ground point (flat-road camera model) lies 4 m or more to the left of the camera (right-hand traffic), standing like Police | off (`--police-other-side`) |
 | Crash | `CRASH` | an ambulance or fire engine, or two kinds of responder, with red / blue flashing lights on them, for 3 s: boxes that grow while we drive towards them, or that stand still while we stand (a responder driving past a waiting car is not a crash); ends as soon as they leave the frame | on |
-| Crash > Other side | `CRASH_OTHER_SIDE` | the same, entirely on the far left | on |
+| Crash > Other side | `CRASH_OTHER_SIDE` | the same, every responder box meeting the road 4 m or more to the left | on |
 | Traffic > Standstill | `TRAFFIC_STANDSTILL` | 75 s with at least 90 % of frames read as stopped and at most 1 % as moving, behind a vehicle, no red or amber signal seen in the last 20 s | on |
 | Traffic > Heavy | `TRAFFIC_HEAVY` | 150 s with at least 30 % of frames read as stopped and half read slow or stopped, at least two separate stops, three or more vehicles in view, no red signal | on |
 | Bad weather > Fog | `WEATHER_FOG` | weather classifier fog, smoothed, above 0.70 for 20 s | on |
@@ -201,6 +201,48 @@ responder, which leaves the frame within a second or two; the rule now also requ
 still while we stand and ends the scene as soon as they leave the frame, which took the Commons count from 20
 clips to 13 with v3, and the dashcam clips have none. There is no public dashcam footage of real crash scenes
 to measure recall on; that is item 17 of the sprint 2 plan.
+
+### Other side and Car on shoulder
+
+Both rules need to know where a vehicle is on the road, which the boxes alone do not say. Argoverse 2 has a
+vector map with every lane polygon for each log: `tools/fetch_argoverse_hazards.py --stage maps` fetches them,
+`tools/label_vehicle_motion_argoverse.py` adds to each detector box matched to a 3D track whether it lies in a
+lane and which way the nearest lane runs against ours (ours, other, cross), and `tools/eval_road_side.py` scores
+the rules (`runs/eval/road_side_h1.json`, the held-out half: 163 logs, 38 minutes).
+
+**Other side.** Vehicle boxes 8-60 m ahead whose nearest lane runs our way or the other way:
+
+| Rule | Right when it says "other side" | Finds of those on the other side |
+|---|---|---|
+| old: the whole box in the left 22 % of the frame | 0.83 | 0.25 |
+| ground point 3 m or more to the left | 0.81 | 0.70 |
+| **ground point 4 m or more to the left** (shipped) | **0.86** | **0.54** |
+| ground point 5 m or more to the left | 0.88 | 0.36 |
+| ground point 6 m or more to the left | 0.90 | 0.24 |
+
+The ground point is where the box meets the road in the flat-road camera model, the same one the blocked-lane
+rule uses, so it needs the right `--camera-geometry`. Police > Other side keeps the standing-still check of
+Police. On the 43 Commons emergency clips the crash results did not change (11 CRASH, no CRASH_OTHER_SIDE).
+
+**Car on shoulder.** Argoverse is city driving: our speed is 50 km/h or more on 0.2 % of the frames, so the
+fast-road condition would keep the rule silent and was turned off to score the rest (where the box meets the
+road, and whether the vehicle stands). What the 2,439 boxes it marked are:
+
+| | All | While we drove 8 m/s or faster |
+|---|---|---|
+| parked on our side, outside every lane | 39 % | 41 % |
+| standing in a lane on our side (queues, double parking) | 47 % | 48 % |
+| moving | 4 % | 5 % |
+| speed unclear (0.5-2 m/s) | 3 % | 5 % |
+| no 3D track to compare with | 7 % | (no speed known) |
+
+It marks at least once 105 of the 269 vehicles parked on our side in its range. In town nearly every mark is a
+parked or queuing car, which is why the rule runs only on a fast road. There a vehicle standing in the right
+lane is as much a hazard as one on the shoulder, and the rule does not tell the two apart. The camera's own speed
+never opened the fast-road condition on these clips (0.0 % of frames), so town driving does not fool it, but it
+has not been seen to open on a highway either: the camera speedometer reads 0.87 of the true speed at the median
+and Argoverse has only a few frames above 14 m/s. With GPS (`use_gps_speed`) the condition is plain. What is
+missing is highway footage with cars on the shoulder, to measure both the condition and the rule.
 
 ### Blocked lane
 

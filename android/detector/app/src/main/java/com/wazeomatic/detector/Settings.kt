@@ -21,7 +21,6 @@ data class Settings(
     val globalCooldownS: Float = 60f,
     val minHits: Int = 3,
     val window: Int = 10,
-    val stoppedVehicle: Boolean = false,
     val dryRun: Boolean = true,
     val targetPackage: String = "",
     val tcpEnabled: Boolean = true,
@@ -46,6 +45,8 @@ data class Settings(
     val sceneFeatures: String = SceneLabels.FEATURES.joinToString(","), // scene rules, like --scene-features; "none" = no scene layer
     val policeOtherSide: Boolean = false,   // report a police car far on the opposite side as Police > Other side
     val policeStoppedOnly: Boolean = true,  // Police only for a police car read as standing still (PoliceMotion)
+    val shoulderCars: Boolean = false,      // Car on shoulder: a vehicle standing beside the road above 50 km/h (ShoulderCars)
+    val shoulderCameraSpeed: Boolean = true, // without GPS, the camera's own speed may open the fast-road condition
     val driveSide: String = "right",        // right | left (which side the far carriageway is on)
     val useGpsSpeed: Boolean = false,       // feed the GPS speed into the ego-motion estimate (asks for location)
     val cameraGeometry: String = "70,1.3,0.5", // HFOV deg, mount height m, horizon row (fraction), like --camera-geometry
@@ -63,6 +64,8 @@ data class Settings(
             driveSide = if (driveSide == "left") "left" else "right",
             policeOtherSide = policeOtherSide,
             policeStoppedOnly = policeStoppedOnly,
+            shoulderCars = shoulderCars,
+            shoulderCameraSpeed = shoulderCameraSpeed,
             hfovDeg = g[0],
             camHeightM = g[1],
             horizonY = g[2],
@@ -86,7 +89,6 @@ data class Settings(
         hoodFrac = hoodFrac,
         cooldownS = cooldownS.toDouble(),
         globalCooldownS = globalCooldownS.toDouble(),
-        stoppedVehicleEnabled = stoppedVehicle,
         roadTop = (geometry[2] - 0.15).toFloat(),
         classToHazard = Schema.DEFAULT_CLASS_TO_HAZARD + parseClassMap(classMap),
     )
@@ -105,7 +107,6 @@ data class Settings(
             .putFloat("global_cooldown", globalCooldownS)
             .putInt("min_hits", minHits)
             .putInt("window", window)
-            .putBoolean("stopped_vehicle", stoppedVehicle)
             .putBoolean("dry_run", dryRun)
             .putString("target_package", targetPackage)
             .putBoolean("tcp", tcpEnabled)
@@ -130,6 +131,8 @@ data class Settings(
             .putString("scene_features", sceneFeatures)
             .putBoolean("police_other_side", policeOtherSide)
             .putBoolean("police_stopped_only", policeStoppedOnly)
+            .putBoolean("shoulder_cars", shoulderCars)
+            .putBoolean("shoulder_camera_speed", shoulderCameraSpeed)
             .putString("drive_side", driveSide)
             .putBoolean("use_gps_speed", useGpsSpeed)
             .putString("camera_geometry", cameraGeometry)
@@ -159,7 +162,6 @@ data class Settings(
             globalCooldownS = f("global_cooldown", globalCooldownS),
             minHits = i("min_hits", minHits),
             window = i("window", window),
-            stoppedVehicle = z("stopped_vehicle", stoppedVehicle),
             dryRun = z("dry_run", dryRun),
             targetPackage = str("target_package") ?: targetPackage,
             tcpEnabled = z("tcp", tcpEnabled),
@@ -184,6 +186,8 @@ data class Settings(
             sceneFeatures = str("scene_features") ?: sceneFeatures,
             policeOtherSide = z("police_other_side", policeOtherSide),
             policeStoppedOnly = z("police_stopped_only", policeStoppedOnly),
+            shoulderCars = z("shoulder_cars", shoulderCars),
+            shoulderCameraSpeed = z("shoulder_camera_speed", shoulderCameraSpeed),
             driveSide = str("drive_side")?.trim()?.lowercase() ?: driveSide,
             useGpsSpeed = z("use_gps_speed", useGpsSpeed),
             cameraGeometry = str("camera_geometry")?.trim() ?: cameraGeometry,
@@ -193,11 +197,11 @@ data class Settings(
     companion object {
         val KNOWN_KEYS = setOf(
             "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
-            "global_cooldown", "min_hits", "window", "stopped_vehicle", "dry_run", "target_package",
+            "global_cooldown", "min_hits", "window", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
             "zoom_coco", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
-            "scene_features", "police_other_side", "police_stopped_only", "drive_side", "use_gps_speed", "camera_geometry",
+            "scene_features", "police_other_side", "police_stopped_only", "shoulder_cars", "shoulder_camera_speed", "drive_side", "use_gps_speed", "camera_geometry",
         )
 
         /** "70,1.3,0.5" -> [hfov, height, horizon], or null unless all three are numbers in a sane range. */
@@ -236,7 +240,6 @@ data class Settings(
                 globalCooldownS = p.getFloat("global_cooldown", d.globalCooldownS),
                 minHits = p.getInt("min_hits", d.minHits),
                 window = p.getInt("window", d.window),
-                stoppedVehicle = p.getBoolean("stopped_vehicle", d.stoppedVehicle),
                 dryRun = p.getBoolean("dry_run", d.dryRun),
                 targetPackage = p.getString("target_package", d.targetPackage) ?: d.targetPackage,
                 tcpEnabled = p.getBoolean("tcp", d.tcpEnabled),
@@ -261,6 +264,8 @@ data class Settings(
                 sceneFeatures = p.getString("scene_features", d.sceneFeatures) ?: d.sceneFeatures,
                 policeOtherSide = p.getBoolean("police_other_side", d.policeOtherSide),
                 policeStoppedOnly = p.getBoolean("police_stopped_only", d.policeStoppedOnly),
+                shoulderCars = p.getBoolean("shoulder_cars", d.shoulderCars),
+                shoulderCameraSpeed = p.getBoolean("shoulder_camera_speed", d.shoulderCameraSpeed),
                 driveSide = p.getString("drive_side", d.driveSide) ?: d.driveSide,
                 useGpsSpeed = p.getBoolean("use_gps_speed", d.useGpsSpeed),
                 cameraGeometry = p.getString("camera_geometry", d.cameraGeometry) ?: d.cameraGeometry,
