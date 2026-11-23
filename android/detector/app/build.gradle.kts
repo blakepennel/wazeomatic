@@ -23,6 +23,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // -PdebugSignedRelease signs it with the local debug key so it installs for timing on a phone. A
+            // debug build is much slower on the device (debuggable apps are not compiled ahead of time), which
+            // makes it the wrong build to time (docs/model-research.md)
+            if (findProperty("debugSignedRelease") != null) signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

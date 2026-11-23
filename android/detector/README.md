@@ -98,6 +98,10 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
 | `rect_input` | true | a model exported with an open input shape (`export_onnx.py --dynamic`, bundled by default when present) runs at the frame's own aspect: 640x384 for a 16:9 frame and 640x288 for the zoom crop instead of 640x640, the same pixels without the grey bands (`--rect` on the desktop). No effect on a square export |
 | `ort_threads` | 0 | XNNPACK threads per model session; 0 = the cores divided by the passes that run at once, at most 4 (two on an 8-core phone with the zoom pass on) |
+| `ort_backend` | xnnpack | `xnnpack`, `cpu`, or `nnapi` with `_fp16` / `_cpu` / `_nchw` added; per model as `hazard=nnapi,coco=xnnpack`. NNAPI is experimental: on the OnePlus N10 the Qualcomm drivers reject both models unless NNAPI may use its own CPU device, and then it is slower (docs/model-research.md) |
+| `max_det` | 40 | boxes per detector pass, best first (0 = no cap), as `--max-det` on the desktop |
+| `max_per_class` | 12 | boxes of one class per detector pass, best first (0 = no cap), as `--max-per-class` |
+| `zoom_every` | 0 | zoom pass on every n-th frame; 0 = auto: every frame while frames with it fit the `max_fps` interval, every other frame while they don't |
 | `zoom_coco` | false | also run the zoom pass on the COCO model (`--zoom-coco` on the desktop); off by default, the second pass is for the hazard model(s) |
 | `orientation` | auto | camera: how the phone is mounted. `auto` follows the accelerometer (independent of the system auto-rotate setting), `landscape` (top edge to the left), `landscape_reverse` (top edge to the right) and `portrait` pin it |
 | `ensemble` | true | also run `hazard2.onnx` when the build bundled one (`syncModels` copies `-PhazardModel2`; the default is none since the v3 model, `-PhazardModel2=hazard_yolo11s_v3.onnx` adds the v3 small) and fuse it with `hazard.onnx`; no second asset = single model |
@@ -173,7 +177,14 @@ spent decoding and converting the next one; near zero once the video source deco
 A frame goes through two stages on two threads: the caller (camera analyzer or video thread) runs the models,
 then hands the frame to a second-stage thread and goes on to the next frame. At most one frame waits, so the
 order is kept. The video source also decodes one frame ahead. With the int8 hazard model this took a 16:9 clip on
-the OnePlus N10 from 3.1 to 6.3 frames per second ([model-research.md](../../docs/model-research.md#phone-latency-2026-11-23)).
+the OnePlus N10 from 3.1 to 6.3 frames per second ([model-research.md](../../docs/model-research.md#phone-latency-2026-11-23)); a
+release build and a second round (camera throttle, police gate, zoom pass when time is short) took it to 7.1, and the
+live camera holds its 6 fps cap ([second round](../../docs/model-research.md#phone-speed-second-round-2026-11-23)).
+
+Time the app with a release build: a debug build runs its Kotlin code much slower on the phone.
+`./gradlew assembleRelease -PdebugSignedRelease` signs the release build with the local debug key, so it installs over
+the debug build (`adb install -r app/build/outputs/apk/release/app-release.apk`). The debug-only parts (the
+`INJECT_DETECTION` receiver, models from `files/models/`) are off in it.
 
 The build bundles `models/hazard_yolo11n_dyn.qdq.onnx` (int8, from `tools/quantize_onnx.py --static`, see
 [models/README.md](../../models/README.md)) when it exists, else the float `hazard_yolo11n_dyn.onnx`. The COCO

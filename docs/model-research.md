@@ -209,6 +209,47 @@ In the shipped build the detectors take 148 / 205 ms a frame (UK / work zone, me
 
 Tensor G4 is known to throttle early under sustained load, and Waze will be running too, so the upper end is the safer planning number. The 100 ms detector target is met with room to spare, but it has to be measured on the Pixel.
 
+### Phone speed, second round (2026-11-23)
+
+Same phone, clips and counting as above, plus the live camera (1280x720, dry run, a desk scene).
+
+| Build | UK 006 | Work zone | Live camera |
+|---|---|---|---|
+| Shipped before this round (debug build) | 6.25 | 4.03 | 5.01 |
+| + camera throttle, police gate, grey image, box caps (debug) | 6.48 | 4.43 | 5.99 (the cap) |
+| + zoom pass on every other frame while frames run long (debug) | 6.74 | 4.59 | |
+| **Release build, with the pixel copy (shipped)** | **7.06** | **5.06** | **6.01 (the cap)** |
+| Release build, zoom pass forced on every frame | | 4.76 | |
+
+On the live camera the detectors take 123 ms and the second stage 15 ms, so a report is out about 140 ms after its frame (250 ms before), and the phone waits about 40 ms a frame for the camera.
+
+- **Time a release build.** Debuggable apps are not compiled ahead of time, and their Kotlin loops run much slower: on UK 006 the release build takes the scene rules from 17 to 8 ms, the police gate from 20 to 8 ms and the whole second stage from 85 to 64 ms. Model times do not change (native code). `./gradlew assembleRelease -PdebugSignedRelease` signs the release build with the local debug key so it installs over the debug one. Compiling it fully ahead of time (`adb shell cmd package compile -m speed -f com.wazeomatic.detector`) changed nothing more.
+- **Camera throttle** (`FrameThrottle` in `CameraSource.kt`). The `max_fps` check took a frame only once 1/6 s had passed since the last one. On a 30 fps camera the frame that lands a hair early was dropped and the next one came 200 ms later: 5 frames a second. It now keeps a schedule and takes a frame up to 20 ms before its slot.
+- **Police gate** (`Flow.lk`). With a police car in view the road fit tracks 250 corners with a 21 px Lucas-Kanade window over 5 levels, forward and back. Every window sample went through the general bilinear sample (clamp, floor and weights each time), about 14 million a frame. A window wholly inside the image now works out its fraction once, with the same arithmetic (within 1e-6 of the old path, `FlowTest`). Work zone, mean per frame: 80 to 56 ms (debug), 43 ms in release.
+- **Grey image.** 1920 to 640 and 1280 to 640 are whole-number ratios, where INTER_AREA is the plain block mean, now done in one pass (police gate on UK 006: 26 to 20 ms, debug). The police gate and the shoulder-car check share one grey pyramid a frame.
+- **Box caps** (`--max-det` / `--max-per-class` on the desktop, `max_det` / `max_per_class` in the app). Per detector pass at most 12 boxes of a class and 40 in all, best first, and at most 1000 candidates into NMS. Normal frames stay below them: on 1,616 frames of road, work-zone and city clips the most of one class was 22 delineators and the most in one pass 38 boxes (99th percentile 11). The 163 Argoverse clips give the same reports with the caps, clip for clip. The caps are there for a frame gone wrong: the broken fp16 COCO build below gave 763 boxes a frame and took the second stage to 275 ms. The lane rule needs 3 objects and its confidence tops out at 7, so a cap of 12 cones costs it nothing.
+- **Zoom pass when time is short** (`zoom_every`: 1 = every frame, n = every n-th, 0 = auto, the app default; `--zoom-every` on the desktop). Auto runs the zoom pass on every frame while the frames that run it stay inside the `max_fps` budget (167 ms), and on every other frame while they don't. On the N10 that means every frame on a 16:9 road and every other frame in the busy work zone. On the held-out Argoverse half (Construction, `eval_construction_argoverse.py`):
+
+  | Zoom pass | Precision | Recall | False clips | Police reports |
+  |---|---|---|---|---|
+  | Off | 0.966 | 0.977 (84 of 86) | 3 | 10 |
+  | Every frame | 0.944 | 0.988 (85 of 86) | 5 | 10 |
+  | Every other frame | 0.966 | 0.988 (85 of 86) | 3 | 10 |
+
+  Half rate keeps the zoom pass's extra find without its two extra false clips, so falling back to it costs nothing here. This set has no potholes or debris, the small things the zoom pass was added for, so the default stays every frame wherever the phone has the time.
+- **Pixel copy.** The input bitmap is read with `copyPixelsToBuffer` (a plain memory copy) instead of `getPixels`, which converts every pixel: hazard preprocessing 27 to 24 ms. The first frame of each input shape checks the copy against `getPixels` and falls back to it if they differ (they match exactly on the N10).
+
+Tried and not kept:
+
+- **NNAPI** (`ort_backend`, e.g. `nnapi`, `nnapi_fp16_cpu`). The N10 offers its Hexagon DSP, Adreno GPU and HTA through NNAPI (`qti-dsp`, `qti-gpu`, `qti-hta`). With NNAPI's own CPU device off, the drivers reject both models, the int8 hazard and the float COCO, also with fp16 and NCHW. With it allowed, the hazard model compiles but runs at 174 ms against 117 ms on XNNPACK. The setting stays for trying other phones.
+- **fp16 COCO on XNNPACK** (`onnxruntime.transformers.float16`, float input and output kept). On the desktop its class scores match float to 1e-4. On the phone it gave hundreds of boxes a frame and a false Animals report, and it was slower anyway (134 against 118 ms).
+- **Threads.** Two XNNPACK threads per pass is still best in release: 6.98 frames a second, against 6.73 with three and 6.66 with one.
+- **int8 COCO** stays out. Its problem was the vehicle classifier flipping to police on a slightly different box, not the COCO boxes themselves. A classifier that holds steady under small box changes would let it in (17 % more frames a second).
+
+The three model runs (about 105 to 150 ms each, side by side) are now nearly all of a frame. What would cut them further is a smaller model: quantization-aware training, so the class branch and COCO can go int8 without the problems above, or a lighter backbone (fewer channels, more depthwise convolutions). Both need a training run and a new accuracy check. YOLO11n's head already uses depthwise convolutions, and on int8 phone kernels they gain less than their FLOP count suggests.
+
+With these numbers the Pixel 9 Pro estimate becomes detectors about 45 to 70 ms on the live camera, and a report about 50 to 75 ms after its frame (still to be measured).
+
 ### Model size
 
 | File | Size |
