@@ -19,9 +19,9 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@android:drawable/ic_menu_camera"
+        android:icon="@mipmap/ic_launcher"
         android:label="Wazeomatic"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@style/Theme.Wazeomatic">
 
         <activity
             android:name=".MainActivity"
@@ -32,7 +32,25 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Share" or "Open with" on a video: copied into the clips folder and selected (nothing starts) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
         </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="Settings"
+            android:parentActivityName=".MainActivity" />
 
         <service
             android:name=".DetectorService"

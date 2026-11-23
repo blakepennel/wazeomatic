@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:minHeight="56dp"
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingEnd="4dp">
+
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="Wazeomatic"
+        android:textAppearance="@style/Text.Wazeomatic.Title" />
+
+    <!-- one tap: dry run on / off. Amber while dry, red while reports go to Waze for real -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDryRun"
+        style="@style/Widget.Material3.Button.TonalButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:text="Dry run"
+        android:textSize="15sp"
+        app:icon="@drawable/ic_shield"
+        app:iconSize="20dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnSettings"
+        style="@style/Widget.Material3.Button.IconButton"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:contentDescription="Settings"
+        app:icon="@drawable/ic_settings"
+        app:iconSize="28dp"
+        app:iconTint="?attr/colorOnSurface" />
+</LinearLayout>
