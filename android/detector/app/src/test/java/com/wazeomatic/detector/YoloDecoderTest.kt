@@ -26,6 +26,28 @@ class YoloDecoderTest {
         assertEquals(138f, lb.padY, 0f) // integer floor division like python //
     }
 
+    @Test
+    fun rectShapeDropsThePadding() {
+        // as detector.rect_shape: the long side at the model size, the short side up to a multiple of 32
+        assertEquals(listOf(640, 384), Letterbox.rectShape(1280, 720, 640).toList())   // 16:9 frame
+        assertEquals(listOf(640, 288), Letterbox.rectShape(640, 288, 640).toList())    // the zoom crop
+        assertEquals(listOf(640, 480), Letterbox.rectShape(1280, 960, 640).toList())   // 4:3 camera
+        assertEquals(listOf(416, 256), Letterbox.rectShape(1280, 720, 416).toList())
+        assertEquals(listOf(384, 640), Letterbox.rectShape(720, 1280, 640).toList())   // portrait
+        // the image keeps the scale of the square letterbox, only the grey bands go
+        val lb = Letterbox.compute(1280, 720, 640, 384)
+        assertEquals(0.5f, lb.scale, 1e-6f)
+        assertEquals(12f, lb.padY, 0f)
+    }
+
+    @Test
+    fun autoThreadsSplitTheCores() {
+        assertEquals(2, OnnxDetector.autoThreads(passes = 3, cores = 8))   // hazard, its zoom pass, coco
+        assertEquals(4, OnnxDetector.autoThreads(passes = 2, cores = 8))
+        assertEquals(4, OnnxDetector.autoThreads(passes = 1, cores = 8))
+        assertEquals(1, OnnxDetector.autoThreads(passes = 5, cores = 4))
+    }
+
     /** rows: cx, cy, w, h, score per class. Builds a channels-first [4+nc, N] tensor. */
     private fun channelsFirst(rowsIn: List<FloatArray>): FloatArray {
         // real models have N (anchors) >> 4+nc, pad with empty anchors so the layout check sees that

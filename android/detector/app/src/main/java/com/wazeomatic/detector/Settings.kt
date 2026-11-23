@@ -37,6 +37,8 @@ data class Settings(
     val hoodFrac: Float = 0.10f,            // minimum hood / dashboard zone (fraction of the frame height)
     val autoHood: Boolean = true,           // grow the zone from the static bottom of the picture (HoodEstimator)
     val zoomCoco: Boolean = false,          // also run the zoom pass on the COCO model (same default as Python)
+    val rectInput: Boolean = true,          // open-shape models run at the frame's aspect (640x384 for 16:9), like --rect
+    val ortThreads: Int = 0,                // XNNPACK threads per model session; 0 = auto (see OnnxDetector.autoThreads)
     val orientation: String = "auto",       // camera: auto | landscape | landscape_reverse | portrait (how the phone is mounted)
     val wazeReader: Boolean = true,         // skip events Waze already shows (needs WazeWatcherService switched on)
     val vehicleClassifier: Boolean = true,  // police / ambulance / fire on COCO vehicles (needs vehicle_cls.onnx)
@@ -123,6 +125,8 @@ data class Settings(
             .putFloat("hood_frac", hoodFrac)
             .putBoolean("auto_hood", autoHood)
             .putBoolean("zoom_coco", zoomCoco)
+            .putBoolean("rect_input", rectInput)
+            .putInt("ort_threads", ortThreads)
             .putString("orientation", orientation)
             .putBoolean("waze_reader", wazeReader)
             .putBoolean("vehicle_classifier", vehicleClassifier)
@@ -178,6 +182,8 @@ data class Settings(
             hoodFrac = f("hood_frac", hoodFrac),
             autoHood = z("auto_hood", autoHood),
             zoomCoco = z("zoom_coco", zoomCoco),
+            rectInput = z("rect_input", rectInput),
+            ortThreads = i("ort_threads", ortThreads).coerceIn(0, 8),
             orientation = str("orientation")?.trim()?.lowercase() ?: orientation,
             wazeReader = z("waze_reader", wazeReader),
             vehicleClassifier = z("vehicle_classifier", vehicleClassifier),
@@ -200,7 +206,7 @@ data class Settings(
             "global_cooldown", "min_hits", "window", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
-            "zoom_coco", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
+            "zoom_coco", "rect_input", "ort_threads", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
             "scene_features", "police_other_side", "police_stopped_only", "shoulder_cars", "shoulder_camera_speed", "drive_side", "use_gps_speed", "camera_geometry",
         )
 
@@ -256,6 +262,8 @@ data class Settings(
                 hoodFrac = p.getFloat("hood_frac", d.hoodFrac),
                 autoHood = p.getBoolean("auto_hood", d.autoHood),
                 zoomCoco = p.getBoolean("zoom_coco", d.zoomCoco),
+                rectInput = p.getBoolean("rect_input", d.rectInput),
+                ortThreads = p.getInt("ort_threads", d.ortThreads),
                 orientation = p.getString("orientation", d.orientation) ?: d.orientation,
                 wazeReader = p.getBoolean("waze_reader", d.wazeReader),
                 vehicleClassifier = p.getBoolean("vehicle_classifier", d.vehicleClassifier),

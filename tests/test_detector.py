@@ -1,6 +1,6 @@
 import numpy as np
 
-from wazeomatic.detector import Letterbox, decode_yolo_output, letterbox, nms, to_input_tensor
+from wazeomatic.detector import Letterbox, decode_yolo_output, letterbox, nms, rect_shape, to_input_tensor
 
 
 def test_letterbox_geometry():
@@ -12,6 +12,18 @@ def test_letterbox_geometry():
     assert lb.pad_y == (416 - int(round(720 * lb.scale))) // 2
     # padding colour is the YOLO gray
     assert out[0, 0].tolist() == [114, 114, 114]
+
+
+def test_rect_shape_drops_the_padding():
+    assert rect_shape(720, 1280, 640) == (384, 640)       # 16:9 frame
+    assert rect_shape(288, 640, 640) == (288, 640)        # the zoom crop
+    assert rect_shape(960, 1280, 640) == (480, 640)       # 4:3 camera
+    assert rect_shape(720, 1280, 416) == (256, 416)
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    out, lb = letterbox(img, 640, shape=rect_shape(720, 1280, 640))
+    assert out.shape == (384, 640, 3)
+    # same scale as the square letterbox, 12 px of padding above instead of 140
+    assert abs(lb.scale - 0.5) < 1e-9 and lb.pad_y == 12 and lb.pad_x == 0
 
 
 def test_input_tensor_layout():

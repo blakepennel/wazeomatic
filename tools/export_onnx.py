@@ -1,9 +1,17 @@
-"""Export a YOLO checkpoint to a static-shape ONNX file for ONNX Runtime.
+"""Export a YOLO checkpoint to an ONNX file for ONNX Runtime (static input shape unless --dynamic).
 
 Examples
     python tools/export_onnx.py --coco                       # stock yolo11n, 80 classes
     python tools/export_onnx.py --weights runs/train/hazard_v3n/weights/best.pt --name hazard_yolo11n_v3
     python tools/export_onnx.py --weights runs/train/hazard_v3n/weights/best.pt --name hazard_yolo11n_v3 --ship
+    python tools/export_onnx.py --weights runs/train/hazard_v4n/weights/best.pt --name hazard_yolo11n_v4_dyn --dynamic --ship
+    python tools/export_onnx.py --coco --dynamic
+
+--dynamic leaves the input height and width open. The Android app fixes them per session to the frame's own
+aspect (640 x 384 for a 16:9 frame instead of 640 x 640, which is 40 % less work for the same pixels); the
+desktop pipeline runs such a model at the square size it was trained at (or at the frame's aspect with --rect).
+With --dynamic the stable names are models/hazard_yolo11n_dyn.onnx and models/coco_yolo11n_dyn.onnx, which the
+Android build bundles in place of the square exports; the desktop keeps loading the square ones.
 
 Without --ship only models/<name>.onnx is written. --ship also copies it to models/hazard_yolo11n.onnx,
 the stable name the desktop pipeline and the Android build load, and refuses to do that for a model
@@ -57,6 +65,8 @@ def main() -> None:
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--out", help="output .onnx path (default models/<name>.onnx)")
     ap.add_argument("--half", action="store_true", help="fp16 weights (CPU EPs usually prefer fp32)")
+    ap.add_argument("--dynamic", action="store_true",
+                    help="open input height/width (and batch); the --imgsz is still written into the metadata")
     ap.add_argument("--no-stable", action="store_true",
                     help="--coco only: do not refresh models/coco_yolo11n.onnx")
     args = ap.parse_args()
@@ -82,22 +92,23 @@ def main() -> None:
         raise SystemExit(f"--ship would replace the shipped nano model with a {arch}; the phone build bundles that "
                          f"file. Pass --force if that is what you want.")
     exported = model.export(format="onnx", imgsz=imgsz, opset=args.opset, simplify=True,
-                            dynamic=False, half=args.half, nms=False)
+                            dynamic=args.dynamic, half=args.half, nms=False)
     MODELS.mkdir(exist_ok=True)
     if args.out:
         out = Path(args.out)
     elif args.coco:
-        out = MODELS / f"coco_yolo11n_{imgsz}.onnx"
+        out = MODELS / f"coco_yolo11n_{imgsz}{'_dyn' if args.dynamic else ''}.onnx"
     else:
         out = MODELS / f"{args.name or f'hazard_{arch}_{imgsz}'}.onnx"
     shutil.move(str(exported), str(out))
     (out.with_suffix(".labels.txt")).write_text("\n".join(labels) + "\n", encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB), {len(labels)} labels, {arch}, {imgsz} px")
     stable = None
+    dyn = "_dyn" if args.dynamic else ""
     if args.coco and not args.no_stable:
-        stable = MODELS / "coco_yolo11n.onnx"          # the stock detector the pipeline and the app load
+        stable = MODELS / f"coco_yolo11n{dyn}.onnx"    # the stock detector the pipeline and the app load
     elif args.ship and not args.coco:
-        stable = MODELS / SHIPPED_HAZARD
+        stable = MODELS / SHIPPED_HAZARD.replace(".onnx", f"{dyn}.onnx")
     if stable is not None and stable.resolve() != out.resolve():
         shutil.copyfile(out, stable)
         shutil.copyfile(out.with_suffix(".labels.txt"), stable.with_suffix(".labels.txt"))

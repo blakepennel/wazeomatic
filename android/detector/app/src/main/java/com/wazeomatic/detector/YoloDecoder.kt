@@ -28,6 +28,17 @@ data class Letterbox(
             val py = (inH - nh) / 2
             return Letterbox(scale.toFloat(), px.toFloat(), py.toFloat(), inW, inH, srcW, srcH, nw, nh)
         }
+
+        /**
+         * Smallest input [width, height], in multiples of [stride], that holds a [srcW] x [srcH] image scaled so
+         * its long side is [size] (detector.rect_shape): 640 x 384 for a 16:9 frame, 640 x 288 for the zoom crop.
+         */
+        fun rectShape(srcW: Int, srcH: Int, size: Int, stride: Int = 32): IntArray {
+            val scale = size.toDouble() / maxOf(srcW, srcH)
+            val nw = Math.rint(srcW * scale).toInt()
+            val nh = Math.rint(srcH * scale).toInt()
+            return intArrayOf((nw + stride - 1) / stride * stride, (nh + stride - 1) / stride * stride)
+        }
     }
 }
 

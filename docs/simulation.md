@@ -42,6 +42,7 @@ The models are not committed; build or export them first ([models/README.md](../
 | `--prefetch 2`, `--no-parallel` | Frame decoding (and CameraSim) on a background thread, two frames ahead; hazard and COCO models run side by side unless `--no-parallel` |
 | `0 --camera` | Live webcam / capture device instead of a file (`--max-frames` ends the run); see "Live camera without a webcam" |
 | `--show`, `--record <mp4>`, `--stats-json <file>` | Live window, annotated video, latency/FPS summary |
+| `--rect` | With a model exported with `--dynamic` (`models/hazard_yolo11n_dyn.onnx`, `models/coco_yolo11n_dyn.onnx`): feed each image at its own aspect (640x384 for a 16:9 frame, 640x288 for the zoom crop) instead of the padded square, as the phone app does. A square export ignores it |
 | `--no-coco`, `--no-hazard`, `--threads 4` | Pick models; ORT thread count (4 approximates a phone's big cores). Without `--no-hazard` a missing hazard model file is a fatal error |
 
 `run_video.py` runs the hazard stack and the COCO model on each sampled frame, feeds the Report Manager, and prints a `[stats]` line with mean/p50/p90 inference time (all models added up, the compute cost), the wall-clock latency of one frame (what the parallel run actually takes) and pipeline FPS, so results can go into [model-research.md](model-research.md#measured-results). The same detector flags are understood by `tools/eval_events.py`, so a configuration can be scored and then run unchanged (`wazeomatic/build.py` builds the stack for both).

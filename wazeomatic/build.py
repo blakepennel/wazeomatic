@@ -48,6 +48,7 @@ class DetectorSpec:
     conf: float = 0.35
     iou: float = 0.5
     threads: int = 4
+    rect: bool = False               # open-shape exports run at the frame's aspect (as on the phone)
     zoom_crop: tuple[float, float, float, float] | None = None
     zoom_coco: bool = False          # also zoom the COCO model (costly, rarely useful)
     fusion: str = "wbf"              # wbf | nms
@@ -73,6 +74,7 @@ class DetectorSpec:
             coco_model=None if getattr(args, "no_coco", False) else Path(args.coco_model),
             coco_labels=getattr(args, "coco_labels", None),
             conf=args.conf, iou=args.iou, threads=args.threads,
+            rect=bool(getattr(args, "rect", False)),
             zoom_crop=None if getattr(args, "no_zoom", False) else parse_crop(getattr(args, "zoom_crop", None)),
             zoom_coco=bool(getattr(args, "zoom_coco", False)),
             fusion=getattr(args, "fusion", "wbf"), weights=weights,
@@ -113,6 +115,9 @@ def add_detector_args(ap, default_hazard: Path | None = None, default_coco: Path
     ap.add_argument("--conf", type=float, default=0.35, help="detector confidence threshold")
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--threads", type=int, default=4, help="ORT intra-op threads per model (phone-like: 4)")
+    ap.add_argument("--rect", action="store_true",
+                    help="with a model exported with --dynamic: feed each image at its own aspect (640 x 384 for "
+                         "16:9) instead of the padded square, as the phone app does")
     ap.add_argument("--zoom-crop", nargs="?", const="0.25,0.35,0.75,0.75", default=None,
                     help="also run the hazard model(s) on a zoomed crop of the road ahead (x1,y1,x2,y2 "
                          "fractions); one extra inference per model, finds small distant hazards. "
@@ -134,7 +139,7 @@ def build_hazard_detector(spec: DetectorSpec):
                              f"  models are not committed; see models/README.md for how to build them, "
                              f"or pass --no-hazard to run the stock COCO detector alone")
         det = OnnxDetector(p, labels_for(p, spec.hazard_labels), f"hazard:{p.stem}", spec.conf, spec.iou,
-                           threads=spec.threads)
+                           threads=spec.threads, rect=spec.rect)
         if spec.zoom_crop:
             det = ZoomDetector(det, spec.zoom_crop, spec.iou)
         members.append(det)
@@ -157,7 +162,7 @@ def build_detectors(spec: DetectorSpec) -> list:
     if spec.coco_model is not None:
         if spec.coco_model.exists():
             coco = OnnxDetector(spec.coco_model, labels_for(spec.coco_model, spec.coco_labels), "coco",
-                                spec.conf, spec.iou, threads=spec.threads)
+                                spec.conf, spec.iou, threads=spec.threads, rect=spec.rect)
             if spec.zoom_crop and spec.zoom_coco:
                 coco = ZoomDetector(coco, spec.zoom_crop, spec.iou)
             out.append(coco)

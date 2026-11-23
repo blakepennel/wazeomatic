@@ -24,7 +24,8 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     val modelStatus: String
     private val fusionWeights: FloatArray?
     private val classFloors: Map<String, Float> = settings.classFloors
-    private val pool = Executors.newFixedThreadPool(3) { r -> Thread(r, "detect").apply { isDaemon = true } }
+    // one thread per pass: every model's whole frame, each zoom pass, the second hazard model
+    private val pool = Executors.newFixedThreadPool(5) { r -> Thread(r, "detect").apply { isDaemon = true } }
     /** Learns the dashboard / hood band at the bottom of the picture (null = fixed zone). */
     val hood: HoodEstimator? = if (settings.autoHood) HoodEstimator(minFrac = settings.hoodFrac) else null
     private val hoodBmp: Bitmap? = hood?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
@@ -43,6 +44,9 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     private val cropRect = Rect()
     private var frameIndex = 0
     private var lastFrameNs = 0L
+    private var lastReturnNs = 0L
+    private val post = Executors.newSingleThreadExecutor { r -> Thread(r, "post").apply { isDaemon = true } }
+    @Volatile private var pending: java.util.concurrent.Future<*>? = null
     private var fps = 0.0
     /** Police / ambulance / fire on the COCO vehicles; null when off or vehicle_cls.onnx is not bundled. */
     val vehicle: VehicleClassifier?
@@ -61,6 +65,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         names.add("hazard")
         if (settings.ensemble && assetExists(ctx, "hazard2.onnx")) names.add("hazard2")
         names.add("coco")
+        // passes that run at once (every model plus each zoom pass) share the cores: on 8 cores three passes at
+        // two XNNPACK threads each beat four each (OnePlus N10: 180 against 250 ms a frame, docs/model-research.md)
+        val zoomOn = settings.zoomCropOrNull != null
+        val passCount = names.size + names.count { zoomOn && ZoomCrop.appliesTo(it, settings.zoomCoco) }
+        val threads = if (settings.ortThreads > 0) settings.ortThreads else OnnxDetector.autoThreads(passCount)
         for (name in names) {
             val bytes = readAsset(ctx, "$name.onnx")
             if (bytes == null) {
@@ -70,9 +79,10 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             val labels = readAsset(ctx, "${name}_labels.txt")?.toString(Charsets.UTF_8)
                 ?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() }
             try {
-                val d = OnnxDetector(env, bytes, labels, name, settings.effectiveDetConf, settings.iou)
+                val d = OnnxDetector(env, bytes, labels, name, settings.effectiveDetConf, settings.iou,
+                    rect = settings.rectInput, threads = threads)
                 list.add(d)
-                notes.add("$name: ${d.inW}x${d.inH} ${d.labels.size} cls ${d.backend}")
+                notes.add("$name: ${d.shapeNote}${if (d.openShape && settings.rectInput) " rect" else ""} ${d.labels.size} cls ${d.backend}")
             } catch (e: Exception) {
                 Log.e(TAG, "failed to load $name.onnx", e)
                 notes.add("$name: load failed (${e.message})")
@@ -121,6 +131,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     /** [ts] is the frame time in seconds (video: position in the clip, camera: elapsedRealtime); the scene rules run on it. */
     fun process(frame: Bitmap, ts: Double = SystemClock.elapsedRealtimeNanos() / 1e9) {
         frameIndex++
+        val tIn = System.nanoTime()
         val lat = LinkedHashMap<String, Double>()
         val dets = ArrayList<Detection>()
         // crop region in pixels; null when off or when the frame is too small for it
@@ -128,32 +139,35 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val effCrop = crop?.let { ZoomCrop.fromRect(it, frame.width, frame.height) }
         if (crop != null) cropRect.set(crop.x1, crop.y1, crop.x2, crop.y2)
         val t0 = System.nanoTime()
-        // every model (and its zoom pass) runs on its own thread; ORT releases the Java monitor.
-        // The zoom pass is for the hazard model(s); COCO only with zoom_coco (as in build.py).
-        val tasks = detectors.map { d ->
-            val zoomThis = effCrop != null && ZoomCrop.appliesTo(d.name, settings.zoomCoco)
+        // every model and every zoom pass runs on its own thread (each pass has its own session); ORT releases
+        // the Java monitor. The zoom pass is for the hazard model(s); COCO only with zoom_coco (as in build.py).
+        class Pass(val d: OnnxDetector, val zoom: Boolean)
+        val passes = ArrayList<Pass>()
+        for (d in detectors) {
+            passes.add(Pass(d, false))
+            if (effCrop != null && ZoomCrop.appliesTo(d.name, settings.zoomCoco)) passes.add(Pass(d, true))
+        }
+        val tasks = passes.map { p ->
             Callable {
                 try {
-                    val full = d.detect(frame)
-                    val msFull = d.lastMs
-                    if (effCrop == null || !zoomThis) {
-                        Triple(d, full, msFull to null)
-                    } else {
-                        val zoomed = d.detect(frame, cropRect)
-                        Triple(d, ZoomCrop.merge(full + effCrop.toFrame(zoomed), d.iouThres), msFull to d.lastMs)
-                    }
+                    if (p.zoom) p.d.detect(frame, cropRect, OnnxDetector.SLOT_ZOOM) else p.d.detect(frame)
                 } catch (e: Exception) {
-                    Log.e(TAG, "inference failed in ${d.name}", e)
-                    Triple(d, emptyList(), 0.0 to null)
+                    Log.e(TAG, "inference failed in ${p.d.name}${if (p.zoom) " (zoom)" else ""}", e)
+                    emptyList()
                 }
             }
         }
+        val full = HashMap<OnnxDetector, List<Detection>>()
+        val zoomed = HashMap<OnnxDetector, List<Detection>>()
+        for ((p, f) in passes.zip(pool.invokeAll(tasks))) (if (p.zoom) zoomed else full)[p.d] = f.get()
         val perModel = LinkedHashMap<OnnxDetector, List<Detection>>()
-        for (f in pool.invokeAll(tasks)) {
-            val (d, out, ms) = f.get()
-            perModel[d] = out
-            lat[d.name] = ms.first
-            ms.second?.let { lat["${d.name}_zoom"] = it }
+        for (d in detectors) {
+            val z = zoomed[d]
+            lat[d.name] = d.lastMs
+            perModel[d] = if (z == null || effCrop == null) full[d] ?: emptyList() else {
+                lat["${d.name}_zoom"] = d.lastZoomMs
+                ZoomCrop.merge((full[d] ?: emptyList()) + effCrop.toFrame(z), d.iouThres)
+            }
         }
         lat["wall"] = (System.nanoTime() - t0) / 1e6
         val hazardLists = hazardMembers.map { perModel[it] ?: emptyList() }
@@ -165,6 +179,23 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         }
         dets.addAll(BoxFusion.applyClassFloors(hazardDets, classFloors))
         for (d in detectors) if (d !in hazardMembers) dets.addAll(perModel[d] ?: emptyList())
+        val idx = frameIndex
+        val tA = System.nanoTime()
+        lat["infer"] = (tA - tIn) / 1e6
+        // Second stage on its own thread: while it works on this frame the caller decodes the next one and its
+        // inference starts. At most one frame waits here, so frames stay in order and memory stays bounded.
+        val tWait = System.nanoTime()
+        try { pending?.get() } catch (e: Exception) { Log.e(TAG, "second stage of the previous frame failed", e) }
+        val waited = (System.nanoTime() - tWait) / 1e6
+        val src = if (lastReturnNs != 0L) (tIn - lastReturnNs) / 1e6 else null
+        pending = post.submit { finish(frame, ts, dets, lat, idx, src, waited) }
+        lastReturnNs = System.nanoTime()
+    }
+
+    /** Second stage, hood, Report Manager and the screen for one frame; runs on [post], one frame at a time. */
+    private fun finish(frame: Bitmap, ts: Double, dets: ArrayList<Detection>, lat: LinkedHashMap<String, Double>,
+                       idx: Int, src: Double?, waited: Double) {
+        val tB = System.nanoTime()
         secondStage(frame, ts, dets, lat)
         val now = System.nanoTime()
         if (lastFrameNs != 0L) {
@@ -172,14 +203,18 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             fps = if (fps == 0.0) inst else fps * 0.8 + inst * 0.2
         }
         lastFrameNs = now
-        if (lat.isNotEmpty()) {
-            Log.d(PERF_TAG, String.format(Locale.US, "frame=%d %s fps=%.1f dets=%d", frameIndex,
-                lat.entries.joinToString(" ") { String.format(Locale.US, "%s=%.1fms", it.key, it.value) }, fps, dets.size))
-        }
         updateHood(frame)
         sceneClassifiers?.setHoodFrac(reportManager.hoodFrac.toDouble())
-        if (hasModel) feed(dets)
-        PipelineBus.postFrame(FrameResult(frame, dets, lat, fps, frameIndex))
+        if (hasModel) feed(dets, idx)
+        PipelineBus.postFrame(FrameResult(frame, dets, lat, fps, idx))
+        if (lat.isNotEmpty()) {
+            // infer: models and fusion (caller thread); post: this function; src: between two process() calls
+            // (decoding and converting the next frame); wait: the caller blocked on the previous frame's post
+            val extra = String.format(Locale.US, "post=%.1fms wait=%.1fms", (System.nanoTime() - tB) / 1e6, waited) +
+                (src?.let { String.format(Locale.US, " src=%.1fms", it) } ?: "")
+            Log.d(PERF_TAG, String.format(Locale.US, "frame=%d %s %s fps=%.1f dets=%d", idx,
+                lat.entries.joinToString(" ") { String.format(Locale.US, "%s=%.1fms", it.key, it.value) }, extra, fps, dets.size))
+        }
     }
 
     /**
@@ -207,10 +242,13 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             scene?.let { s ->
                 val t0 = System.nanoTime()
                 dets.addAll(s.update(ts, img, dets, weather))
+                val t1 = System.nanoTime()
+                lat["scene_rules"] = (t1 - t0) / 1e6
                 // a copy in: the result replaces dets, so it must never be dets itself (clear() would empty both)
                 val gated = s.gatePolice(ts, img, dets.toList(), reportManager.hoodFrac.toDouble())
                 dets.clear()
                 dets.addAll(gated)
+                lat["police"] = (System.nanoTime() - t1) / 1e6
                 dets.addAll(s.shoulderCars(ts, img, dets, reportManager.hoodFrac.toDouble()))
                 lat["scene"] = (System.nanoTime() - t0) / 1e6
             }
@@ -282,6 +320,9 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     }
 
     override fun close() {
+        // the last frame's second stage uses the classifiers closed below
+        try { pending?.get(2, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) {}
+        post.shutdownNow()
         pool.shutdownNow()
         detectors.forEach { try { it.close() } catch (_: Exception) {} }
         try { vehicle?.close() } catch (_: Exception) {}
@@ -293,10 +334,23 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         const val PERF_TAG = "WazeomaticPerf"
         const val VEHICLE_TAG = "WazeomaticVehicle"
 
-        fun readAsset(ctx: Context, name: String): ByteArray? = try {
-            ctx.assets.open(name).use { it.readBytes() }
-        } catch (e: Exception) {
-            null
+        /**
+         * The bundled asset, or in a debug build <external files>/models/<name> when that exists, so a model can be
+         * tried on the phone without a rebuild: adb push hazard.onnx /sdcard/Android/data/<package>/files/models/
+         */
+        fun readAsset(ctx: Context, name: String): ByteArray? {
+            if (BuildConfig.DEBUG) {
+                val f = ctx.getExternalFilesDir(null)?.let { java.io.File(it, "models/$name") }
+                if (f != null && f.isFile) {
+                    Log.w(TAG, "debug: $name from ${f.path} instead of the bundled asset")
+                    return f.readBytes()
+                }
+            }
+            return try {
+                ctx.assets.open(name).use { it.readBytes() }
+            } catch (e: Exception) {
+                null
+            }
         }
 
         /** <asset>.onnx + <asset>_labels.txt as a classifier, or null (and a status note) when absent or broken. */

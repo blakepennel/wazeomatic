@@ -11,9 +11,11 @@ import java.io.File
 
 /**
  * Decodes an MP4 with MediaExtractor + MediaCodec (ByteBuffer/Image output, no surface) and
- * hands every [frameStep]-th frame to [onFrame] on the decode thread, with its position in the clip in
+ * hands every [frameStep]-th frame to [onFrame] on a delivery thread, with its position in the clip in
  * seconds (growing across loops, so time never runs backwards). Runs as fast as inference allows, which is
  * what we want for repeatable tests; the scene rules run on the clip time, as they do on the desktop.
+ * The decoder works one frame ahead of [onFrame] (a queue of one), so decoding and the YUV conversion overlap
+ * with inference instead of adding to it, as a camera's frames would.
  */
 class VideoSource(
     private val file: File,
@@ -24,9 +26,22 @@ class VideoSource(
 ) {
     @Volatile private var running = false
     private var thread: Thread? = null
+    private var consumer: Thread? = null
+    private val queue = java.util.concurrent.ArrayBlockingQueue<Pair<Bitmap, Double>>(1)
 
     fun start() {
         running = true
+        queue.clear()
+        consumer = Thread({
+            while (running) {
+                val (bmp, ts) = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                try {
+                    onFrame(bmp, ts)
+                } catch (e: Exception) {
+                    Log.e(TAG, "frame handler failed", e)
+                }
+            }
+        }, "video-frames").apply { start() }
         thread = Thread({
             try {
                 decodeLoop()
@@ -40,6 +55,13 @@ class VideoSource(
     fun stop() {
         running = false
         thread?.join(3000)
+        consumer?.join(3000)
+    }
+
+    /** Waits while the previous frame is still queued; false when stopped meanwhile. */
+    private fun deliver(bmp: Bitmap, ts: Double): Boolean {
+        while (running) if (queue.offer(bmp to ts, 100, java.util.concurrent.TimeUnit.MILLISECONDS)) return true
+        return false
     }
 
     private fun decodeLoop() {
@@ -114,7 +136,7 @@ class VideoSource(
                 }
                 val ts = (loopOffsetUs + info.presentationTimeUs) / 1e6
                 codec.releaseOutputBuffer(outIdx, false)
-                bmp?.let { onFrame(it, ts) }
+                bmp?.let { deliver(it, ts) }
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                     if (!loop) {
                         onStatus("video finished (${decoded} frames)")

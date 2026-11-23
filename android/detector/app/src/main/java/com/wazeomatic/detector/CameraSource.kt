@@ -8,6 +8,7 @@ import android.util.Size
 import android.view.OrientationEventListener
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -50,7 +51,10 @@ class CameraSource(
             try {
                 val p = future.get()
                 provider = p
+                // 16:9 like the test clips: CameraX picks 4:3 unless asked (1280x960 on a OnePlus N10), which costs
+                // a quarter more inference for sky and dashboard; the horizontal field of view is the same
                 val selector = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                     .setResolutionStrategy(
                         ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                     ).build()

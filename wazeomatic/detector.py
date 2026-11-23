@@ -32,18 +32,30 @@ class Letterbox:
     src_h: int
 
 
-def letterbox(img: np.ndarray, size: int, fill: int = 114) -> tuple[np.ndarray, Letterbox]:
-    """Resize keeping aspect ratio and pad to ``size`` x ``size`` (BGR uint8 in/out)."""
+def rect_shape(h: int, w: int, size: int, stride: int = 32) -> tuple[int, int]:
+    """Smallest (height, width) input, in multiples of ``stride``, that holds an ``h`` x ``w`` image scaled so its
+    long side is ``size``: (384, 640) for a 16:9 frame at 640, (320, 640) for the 640 x 288 zoom crop. The image is
+    seen at the same scale as in the square ``size`` x ``size`` letterbox; only the grey padding is left out."""
+    scale = size / max(h, w)
+    nh, nw = int(round(h * scale)), int(round(w * scale))
+    return -(-nh // stride) * stride, -(-nw // stride) * stride
+
+
+def letterbox(img: np.ndarray, size: int, fill: int = 114,
+              shape: tuple[int, int] | None = None) -> tuple[np.ndarray, Letterbox]:
+    """Resize keeping aspect ratio and pad to ``size`` x ``size``, or to ``shape`` = (height, width) when given
+    (BGR uint8 in/out)."""
     h, w = img.shape[:2]
-    scale = min(size / h, size / w)
+    oh, ow = shape or (size, size)
+    scale = min(oh / h, ow / w)
     nw, nh = int(round(w * scale)), int(round(h * scale))
     import cv2
 
     resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    out = np.full((size, size, 3), fill, dtype=np.uint8)
-    px, py = (size - nw) // 2, (size - nh) // 2
+    out = np.full((oh, ow, 3), fill, dtype=np.uint8)
+    px, py = (ow - nw) // 2, (oh - nh) // 2
     out[py : py + nh, px : px + nw] = resized
-    return out, Letterbox(scale, px, py, size, size, w, h)
+    return out, Letterbox(scale, px, py, ow, oh, w, h)
 
 
 def to_input_tensor(img_bgr: np.ndarray) -> np.ndarray:
@@ -136,6 +148,13 @@ def decode_yolo_output(
     return dets
 
 
+def _meta_size(session) -> int | None:
+    """Training size from Ultralytics export metadata ("imgsz": "[640, 640]"), for an export with open height/width."""
+    import re as _re
+    nums = _re.findall(r"\d+", str(session.get_modelmeta().custom_metadata_map.get("imgsz", "")))
+    return int(nums[0]) if nums else None
+
+
 class OnnxDetector:
     """Loads a YOLO ONNX file and runs it on BGR frames."""
 
@@ -148,6 +167,7 @@ class OnnxDetector:
         iou_thres: float = 0.5,
         providers: Sequence[str] | None = None,
         threads: int | None = None,
+        rect: bool = False,
     ):
         if ort is None:
             raise RuntimeError("onnxruntime is not installed")
@@ -161,7 +181,10 @@ class OnnxDetector:
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         shape = inp.shape
-        self.size = int(shape[2]) if isinstance(shape[2], int) else 640
+        self.size = int(shape[2]) if isinstance(shape[2], int) else _meta_size(self.session) or 640
+        # rect: an export with open height/width (export_onnx.py --dynamic) runs each image at its own aspect,
+        # as the phone app does; a static export always gets the square
+        self.rect = bool(rect) and not isinstance(shape[2], int) and not isinstance(shape[3], int)
         self.labels = list(labels)
         self.name = name
         self.conf_thres = conf_thres
@@ -172,7 +195,8 @@ class OnnxDetector:
             raise ValueError(f"{model_path}: model has {nc - 4} classes but {len(self.labels)} labels given")
 
     def __call__(self, frame_bgr: np.ndarray) -> list[Detection]:
-        padded, lb = letterbox(frame_bgr, self.size)
+        shape = rect_shape(*frame_bgr.shape[:2], self.size) if self.rect else None
+        padded, lb = letterbox(frame_bgr, self.size, shape=shape)
         x = to_input_tensor(padded)
         t0 = time.perf_counter()
         raw = self.session.run(None, {self.input_name: x})[0]
