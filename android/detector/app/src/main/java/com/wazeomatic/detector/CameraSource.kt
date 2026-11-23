@@ -34,8 +34,7 @@ class CameraSource(
     private val onFrameWarning: (String?) -> Unit,
     private val onFrame: (Bitmap) -> Unit,
 ) {
-    private val minIntervalNs = (1e9 / maxFps.coerceIn(0.5f, 30f)).toLong()
-    private var lastNs = 0L
+    private val throttle = FrameThrottle((1e9 / maxFps.coerceIn(0.5f, 30f)).toLong())
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "camera-analysis") }
     private var provider: ProcessCameraProvider? = null
     private var orientationListener: OrientationEventListener? = null
@@ -65,12 +64,10 @@ class CameraSource(
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
                 analysis.setAnalyzer(executor) { proxy ->
-                    val now = System.nanoTime()
-                    if (now - lastNs < minIntervalNs) {
+                    if (!throttle.accept(System.nanoTime())) {
                         proxy.close()
                         return@setAnalyzer
                     }
-                    lastNs = now
                     val rot = proxy.imageInfo.rotationDegrees
                     val bmp = try {
                         val raw = proxy.toBitmap()
@@ -140,5 +137,22 @@ class CameraSource(
 
     companion object {
         private const val TAG = "Wazeomatic"
+    }
+}
+
+/**
+ * The max_fps cap on a camera that delivers on a fixed grid (30 fps here). A plain "at least 1/6 s since the last
+ * frame" test drops the frame that lands a hair early and waits a whole extra camera frame: 200 ms between
+ * frames, 5 fps instead of 6. This one keeps a schedule instead: a frame is taken when it is no more than [slackNs]
+ * before its slot, and the next slot follows the last one, so the rate averages out at the cap.
+ */
+class FrameThrottle(private val intervalNs: Long, private val slackNs: Long = minOf(20_000_000L, intervalNs / 4)) {
+    private var nextNs = Long.MIN_VALUE
+
+    fun accept(nowNs: Long): Boolean {
+        if (nextNs != Long.MIN_VALUE && nowNs < nextNs - slackNs) return false
+        // behind by more than a slot (slow frames, a pause): start the schedule again from now
+        nextNs = if (nextNs == Long.MIN_VALUE || nowNs - nextNs > intervalNs) nowNs + intervalNs else nextNs + intervalNs
+        return true
     }
 }
