@@ -60,6 +60,14 @@ class GreyImage(val w: Int, val h: Int, val px: FloatArray) {
         return a + (b - a) * fy
     }
 
+    /** The pixels from floor(x) - r to floor(x) + r + 1 (and so in y) are all in the image, none clamped. */
+    fun inside(x: Double, y: Double, r: Int): Boolean {
+        if (!(x >= 0.0 && y >= 0.0)) return false
+        val x0 = floor(x).toInt()
+        val y0 = floor(y).toInt()
+        return x0 - r >= 0 && y0 - r >= 0 && x0 + r + 1 <= w - 1 && y0 + r + 1 <= h - 1
+    }
+
     /** Half-size image, each pixel the mean of a 2 x 2 block. */
     fun down(): GreyImage {
         val dw = w / 2
@@ -152,7 +160,7 @@ object Flow {
     }
 
     /** One point through pyramidal Lucas-Kanade from [a] to [b] (pyramids); null when it is lost. */
-    fun lk(a: List<GreyImage>, b: List<GreyImage>, x: Double, y: Double, win: Int): DoubleArray? {
+    fun lk(a: List<GreyImage>, b: List<GreyImage>, x: Double, y: Double, win: Int, fast: Boolean = true): DoubleArray? {
         val half = win / 2
         val n = (2 * half + 1) * (2 * half + 1)
         val iw = DoubleArray(n); val ix = DoubleArray(n); val iy = DoubleArray(n)
@@ -167,7 +175,27 @@ object Flow {
             val py = y * s
             var k = 0
             var g11 = 0.0; var g12 = 0.0; var g22 = 0.0
-            for (dy in -half..half) for (dx in -half..half) {
+            if (fast && ia.inside(px, py, half + 1)) {
+                // the whole window (and its gradient neighbours) inside: every sample has the same fraction, so
+                // the floor / clamp of sample() is done once; the arithmetic is sample()'s, the values the same
+                val x0 = floor(px).toInt()
+                val y0 = floor(py).toInt()
+                val fx = px - x0
+                val fy = py - y0
+                val p = ia.px
+                val w = ia.w
+                for (dy in -half..half) {
+                    var i = (y0 + dy) * w + x0 - half
+                    for (dx in -half..half) {
+                        iw[k] = lerp2(p, i, w, fx, fy)
+                        ix[k] = (lerp2(p, i + 1, w, fx, fy) - lerp2(p, i - 1, w, fx, fy)) / 2
+                        iy[k] = (lerp2(p, i + w, w, fx, fy) - lerp2(p, i - w, w, fx, fy)) / 2
+                        g11 += ix[k] * ix[k]; g12 += ix[k] * iy[k]; g22 += iy[k] * iy[k]
+                        k++
+                        i++
+                    }
+                }
+            } else for (dy in -half..half) for (dx in -half..half) {
                 val sx = px + dx
                 val sy = py + dy
                 iw[k] = ia.sample(sx, sy)
@@ -184,7 +212,25 @@ object Flow {
             for (iter in 0 until 30) {
                 var b1 = 0.0; var b2 = 0.0
                 k = 0
-                for (dy in -half..half) for (dx in -half..half) {
+                val bx = px + gx + vx
+                val by = py + gy + vy
+                if (fast && jb.inside(bx, by, half)) {
+                    val x0 = floor(bx).toInt()
+                    val y0 = floor(by).toInt()
+                    val fx = bx - x0
+                    val fy = by - y0
+                    val p = jb.px
+                    val w = jb.w
+                    for (dy in -half..half) {
+                        var i = (y0 + dy) * w + x0 - half
+                        for (dx in -half..half) {
+                            val it = lerp2(p, i, w, fx, fy) - iw[k]
+                            b1 += it * ix[k]; b2 += it * iy[k]
+                            k++
+                            i++
+                        }
+                    }
+                } else for (dy in -half..half) for (dx in -half..half) {
                     val it = jb.sample(px + gx + vx + dx, py + gy + vy + dy) - iw[k]
                     b1 += it * ix[k]; b2 += it * iy[k]
                     k++
@@ -203,6 +249,14 @@ object Flow {
         val h0 = a[0].h
         if (nx < 0 || ny < 0 || nx > w0 - 1 || ny > h0 - 1) return null
         return doubleArrayOf(nx, ny)
+    }
+
+    /** [GreyImage.sample] at pixel index [i] with its fractions already worked out. */
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun lerp2(p: FloatArray, i: Int, w: Int, fx: Double, fy: Double): Double {
+        val a = p[i] + (p[i + 1] - p[i]) * fx
+        val b = p[i + w] + (p[i + w + 1] - p[i + w]) * fx
+        return a + (b - a) * fy
     }
 
     /** Points tracked from [a] to [b] with a forward-backward check (< [fbPx]); returns matched (from, to). */
@@ -283,6 +337,30 @@ object Flow {
     }
 }
 
+/**
+ * The grey pyramid of the latest frame, for every tracker that looks at it (police gate, shoulder cars): one
+ * entry, keyed on the image object, its frame time and the size, so an image changed in place under a new time
+ * is read again.
+ */
+class PyramidCache {
+    private var img: RgbImage? = null
+    private var t = Double.NaN
+    private var key = 0L
+    private var pyr: List<GreyImage> = emptyList()
+
+    @Synchronized
+    fun get(t: Double, img: RgbImage, w: Int, h: Int, levels: Int): List<GreyImage> {
+        val k = (w.toLong() shl 40) or (h.toLong() shl 20) or levels.toLong()
+        if (img !== this.img || t != this.t || k != key) {
+            pyr = Flow.pyramid(GreyImage(w, h, ImageOps.greySmall(img, w, h)), levels)
+            this.img = img
+            this.t = t
+            key = k
+        }
+        return pyr
+    }
+}
+
 /** Follows chosen vehicle boxes frame to frame and reads each as pending, stopped or moving (motion.StandingTracker). */
 open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
     class Track(t: Double, bbox: BBox) {
@@ -298,6 +376,8 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
     private var prev: List<GreyImage>? = null
     private var prevT = 0.0
     private val tracks = ArrayList<Track>()
+    /** Shared with the other trackers on the same frames (SceneAnalyzer), so the frame is turned grey once. */
+    var pyramids: PyramidCache? = null
     var lastTracks: List<Track> = emptyList()
         private set
     /** The last trustworthy road fit: A, B (spread rate = A * y + B), rotation shift x, y (px). */
@@ -312,9 +392,10 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
     fun states(t: Double, img: RgbImage, dets: List<Detection>, targets: List<Detection>, egoState: String,
                hoodFrac: Double = 0.0, forceRoad: Boolean = false): List<Track> {
         val h = max(16, Math.round(img.height.toDouble() * cfg.width / img.width).toInt())
-        val g = GreyImage(cfg.width, h, ImageOps.greySmall(img, cfg.width, h))
         val levels = max(cfg.roadLk[1], cfg.carLk[1])
-        val pyr = Flow.pyramid(g, levels)
+        val pyr = pyramids?.get(t, img, cfg.width, h, levels)
+            ?: Flow.pyramid(GreyImage(cfg.width, h, ImageOps.greySmall(img, cfg.width, h)), levels)
+        val g = pyr[0]
         val prevPyr = prev
         val pt = prevT
         prev = pyr

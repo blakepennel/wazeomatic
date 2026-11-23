@@ -317,6 +317,12 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     val shoulder: ShoulderCars? = if (cfg.shoulderCars)
         ShoulderCars(ShoulderConfig(cameraSpeed = cfg.shoulderCameraSpeed), horizonY = cfg.horizonY,
             hfovDeg = cfg.hfovDeg, camHeightM = cfg.camHeightM, driveSide = cfg.driveSide) else null
+    init {
+        // both trackers follow the same frames: one grey pyramid a frame between them
+        val shared = PyramidCache()
+        motion?.pyramids = shared
+        shoulder?.tracker?.pyramids = shared
+    }
 
     private class Sample(val t: Double, val ego: String, val vehicles: Int, val ahead: Boolean)
     private class Emergency(val t: Double, val label: String, val bbox: BBox, val lit: Boolean)

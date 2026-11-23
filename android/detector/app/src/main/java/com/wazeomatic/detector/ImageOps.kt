@@ -116,6 +116,27 @@ object ImageOps {
      * dw x h buffer), then columns, so the cost is about (w + dw) * h no matter how large the source is.
      */
     private inline fun areaResize(w: Int, h: Int, dw: Int, dh: Int, get: (Int) -> Float): FloatArray {
+        if (dw in 1 until w && dh in 1 until h && w % dw == 0 && h % dh == 0) {
+            // whole-number ratio (1920x1080 or 1280x720 to 640x360): INTER_AREA is the plain block mean, and one
+            // pass over the source without the weight tables is several times faster on a phone
+            val fx = w / dw
+            val fy = h / dh
+            val out = FloatArray(dw * dh)
+            for (y in 0 until h) {
+                val row = y * w
+                val o = (y / fy) * dw
+                var i = row
+                for (x in 0 until dw) {
+                    var s = 0f
+                    for (k in 0 until fx) s += get(i + k)
+                    out[o + x] += s
+                    i += fx
+                }
+            }
+            val inv = 1f / (fx * fy)
+            for (k in out.indices) out[k] *= inv
+            return out
+        }
         val wx = areaWeights(w, dw)
         val wy = areaWeights(h, dh)
         val tmp = FloatArray(dw * h)
