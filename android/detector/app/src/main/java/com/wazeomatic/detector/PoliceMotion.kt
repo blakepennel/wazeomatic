@@ -507,7 +507,8 @@ class PoliceMotion(cfg: MotionConfig = MotionConfig()) : StandingTracker(cfg) {
     fun update(t: Double, img: RgbImage, dets: List<Detection>, egoState: String, hoodFrac: Double = 0.0): List<Detection> {
         val police = dets.filter { it.label == POLICE && it.confidence >= cfg.trackMinConf }
         val tracks = states(t, img, dets, police, egoState, hoodFrac)
-        if (police.isEmpty()) return dets
+        // always a new list: the pipeline clears its own list and refills it from this one
+        if (police.isEmpty()) return dets.toList()
         val assigned = HashMap<Int, Track>()
         for ((k, tr) in tracks.withIndex()) assigned[k] = tr
 

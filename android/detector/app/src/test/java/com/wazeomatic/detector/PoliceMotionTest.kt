@@ -78,6 +78,22 @@ class PoliceMotionTest {
     }
 
     @Test
+    fun gateKeepsEveryBoxWhenNoPoliceIsInView() {
+        // Pipeline clears its detection list and refills it from the gate's result: an aliased result emptied every
+        // frame without a police car (all hazards were lost on the phone from 2026-11-22 to 2026-11-23)
+        val img = RgbImage(64, 36, IntArray(64 * 36))
+        val dets = arrayListOf(Detection("cone", 0.8f, BBox(0.5f, 0.7f, 0.05f, 0.08f), "hazard"),
+            Detection("car", 0.9f, BBox(0.3f, 0.6f, 0.2f, 0.2f), "coco"))
+        for (sa in listOf(SceneAnalyzer(SceneConfig()), SceneAnalyzer(SceneConfig(policeStoppedOnly = false)))) {
+            val gated = sa.gatePolice(0.0, img, dets)
+            assertTrue(gated !== dets)
+            dets.clear()
+            dets.addAll(gated)
+            assertEquals(listOf("cone", "car"), dets.map { it.label })
+        }
+    }
+
+    @Test
     fun roadPairRateRecoversUniformExpansion() {
         val rng = Random(0)
         val a = List(300) { doubleArrayOf(50 + 540 * rng.nextDouble(), 200 + 140 * rng.nextDouble()) }

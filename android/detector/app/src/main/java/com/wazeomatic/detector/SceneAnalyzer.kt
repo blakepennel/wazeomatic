@@ -346,7 +346,7 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
      * counts them (Waze's Police report is for a police car that stands). The crash rule has seen them as they were.
      */
     fun gatePolice(t: Double, img: RgbImage, dets: List<Detection>, hoodFrac: Double = 0.0): List<Detection> {
-        val m = motion ?: return dets
+        val m = motion ?: return dets.toList()
         return m.update(t, img, dets, (state["ego"] as? String) ?: "moving", hoodFrac)
     }
 

@@ -207,7 +207,8 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
             scene?.let { s ->
                 val t0 = System.nanoTime()
                 dets.addAll(s.update(ts, img, dets, weather))
-                val gated = s.gatePolice(ts, img, dets, reportManager.hoodFrac.toDouble())
+                // a copy in: the result replaces dets, so it must never be dets itself (clear() would empty both)
+                val gated = s.gatePolice(ts, img, dets.toList(), reportManager.hoodFrac.toDouble())
                 dets.clear()
                 dets.addAll(gated)
                 dets.addAll(s.shoulderCars(ts, img, dets, reportManager.hoodFrac.toDouble()))
