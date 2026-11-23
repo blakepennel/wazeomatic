@@ -32,7 +32,7 @@ data class Settings(
     val fusion: String = "wbf",             // wbf | nms
     val ensembleWeights: String = "",       // "2,1" = weight per hazard model (default equal)
     val classConf: String = "",             // per-label floors after fusion, "pothole=0.5,cone=0.4"
-    val reportClassConf: String = "pothole=0.45,police_vehicle=0.85,worker=0.6,debris=0.5", // ReportManager hit floors (same default as Python)
+    val reportClassConf: String = "pothole=0.55,police_vehicle=0.85,worker=0.6,debris=0.5", // ReportManager hit floors (same default as Python)
     val trackIou: Float = 0f,               // > 0 = spatial tracking in the ReportManager
     val trackGrow: Float = 1.5f,
     val hoodFrac: Float = 0.10f,            // minimum hood / dashboard zone (fraction of the frame height)

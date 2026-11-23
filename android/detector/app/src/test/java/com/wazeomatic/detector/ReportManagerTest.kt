@@ -382,12 +382,12 @@ class ReportManagerTest {
     }
 
     @Test
-    fun defaultPotholeFloorIs045() {
-        assertEquals(mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f), ReportConfig().minConfidenceByLabel)
+    fun defaultPotholeFloorIs055() {
+        assertEquals(mapOf("pothole" to 0.55f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f), ReportConfig().minConfidenceByLabel)
         val m = rm(ReportConfig(globalCooldownS = 0.0))
-        for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.42f)), frameIndex = i).isEmpty())
+        for (i in 0 until 3) assertTrue(m.update(listOf(det("pothole", 0.52f)), frameIndex = i).isEmpty())  // above 0.40, under the floor
         var ev: List<HazardEvent> = emptyList()
-        for (i in 3 until 6) ev = m.update(listOf(det("pothole", 0.46f)), frameIndex = i)
+        for (i in 3 until 6) ev = m.update(listOf(det("pothole", 0.56f)), frameIndex = i)
         assertEquals(1, ev.size)
     }
 }

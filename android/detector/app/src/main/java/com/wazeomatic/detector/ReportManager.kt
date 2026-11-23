@@ -15,7 +15,7 @@ data class ReportConfig(
     /** Per-type overrides of [minHits]; Police needs two hits (see DEFAULT_MIN_HITS_BY_HAZARD). */
     val minHitsByHazard: Map<String, Int> = DEFAULT_MIN_HITS_BY_HAZARD,
     val minConfidence: Float = 0.40f,
-    /** Per-label overrides of [minConfidence]; potholes ship at 0.45 (see DEFAULT_LABEL_FLOORS). */
+    /** Per-label overrides of [minConfidence]; potholes ship at 0.55 (see DEFAULT_LABEL_FLOORS). */
     val minConfidenceByLabel: Map<String, Float> = DEFAULT_LABEL_FLOORS,
     /**
      * > 0: the hits behind a report must come from boxes that overlap frame to frame (grown by
@@ -57,7 +57,7 @@ data class ReportConfig(
 )
 
 /** Same value as DEFAULT_LABEL_FLOORS in wazeomatic/report_manager.py. */
-val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.45f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f)
+val DEFAULT_LABEL_FLOORS: Map<String, Float> = mapOf("pothole" to 0.55f, "police_vehicle" to 0.85f, "worker" to 0.6f, "debris" to 0.5f)
 
 /** Same value as DEFAULT_MIN_HITS_BY_HAZARD in wazeomatic/report_manager.py: two classifier hits above the
  *  police floor in ten frames (measured with the classifiers at their trained 160 px input). */

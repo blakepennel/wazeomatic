@@ -400,9 +400,9 @@ The same on the desktop (`ReportConfig`, `run_video.py`) and in the phone app (`
 | Fusion | off: one hazard model ships. A second one (`--ensemble-model`, `-PhazardModel2=hazard_yolo11s_v3.onnx`) is fused with Weighted Boxes Fusion |
 | Hood zone | learnt from the picture, minimum 10 % of the frame height |
 | Detector box threshold | 0.35 on the desktop and in the app |
-| Report floor | 0.40; pothole 0.45, police_vehicle 0.85, worker 0.6, debris 0.5 (the higher of the general floor and a label floor applies) |
+| Report floor | 0.40; pothole 0.55 (0.45 until 2026-11-22), police_vehicle 0.85, worker 0.6, debris 0.5 (the higher of the general floor and a label floor applies) |
 | Persistence | 3 hits in 10 inference frames (Police 2) |
 | Cooldowns | 60 s per hazard type and 60 s between any two events |
 | Spatial tracking | off (`track_iou` 0) |
 
-Two things changed after the 2026-11-06 pass. The global cooldown went from 5 s to 60 s so that it matches the macro's one report per minute; a hazard that qualifies during another report's cooldown is counted as held back instead of being sent and dropped by the macro ([pipeline-to-macro.md](pipeline-to-macro.md#cooldown-responsibilities)). And the pothole floor is now the default of the command-line tools as well as of the app (`--report-class-conf` defaults to `pothole=0.45`), so `run_video.py` and `tools/eval_events.py` run the shipped operating point without extra flags. The tables above were measured before these changes; the event tables use single-hazard synthetic clips and name their floors explicitly.
+Two things changed after the 2026-11-06 pass. The global cooldown went from 5 s to 60 s so that it matches the macro's one report per minute; a hazard that qualifies during another report's cooldown is counted as held back instead of being sent and dropped by the macro ([pipeline-to-macro.md](pipeline-to-macro.md#cooldown-responsibilities)). And the pothole floor is now the default of the command-line tools as well as of the app (`--report-class-conf` defaulted to `pothole=0.45`; 0.55 since 2026-11-22), so `run_video.py` and `tools/eval_events.py` run the shipped operating point without extra flags. The tables above were measured before these changes; the event tables use single-hazard synthetic clips and name their floors explicitly.

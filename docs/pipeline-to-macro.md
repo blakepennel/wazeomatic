@@ -149,7 +149,7 @@ For the Pi variant the phone app runs a TCP server on port **8765**. The Pi conn
 
 | Rule | Where | Why |
 |------|-------|-----|
-| 3 hits in 10 frames, each with conf >= 0.40; a per-label floor can raise that (pothole 0.45) | Pipeline | Ignore single-frame flicker; potholes are the noisiest class |
+| 3 hits in 10 frames, each with conf >= 0.40; a per-label floor can raise that (pothole 0.55) | Pipeline | Ignore single-frame flicker; potholes are the noisiest class |
 | Boxes whose bottom edge is in the hood zone ignored (learnt from the picture, at least the bottom 10 % of the frame) | Pipeline | The car's own bonnet or dashboard is not a pothole |
 | Same hazard type at most once per 60 s | Pipeline | Do not report one pothole repeatedly |
 | Any two events at least 60 s apart | Pipeline | Match the macro's guard, so nothing is sent that the macro would drop |

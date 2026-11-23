@@ -11,7 +11,7 @@ by label). The `hazard_type` keys are the contract with the macro (`wazeomatic/s
 
 | Waze report | `hazard_type` | What fires it | Default |
 |---|---|---|---|
-| Hazard > Pothole | `HAZARD_ON_ROAD_POTHOLE` | hazard model, class pothole, floor 0.45 | on |
+| Hazard > Pothole | `HAZARD_ON_ROAD_POTHOLE` | hazard model, class pothole, floor 0.55 | on |
 | Hazard > Construction | `HAZARD_ON_ROAD_CONSTRUCTION` | hazard model: cone, sign, delineator, barricade, worker (a worker needs 0.6) | on |
 | Hazard > Object | `HAZARD_ON_ROAD_OBJECT` | hazard model class debris (0.5), lying on the road: the box reaches below the horizon less 0.15 and is not mostly inside a person or vehicle box | on |
 | Hazard > Car on shoulder | `HAZARD_SHOULDER_CAR_STOPPED` | COCO vehicle on the right shoulder whose box grows as we approach | off (`--stopped-vehicle`) |
@@ -316,12 +316,13 @@ buys (`tools/eval_events.py --zoom-crop --limit 120 --frames 8 --seed 1`, `runs/
 
 | pothole floor | pothole event recall (synthetic clips) | precision | false Pothole, 14.6 min of real drives |
 |---|---|---|---|
-| 0.45 (shipped) | 0.56 | 0.99 | 1 |
+| 0.45 (shipped until 2026-11-22) | 0.56 | 0.99 | 1 |
 | 0.50 | 0.51 | 0.99 | 1 |
-| 0.55 | 0.43 | 0.99 | 0 |
+| 0.55 (ships) | 0.43 | 0.99 | 0 |
 
-The floor stays at 0.45 until there is more real footage to weigh one false report against 13 points of
-recall; `report_class_conf` (phone) and `--report-class-conf pothole=0.55` (desktop) set it.
+The floor went up to 0.55 on 2026-11-22: a false report on real footage counts for more than 13 points of
+recall on synthetic clips, and the one real dashcam pothole is missed at either floor. `report_class_conf`
+(phone) and `--report-class-conf pothole=0.45` (desktop) set it back.
 
 ### Animal on a real dashcam
 

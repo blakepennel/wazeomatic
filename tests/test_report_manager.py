@@ -31,7 +31,7 @@ def test_single_frame_does_not_report():
 
 def test_persistence_then_report_once():
     rm, _ = make(window=10, min_hits=3)
-    assert rm.update([det(conf=0.6)]) == []     # above the 0.45 pothole floor, one hit
+    assert rm.update([det(conf=0.6)]) == []     # above the 0.55 pothole floor, one hit
     assert rm.update([det(conf=0.7)]) == []
     events = rm.update([det(conf=0.9)])
     assert len(events) == 1
@@ -160,18 +160,18 @@ def test_barricade_on_a_van_is_livery():
     assert len(rm2.update([car, chevrons])) == 1
 
 
-def test_default_pothole_floor_is_045():
+def test_default_pothole_floor_is_055():
     from wazeomatic.report_manager import ReportConfig, ReportManager
     from wazeomatic.schema import Detection
 
-    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
+    assert DEFAULT_LABEL_FLOORS == {"pothole": 0.55, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
     cfg = ReportConfig(global_cooldown_s=0)
-    assert cfg.min_confidence_by_label == {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
+    assert cfg.min_confidence_by_label == {"pothole": 0.55, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
     rm = ReportManager(cfg, clock=lambda: 1000.0)
-    weak = Detection("pothole", 0.42, (0.5, 0.5, 0.1, 0.1))
+    weak = Detection("pothole", 0.52, (0.5, 0.5, 0.1, 0.1))     # above the general 0.40, under the floor
     for i in range(3):
         assert rm.update([weak], frame_index=i) == []
-    strong = Detection("pothole", 0.46, (0.5, 0.5, 0.1, 0.1))
+    strong = Detection("pothole", 0.56, (0.5, 0.5, 0.1, 0.1))
     events = []
     for i in range(3, 6):
         events += rm.update([strong], frame_index=i)

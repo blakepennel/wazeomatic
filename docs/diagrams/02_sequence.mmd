@@ -14,7 +14,7 @@ sequenceDiagram
         RM->>RM: drop boxes in the hood zone, map label to hazard_type,<br/>count hits in last 10 frames
     end
 
-    alt 3+ hits at conf >= 0.40 (pothole 0.45) and no cooldown active
+    alt 3+ hits at conf >= 0.40 (pothole 0.55) and no cooldown active
         RM->>App: HazardEvent (JSON)
         Note over RM,App: On phone: in-process. Pi variant: NDJSON over TCP :8765
         App->>MD: broadcast com.wazeomatic.HAZARD_DETECTED<br/>extras: hazard_type, confidence, ts, source, dry_run

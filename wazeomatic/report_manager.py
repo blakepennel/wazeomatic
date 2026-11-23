@@ -30,7 +30,7 @@ from .schema import DEFAULT_CLASS_TO_HAZARD, Detection, HazardEvent
 # worker: a pedestrian in an orange or yellow shirt looks like hi-vis; 0.6 dropped the one such Construction
 # report on the held-out Argoverse clips and cost no Construction event on the val clips (docs/waze-coverage.md)
 # debris: 0.5 keeps 89 % of Object reports on Lost and Found frames right at 55 % recall (0.4: 84 %, 59 %)
-DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.45, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
+DEFAULT_LABEL_FLOORS: dict[str, float] = {"pothole": 0.55, "police_vehicle": 0.85, "worker": 0.6, "debris": 0.5}
 # per-type overrides of ReportConfig.min_hits. Police: two classifier hits above the 0.85 floor in ten frames;
 # with the classifiers at their trained 160 px input that found 7 of the 9 police cars on the held-out
 # Argoverse clips with no false report on the other 154, where three hits found 5 (docs/waze-coverage.md)
@@ -44,7 +44,7 @@ def _scene_cooldowns() -> dict[str, float]:
 
 
 def default_label_floor_spec() -> str:
-    """The shipped per-label floors as a CLI string (``"pothole=0.45"``): the default value of
+    """The shipped per-label floors as a CLI string (``"pothole=0.55"``): the default value of
     ``--report-class-conf`` so the command-line tools run the same operating point as the phone."""
     return ",".join(f"{k}={v:g}" for k, v in DEFAULT_LABEL_FLOORS.items())
 
