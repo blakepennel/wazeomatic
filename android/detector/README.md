@@ -64,6 +64,25 @@ adb forward tcp:8765 tcp:8765    # emulator / USB: then send JSON lines to local
 adb shell am start -n com.wazeomatic.detector/.MainActivity --ez stop true
 ```
 
+### Using the app
+
+The main screen (dark Material 3, laid out for portrait and for a landscape car mount) shows the analysed
+frames with their boxes, a state pill (stopped / starting / running / stalled / problem), the frame rate,
+the last report, the model and health line from the service (warnings in amber; tap it to expand) and the
+reports of this session. The big button starts and stops the detector. The amber **Dry run** button in the
+top bar switches dry run on in one tap; switching it off (real Waze reports) asks first and turns the
+button red (**LIVE**). Changing the source, the clip or dry run while the detector runs restarts it.
+
+The **Video** source shows the selected clip. **Choose** lists the clips in the app's files folder
+(thumbnail, size, length; a clip can be deleted there) and **Add a clip from the phone** opens the system
+file picker. The picked clip is copied into the folder, because the video source reads plain files, and
+then selected. Sharing a video to Wazeomatic, or opening one with it, does the same.
+
+**Settings** (the gear) groups every launch extra under Source, Reporting, Detection, Scene and Advanced,
+with switches, sliders and dropdowns. Each change is written through the same `Settings.withExtras` path
+that `am start --es` uses. A value set over adb that is outside a slider's range, or not in a dropdown's
+list, is shown as it is and kept unless you change it.
+
 ### Mounting the phone
 
 Mount the phone in landscape, like a dashcam: the models are trained on landscape frames and the
