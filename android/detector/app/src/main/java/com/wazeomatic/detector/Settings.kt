@@ -39,6 +39,10 @@ data class Settings(
     val zoomCoco: Boolean = false,          // also run the zoom pass on the COCO model (same default as Python)
     val rectInput: Boolean = true,          // open-shape models run at the frame's aspect (640x384 for 16:9), like --rect
     val ortThreads: Int = 0,                // XNNPACK threads per model session; 0 = auto (see OnnxDetector.autoThreads)
+    val zoomEvery: Int = 0,                 // zoom pass on every n-th frame; 0 = auto (every frame while it fits max_fps)
+    val maxDet: Int = YoloDecoder.MAX_DET,  // boxes per detector pass, best first (0 = no cap), like --max-det
+    val maxPerClass: Int = YoloDecoder.MAX_PER_CLASS, // of one class per pass, like --max-per-class
+    val ortBackend: String = "xnnpack",     // xnnpack | nnapi | nnapi_fp16 | cpu, or per model: "hazard=nnapi,coco=xnnpack"
     val orientation: String = "auto",       // camera: auto | landscape | landscape_reverse | portrait (how the phone is mounted)
     val wazeReader: Boolean = true,         // skip events Waze already shows (needs WazeWatcherService switched on)
     val vehicleClassifier: Boolean = true,  // police / ambulance / fire on COCO vehicles (needs vehicle_cls.onnx)
@@ -127,6 +131,10 @@ data class Settings(
             .putBoolean("zoom_coco", zoomCoco)
             .putBoolean("rect_input", rectInput)
             .putInt("ort_threads", ortThreads)
+            .putString("ort_backend", ortBackend)
+            .putInt("max_det", maxDet)
+            .putInt("zoom_every", zoomEvery)
+            .putInt("max_per_class", maxPerClass)
             .putString("orientation", orientation)
             .putBoolean("waze_reader", wazeReader)
             .putBoolean("vehicle_classifier", vehicleClassifier)
@@ -184,6 +192,10 @@ data class Settings(
             zoomCoco = z("zoom_coco", zoomCoco),
             rectInput = z("rect_input", rectInput),
             ortThreads = i("ort_threads", ortThreads).coerceIn(0, 8),
+            ortBackend = str("ort_backend")?.trim()?.lowercase() ?: ortBackend,
+            maxDet = i("max_det", maxDet).coerceIn(0, 1000),
+            zoomEvery = i("zoom_every", zoomEvery).coerceIn(0, 30),
+            maxPerClass = i("max_per_class", maxPerClass).coerceIn(0, 1000),
             orientation = str("orientation")?.trim()?.lowercase() ?: orientation,
             wazeReader = z("waze_reader", wazeReader),
             vehicleClassifier = z("vehicle_classifier", vehicleClassifier),
@@ -200,13 +212,23 @@ data class Settings(
         )
     }
 
+    /** The execution provider for model [name] out of [ortBackend] ("nnapi" or "hazard=nnapi,coco=xnnpack"). */
+    fun backendFor(name: String): String {
+        val parts = ortBackend.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        for (p in parts) {
+            val kv = p.split('=', limit = 2)
+            if (kv.size == 2 && kv[0].trim() == name) return kv[1].trim()
+        }
+        return parts.firstOrNull { '=' !in it } ?: "xnnpack"
+    }
+
     companion object {
         val KNOWN_KEYS = setOf(
             "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
             "global_cooldown", "min_hits", "window", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
-            "zoom_coco", "rect_input", "ort_threads", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
+            "zoom_coco", "rect_input", "ort_threads", "ort_backend", "max_det", "max_per_class", "zoom_every", "orientation", "waze_reader", "vehicle_classifier", "vehicle_crops", "weather",
             "scene_features", "police_other_side", "police_stopped_only", "shoulder_cars", "shoulder_camera_speed", "drive_side", "use_gps_speed", "camera_geometry",
         )
 
@@ -264,6 +286,10 @@ data class Settings(
                 zoomCoco = p.getBoolean("zoom_coco", d.zoomCoco),
                 rectInput = p.getBoolean("rect_input", d.rectInput),
                 ortThreads = p.getInt("ort_threads", d.ortThreads),
+                ortBackend = p.getString("ort_backend", d.ortBackend) ?: d.ortBackend,
+                maxDet = p.getInt("max_det", d.maxDet),
+                zoomEvery = p.getInt("zoom_every", d.zoomEvery),
+                maxPerClass = p.getInt("max_per_class", d.maxPerClass),
                 orientation = p.getString("orientation", d.orientation) ?: d.orientation,
                 wazeReader = p.getBoolean("waze_reader", d.wazeReader),
                 vehicleClassifier = p.getBoolean("vehicle_classifier", d.vehicleClassifier),

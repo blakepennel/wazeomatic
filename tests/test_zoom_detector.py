@@ -50,3 +50,13 @@ def test_merge_detections_is_per_class():
     a = Detection("cone", 0.9, (0.5, 0.5, 0.1, 0.1))
     b = Detection("pothole", 0.8, (0.5, 0.5, 0.1, 0.1))
     assert len(merge_detections([a, b])) == 2
+
+
+def test_zoom_detector_every_n_skips_the_crop_pass_between():
+    # every=2: frames 1 and 3 run both passes, frame 2 only the whole frame (as the phone's zoom_every)
+    base = FakeBase([[], [], [], [], []])
+    zd = ZoomDetector(base, crop=(0.25, 0.35, 0.75, 0.75), every=2)
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    for _ in range(3):
+        zd(frame)
+    assert base.calls == [(720, 1280), (288, 640), (720, 1280), (720, 1280), (288, 640)]

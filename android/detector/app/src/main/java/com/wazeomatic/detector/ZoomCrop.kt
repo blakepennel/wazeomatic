@@ -95,3 +95,44 @@ data class ZoomCrop(val x1: Float, val y1: Float, val x2: Float, val y2: Float) 
         }
     }
 }
+
+/**
+ * Which frames run the zoom pass (zoom_every): 1 = every frame, n = every n-th (frames 1, 1 + n, ... as
+ * ZoomDetector(every=n) on the desktop), 0 = auto: every frame while the frames that run it stay inside
+ * [budgetMs] (the max_fps interval), every other frame while they don't (a slow phone in a busy scene). So
+ * the zoom pass only costs frames where frames are short of time.
+ */
+class ZoomSchedule(private val every: Int, private val budgetMs: Double) {
+    /** Smoothed caller-thread time of the frames that ran the zoom pass (ms). */
+    var zoomFrameMs = 0.0
+        private set
+    var halved = false
+        private set
+
+    /** Whether frame [index] (1 = the first) runs the zoom pass. */
+    fun take(index: Int): Boolean = when {
+        every == 1 -> true
+        every > 1 -> (index - 1) % every == 0
+        else -> !halved || (index - 1) % 2 == 0
+    }
+
+    /** The time of a frame that ran the zoom pass; returns a log line when auto mode switches. */
+    private var seen = 0
+
+    fun note(ms: Double): String? {
+        // the first frames make the sessions (a second or more on a slow phone): not what a frame costs
+        if (++seen <= WARMUP) return null
+        zoomFrameMs = if (zoomFrameMs == 0.0) ms else zoomFrameMs * 0.8 + ms * 0.2
+        if (every != 0) return null
+        // some hysteresis, so a frame time near the budget does not flip it every frame
+        val halve = if (halved) zoomFrameMs > budgetMs * 0.85 else zoomFrameMs > budgetMs
+        if (halve == halved) return null
+        halved = halve
+        return String.format(java.util.Locale.US, "zoom pass on %s: frames with it take %.0f ms, budget %.0f ms",
+            if (halve) "every other frame" else "every frame", zoomFrameMs, budgetMs)
+    }
+
+    companion object {
+        const val WARMUP = 3
+    }
+}

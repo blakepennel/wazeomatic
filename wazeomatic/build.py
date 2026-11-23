@@ -51,12 +51,15 @@ class DetectorSpec:
     rect: bool = False               # open-shape exports run at the frame's aspect (as on the phone)
     zoom_crop: tuple[float, float, float, float] | None = None
     zoom_coco: bool = False          # also zoom the COCO model (costly, rarely useful)
+    zoom_every: int = 1              # the zoom pass on every n-th frame (the phone's zoom_every)
     fusion: str = "wbf"              # wbf | nms
     weights: list[float] | None = None
     conf_type: str = "avg"
     fusion_iou: float = 0.55
     class_conf: dict[str, float] = field(default_factory=dict)
     parallel: bool = True
+    max_det: int = 40                # boxes per pass, best first (detector.MAX_DET); 0 = no cap
+    max_per_class: int = 12          # of one class per pass (detector.MAX_PER_CLASS); 0 = no cap
 
     @classmethod
     def from_args(cls, args) -> "DetectorSpec":
@@ -77,9 +80,11 @@ class DetectorSpec:
             rect=bool(getattr(args, "rect", False)),
             zoom_crop=None if getattr(args, "no_zoom", False) else parse_crop(getattr(args, "zoom_crop", None)),
             zoom_coco=bool(getattr(args, "zoom_coco", False)),
+            zoom_every=int(getattr(args, "zoom_every", 1) or 1),
             fusion=getattr(args, "fusion", "wbf"), weights=weights,
             conf_type=getattr(args, "conf_type", "avg"), fusion_iou=getattr(args, "fusion_iou", 0.55),
             class_conf=parse_class_thresholds(getattr(args, "class_conf", None)),
+            max_det=getattr(args, "max_det", 40), max_per_class=getattr(args, "max_per_class", 12),
             parallel=not getattr(args, "no_parallel", False),
         )
 
@@ -114,10 +119,15 @@ def add_detector_args(ap, default_hazard: Path | None = None, default_coco: Path
     ap.add_argument("--no-hazard", action="store_true", help="skip the custom hazard detector")
     ap.add_argument("--conf", type=float, default=0.35, help="detector confidence threshold")
     ap.add_argument("--iou", type=float, default=0.5)
+    ap.add_argument("--max-det", type=int, default=40, help="boxes per detector pass, best first (0 = no cap)")
+    ap.add_argument("--max-per-class", type=int, default=12,
+                    help="boxes of one class per detector pass, best first (0 = no cap)")
     ap.add_argument("--threads", type=int, default=4, help="ORT intra-op threads per model (phone-like: 4)")
     ap.add_argument("--rect", action="store_true",
                     help="with a model exported with --dynamic: feed each image at its own aspect (640 x 384 for "
                          "16:9) instead of the padded square, as the phone app does")
+    ap.add_argument("--zoom-every", type=int, default=1,
+                    help="with --zoom-crop: the zoom pass on every n-th frame only (as the phone's zoom_every)")
     ap.add_argument("--zoom-crop", nargs="?", const="0.25,0.35,0.75,0.75", default=None,
                     help="also run the hazard model(s) on a zoomed crop of the road ahead (x1,y1,x2,y2 "
                          "fractions); one extra inference per model, finds small distant hazards. "
@@ -139,9 +149,9 @@ def build_hazard_detector(spec: DetectorSpec):
                              f"  models are not committed; see models/README.md for how to build them, "
                              f"or pass --no-hazard to run the stock COCO detector alone")
         det = OnnxDetector(p, labels_for(p, spec.hazard_labels), f"hazard:{p.stem}", spec.conf, spec.iou,
-                           threads=spec.threads, rect=spec.rect)
+                           threads=spec.threads, rect=spec.rect, max_det=spec.max_det, max_per_class=spec.max_per_class)
         if spec.zoom_crop:
-            det = ZoomDetector(det, spec.zoom_crop, spec.iou)
+            det = ZoomDetector(det, spec.zoom_crop, spec.iou, every=spec.zoom_every)
         members.append(det)
     if not members:
         return None
@@ -162,9 +172,10 @@ def build_detectors(spec: DetectorSpec) -> list:
     if spec.coco_model is not None:
         if spec.coco_model.exists():
             coco = OnnxDetector(spec.coco_model, labels_for(spec.coco_model, spec.coco_labels), "coco",
-                                spec.conf, spec.iou, threads=spec.threads, rect=spec.rect)
+                                spec.conf, spec.iou, threads=spec.threads, rect=spec.rect,
+                                max_det=spec.max_det, max_per_class=spec.max_per_class)
             if spec.zoom_crop and spec.zoom_coco:
-                coco = ZoomDetector(coco, spec.zoom_crop, spec.iou)
+                coco = ZoomDetector(coco, spec.zoom_crop, spec.iou, every=spec.zoom_every)
             out.append(coco)
         else:
             print(f"[warn] coco model not found at {spec.coco_model}; running without it", file=sys.stderr)

@@ -89,6 +89,8 @@ object YoloDecoder {
         iouThres: Float,
         modelName: String = "hazard",
         classAgnostic: Boolean = false,
+        maxDet: Int = MAX_DET,
+        maxPerClass: Int = MAX_PER_CLASS,
     ): List<Detection> {
         require(raw.size >= d1 * d2) { "tensor too small: ${raw.size} < $d1 x $d2" }
         val channelsFirst = d1 < d2 && d1 == 4 + labels.size
@@ -120,8 +122,18 @@ object YoloDecoder {
             selConf.add(bestScore)
             selCls.add(best)
         }
+        if (selConf.isEmpty()) return emptyList()
+        if (selConf.size > MAX_CANDIDATES) {
+            // best first, ties in index order (as numpy's stable argsort in detector.py)
+            val top = selConf.indices.sortedByDescending { selConf[it] }.take(MAX_CANDIDATES)
+            val b = top.flatMap { i -> (0 until 4).map { selBoxes[i * 4 + it] } }
+            val c = top.map { selConf[it] }
+            val k = top.map { selCls[it] }
+            selBoxes.clear(); selBoxes.addAll(b)
+            selConf.clear(); selConf.addAll(c)
+            selCls.clear(); selCls.addAll(k)
+        }
         val m = selConf.size
-        if (m == 0) return emptyList()
         val xyxy = selBoxes.toFloatArray()
         // per-class NMS via coordinate offset trick
         val shifted = FloatArray(m * 4) { k ->
@@ -149,6 +161,27 @@ object YoloDecoder {
                     model = modelName,
                 )
             )
+        }
+        return if (maxDet > 0 || maxPerClass > 0) cap(out, maxDet, maxPerClass) else out
+    }
+
+    // Per pass, best first, as detector.py. A normal frame has far fewer (on 1,600 road, work-zone and city frames
+    // at most 22 of one class and 38 in one pass); they bound a frame gone wrong, whose hundreds of boxes would
+    // otherwise stall NMS and the whole second stage.
+    const val MAX_CANDIDATES = 1000   // boxes over the threshold that go into NMS
+    const val MAX_DET = 40            // boxes out of one pass
+    const val MAX_PER_CLASS = 12      // of one class in one pass
+
+    /** The best [maxPerClass] of each label and [maxDet] in all (0 = no cap), best first. */
+    fun cap(dets: List<Detection>, maxDet: Int = MAX_DET, maxPerClass: Int = MAX_PER_CLASS): List<Detection> {
+        val out = ArrayList<Detection>()
+        val seen = HashMap<String, Int>()
+        for (d in dets.sortedByDescending { it.confidence }) {
+            if (maxDet > 0 && out.size >= maxDet) break
+            val n = seen[d.label] ?: 0
+            if (maxPerClass > 0 && n >= maxPerClass) continue
+            seen[d.label] = n + 1
+            out.add(d)
         }
         return out
     }

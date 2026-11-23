@@ -88,6 +88,30 @@ def nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thres: float) -> list[in
     return keep
 
 
+# Per pass, best first (the phone app's YoloDecoder has the same caps). A normal frame has far fewer: on 1,600
+# frames of road, work-zone and city clips the most of one class was 22 delineators, the most in one pass 38
+# boxes. They bound a frame gone wrong (a bad model or a burst of clutter), whose hundreds of boxes would
+# otherwise stall NMS and everything after the detectors.
+MAX_CANDIDATES = 1000   # boxes over the threshold that go into NMS
+MAX_DET = 40            # boxes out of one pass
+MAX_PER_CLASS = 12      # of one class in one pass: a 13th cone adds nothing a report needs
+
+
+def cap_detections(dets: Sequence[Detection], max_det: int = MAX_DET, max_per_class: int = MAX_PER_CLASS) -> list[Detection]:
+    """The best ``max_per_class`` of each label and ``max_det`` in all (0 = no cap), best first."""
+    out: list[Detection] = []
+    seen: dict[str, int] = {}
+    for d in sorted(dets, key=lambda d: -d.confidence):
+        if max_det and len(out) >= max_det:
+            break
+        n = seen.get(d.label, 0)
+        if max_per_class and n >= max_per_class:
+            continue
+        seen[d.label] = n + 1
+        out.append(d)
+    return out
+
+
 def decode_yolo_output(
     raw: np.ndarray,
     lb: Letterbox,
@@ -96,10 +120,13 @@ def decode_yolo_output(
     iou_thres: float,
     model_name: str = "hazard",
     class_agnostic: bool = False,
+    max_det: int = MAX_DET,
+    max_per_class: int = MAX_PER_CLASS,
 ) -> list[Detection]:
     """Turn a ``[1, 4+nc, N]`` (or ``[1, N, 4+nc]``) tensor into Detections.
 
-    Returned bboxes are normalized center-xywh in the *source* image frame.
+    Returned bboxes are normalized center-xywh in the *source* image frame, best first, capped by
+    ``max_det`` / ``max_per_class`` (0 = no cap).
     """
     out = raw[0]
     if out.shape[0] == 4 + len(labels):  # channel-first export [4+nc, N] -> [N, 4+nc]
@@ -112,6 +139,9 @@ def decode_yolo_output(
     boxes, cls_id, conf = boxes[m], cls_id[m], conf[m]
     if len(boxes) == 0:
         return []
+    if len(conf) > MAX_CANDIDATES:
+        top = np.argsort(-conf, kind="stable")[:MAX_CANDIDATES]
+        boxes, cls_id, conf = boxes[top], cls_id[top], conf[top]
     # xywh (letterboxed px) -> xyxy
     xyxy = np.empty_like(boxes)
     xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
@@ -145,7 +175,7 @@ def decode_yolo_output(
                 model=model_name,
             )
         )
-    return dets
+    return cap_detections(dets, max_det, max_per_class) if (max_det or max_per_class) else dets
 
 
 def _meta_size(session) -> int | None:
@@ -168,6 +198,8 @@ class OnnxDetector:
         providers: Sequence[str] | None = None,
         threads: int | None = None,
         rect: bool = False,
+        max_det: int = MAX_DET,
+        max_per_class: int = MAX_PER_CLASS,
     ):
         if ort is None:
             raise RuntimeError("onnxruntime is not installed")
@@ -189,6 +221,8 @@ class OnnxDetector:
         self.name = name
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
+        self.max_det = max_det
+        self.max_per_class = max_per_class
         self.last_ms = 0.0
         nc = self.session.get_outputs()[0].shape[1]
         if isinstance(nc, int) and nc - 4 != len(self.labels):
@@ -201,7 +235,8 @@ class OnnxDetector:
         t0 = time.perf_counter()
         raw = self.session.run(None, {self.input_name: x})[0]
         self.last_ms = (time.perf_counter() - t0) * 1000.0
-        return decode_yolo_output(raw, lb, self.labels, self.conf_thres, self.iou_thres, self.name)
+        return decode_yolo_output(raw, lb, self.labels, self.conf_thres, self.iou_thres, self.name,
+                                  max_det=self.max_det, max_per_class=self.max_per_class)
 
 
 class ZoomDetector:
@@ -212,11 +247,15 @@ class ZoomDetector:
     the default crop (middle 50 % of the width, 35-75 % of the height) is 640x288 px, so the
     second pass sees that region at full resolution: a 20 px cone becomes 40 px to the network.
     Costs one extra inference per frame. The crop stays above the hood zone on purpose.
+    ``every`` = n runs the crop pass on every n-th frame only (the phone's zoom_every); the frames
+    between get the whole-frame pass alone.
     """
 
     def __init__(self, base: "OnnxDetector", crop: tuple[float, float, float, float] = (0.25, 0.35, 0.75, 0.75),
-                 iou_thres: float = 0.5):
+                 iou_thres: float = 0.5, every: int = 1):
         self.base = base
+        self.every = max(1, int(every))
+        self._calls = 0
         self.crop = crop
         self.iou_thres = iou_thres
         self.labels = base.labels
@@ -229,6 +268,10 @@ class ZoomDetector:
         h, w = frame_bgr.shape[:2]
         full = self.base(frame_bgr)
         ms = self.base.last_ms
+        self._calls += 1
+        if (self._calls - 1) % self.every:
+            self.last_ms = ms
+            return full
         cx1, cy1, cx2, cy2 = self.crop
         x1, y1 = int(round(cx1 * w)), int(round(cy1 * h))
         x2, y2 = int(round(cx2 * w)), int(round(cy2 * h))
@@ -249,7 +292,9 @@ class ZoomDetector:
             )
             for d in zoomed
         ]
-        return merge_detections(full + mapped, self.iou_thres)
+        merged = merge_detections(full + mapped, self.iou_thres)
+        return cap_detections(merged, getattr(self.base, "max_det", MAX_DET),
+                              getattr(self.base, "max_per_class", MAX_PER_CLASS))
 
 
 def merge_detections(dets: list[Detection], iou_thres: float = 0.5) -> list[Detection]:

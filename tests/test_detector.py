@@ -66,3 +66,29 @@ def test_decode_accepts_transposed_output():
     raw[0, 0] = [32, 32, 10, 10, 0.0, 0.0, 0.8]
     dets = decode_yolo_output(raw, lb, labels, 0.5, 0.5)
     assert [d.label for d in dets] == ["c"]
+
+
+def _grid_output(labels, per_class, score=0.9):
+    """[1, 4+nc, N]: per_class[c] separate (non-overlapping) boxes of class c, scores falling with the index."""
+    cols = []
+    for c, n in enumerate(per_class):
+        for k in range(n):
+            col = np.zeros(4 + len(labels), dtype=np.float32)
+            col[:4] = [20 + 40 * k, 20 + 40 * c, 20, 20]
+            col[4 + c] = score - 0.01 * k
+            cols.append(col)
+    return np.stack(cols, axis=1)[None]
+
+
+def test_decode_caps_boxes_per_class_and_per_pass():
+    labels = ["cone", "delineator", "car"]
+    lb = Letterbox(1.0, 0, 0, 1024, 256, 1024, 256)
+    raw = _grid_output(labels, [20, 5, 3])
+    assert len(decode_yolo_output(raw, lb, labels, 0.3, 0.5, max_det=0, max_per_class=0)) == 28
+    dets = decode_yolo_output(raw, lb, labels, 0.3, 0.5)            # defaults: 12 per class, 40 a pass
+    n = {lab: sum(d.label == lab for d in dets) for lab in labels}
+    assert n == {"cone": 12, "delineator": 5, "car": 3}
+    # the best of each class are the ones kept
+    assert min(d.confidence for d in dets if d.label == "cone") > 0.9 - 0.01 * 12
+    dets = decode_yolo_output(raw, lb, labels, 0.3, 0.5, max_det=10, max_per_class=0)
+    assert len(dets) == 10 and dets == sorted(dets, key=lambda d: -d.confidence)

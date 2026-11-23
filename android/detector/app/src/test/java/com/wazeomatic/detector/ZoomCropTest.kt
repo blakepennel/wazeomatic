@@ -97,3 +97,30 @@ class ZoomCropTest {
         assertNull(Settings(zoomCrop = "garbage").zoomCropOrNull)
     }
 }
+
+class ZoomScheduleTest {
+    @org.junit.Test
+    fun fixedSchedulesMatchTheDesktop() {
+        val every2 = ZoomSchedule(2, 167.0)
+        org.junit.Assert.assertEquals(listOf(true, false, true, false), (1..4).map { every2.take(it) })
+        val every1 = ZoomSchedule(1, 167.0)
+        repeat(10) { every1.note(500.0) }
+        org.junit.Assert.assertTrue((1..4).all { every1.take(it) })
+    }
+
+    @org.junit.Test
+    fun autoHalvesOnlyWhileFramesRunOverTheBudget() {
+        val s = ZoomSchedule(0, 167.0)
+        repeat(20) { s.note(125.0) }                       // a 720p road: inside the budget
+        org.junit.Assert.assertTrue((1..4).all { s.take(it) })
+        var line: String? = null
+        repeat(20) { s.note(212.0)?.let { l -> line = l } }     // a busy work zone
+        org.junit.Assert.assertTrue(s.halved)
+        org.junit.Assert.assertTrue(line!!.contains("every other frame"))
+        org.junit.Assert.assertEquals(listOf(true, false, true, false), (1..4).map { s.take(it) })
+        repeat(3) { s.note(150.0) }                        // just under the budget: hysteresis holds it
+        org.junit.Assert.assertTrue(s.halved)
+        repeat(20) { s.note(120.0) }
+        org.junit.Assert.assertFalse(s.halved)
+    }
+}

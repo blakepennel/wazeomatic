@@ -122,6 +122,35 @@ class YoloDecoderTest {
         assertTrue(dets.isEmpty())
     }
 
+    /** [4+nc, N] channels first: perClass[c] boxes of class c that do not overlap, scores falling with the index. */
+    private fun grid(nc: Int, perClass: IntArray): Pair<FloatArray, Int> {
+        val cols = ArrayList<FloatArray>()
+        for (c in 0 until nc) for (k in 0 until perClass[c]) {
+            val col = FloatArray(4 + nc)
+            col[0] = 20f + 40 * k; col[1] = 20f + 40 * c; col[2] = 20f; col[3] = 20f
+            col[4 + c] = 0.9f - 0.01f * k
+            cols.add(col)
+        }
+        val n = cols.size
+        val out = FloatArray((4 + nc) * n)
+        for (i in 0 until n) for (ch in 0 until 4 + nc) out[ch * n + i] = cols[i][ch]
+        return out to n
+    }
+
+    @Test
+    fun capsBoxesPerClassAndPerPass() {
+        val names = listOf("cone", "delineator", "car")
+        val lb = Letterbox.compute(1024, 256, 1024, 256)
+        val (raw, n) = grid(3, intArrayOf(20, 5, 3))
+        assertEquals(28, YoloDecoder.decode(raw, 7, n, lb, names, 0.3f, 0.5f, maxDet = 0, maxPerClass = 0).size)
+        val dets = YoloDecoder.decode(raw, 7, n, lb, names, 0.3f, 0.5f)     // 12 per class, 40 a pass
+        assertEquals(mapOf("cone" to 12, "delineator" to 5, "car" to 3), dets.groupingBy { it.label }.eachCount())
+        assertTrue(dets.filter { it.label == "cone" }.all { it.confidence > 0.9f - 0.01f * 12 })
+        val ten = YoloDecoder.decode(raw, 7, n, lb, names, 0.3f, 0.5f, maxDet = 10, maxPerClass = 0)
+        assertEquals(10, ten.size)
+        assertEquals(ten.sortedByDescending { it.confidence }, ten)
+    }
+
     companion object {
         const val N_TOTAL = 16
     }

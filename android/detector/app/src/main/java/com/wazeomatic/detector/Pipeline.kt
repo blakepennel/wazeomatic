@@ -43,6 +43,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     val zoomCrop: ZoomCrop? = settings.zoomCropOrNull
     private val cropRect = Rect()
     private var frameIndex = 0
+    private val zoomSchedule = ZoomSchedule(settings.zoomEvery, 1000.0 / settings.maxFps.coerceIn(0.5f, 30f))
     private var lastFrameNs = 0L
     private var lastReturnNs = 0L
     private val post = Executors.newSingleThreadExecutor { r -> Thread(r, "post").apply { isDaemon = true } }
@@ -80,7 +81,8 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
                 ?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() }
             try {
                 val d = OnnxDetector(env, bytes, labels, name, settings.effectiveDetConf, settings.iou,
-                    rect = settings.rectInput, threads = threads)
+                    rect = settings.rectInput, threads = threads, provider = settings.backendFor(name),
+                    maxDet = settings.maxDet, maxPerClass = settings.maxPerClass)
                 list.add(d)
                 notes.add("$name: ${d.shapeNote}${if (d.openShape && settings.rectInput) " rect" else ""} ${d.labels.size} cls ${d.backend}")
             } catch (e: Exception) {
@@ -134,8 +136,9 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val tIn = System.nanoTime()
         val lat = LinkedHashMap<String, Double>()
         val dets = ArrayList<Detection>()
-        // crop region in pixels; null when off or when the frame is too small for it
-        val crop = zoomCrop?.pixelRect(frame.width, frame.height)
+        // crop region in pixels; null when off, when the frame is too small for it or on a frame zoom_every skips
+        val zoomNow = zoomSchedule.take(frameIndex)
+        val crop = if (zoomNow) zoomCrop?.pixelRect(frame.width, frame.height) else null
         val effCrop = crop?.let { ZoomCrop.fromRect(it, frame.width, frame.height) }
         if (crop != null) cropRect.set(crop.x1, crop.y1, crop.x2, crop.y2)
         val t0 = System.nanoTime()
@@ -164,9 +167,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         for (d in detectors) {
             val z = zoomed[d]
             lat[d.name] = d.lastMs
+            lat["${d.name}_pre"] = d.lastPreMs
+            lat["${d.name}_dec"] = d.lastDecodeMs
             perModel[d] = if (z == null || effCrop == null) full[d] ?: emptyList() else {
                 lat["${d.name}_zoom"] = d.lastZoomMs
-                ZoomCrop.merge((full[d] ?: emptyList()) + effCrop.toFrame(z), d.iouThres)
+                YoloDecoder.cap(ZoomCrop.merge((full[d] ?: emptyList()) + effCrop.toFrame(z), d.iouThres), d.maxDet, d.maxPerClass)
             }
         }
         lat["wall"] = (System.nanoTime() - t0) / 1e6
@@ -182,6 +187,7 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         val idx = frameIndex
         val tA = System.nanoTime()
         lat["infer"] = (tA - tIn) / 1e6
+        if (effCrop != null) zoomSchedule.note(lat["infer"]!!)?.let { Log.i(TAG, it) }
         // Second stage on its own thread: while it works on this frame the caller decodes the next one and its
         // inference starts. At most one frame waits here, so frames stay in order and memory stays bounded.
         val tWait = System.nanoTime()
@@ -205,7 +211,10 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         lastFrameNs = now
         updateHood(frame)
         sceneClassifiers?.setHoodFrac(reportManager.hoodFrac.toDouble())
+        val tR = System.nanoTime()
+        lat["hood"] = (tR - now) / 1e6
         if (hasModel) feed(dets, idx)
+        lat["report"] = (System.nanoTime() - tR) / 1e6
         PipelineBus.postFrame(FrameResult(frame, dets, lat, fps, idx))
         if (lat.isNotEmpty()) {
             // infer: models and fusion (caller thread); post: this function; src: between two process() calls
@@ -225,8 +234,10 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         if (vehicle == null && sceneClassifiers == null && scene == null) return
         val n = frame.width * frame.height
         if (framePixels.size != n) framePixels = IntArray(n)
+        val tP = System.nanoTime()
         frame.getPixels(framePixels, 0, frame.width, 0, 0, frame.width, frame.height)
         val img = RgbImage(frame.width, frame.height, framePixels)
+        lat["pixels"] = (System.nanoTime() - tP) / 1e6
         try {
             vehicle?.let { v ->
                 dets.addAll(v(img, dets))
