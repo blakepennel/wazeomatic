@@ -19,7 +19,7 @@ built. Measured against the shipped v3 nano model:
 |---|---|
 | Pothole and cone mAP50 >= 0.5 | Met, in the metric the target was written in (Ultralytics `val`, the whole v3 validation split): the shipped v4 nano has pothole 0.68, cone 0.58. At the detector's 0.25 cut-off on the 1,201-image subset (`tools/eval_events.py`, zoom pass on) the same boxes give pothole 0.38, cone 0.51; pothole event recall there is 0.59 at 0.98 precision ([model-research.md](model-research.md#training-and-evaluation-procedure)). |
 | No more than one false event per test clip | Met: zero events on five hazard-free clips, twelve minutes. Daylight only. |
-| Phone latency under 100 ms per frame | **Unmeasured.** No number exists for the Pixel 9 Pro. |
+| Phone latency under 100 ms per frame | **Not met on the slow test phone; Pixel 9 Pro still unmeasured.** OnePlus Nord N10 5G (Snapdragon 690), default stack after the 2026-11-23 speed-up: the detectors take 148 ms a frame on a 1080p road clip (446 ms before) and run at 6.3 frames a second, over the 6 fps camera cap; 205 ms and 4.0 frames a second in a busy work zone. From CPU benchmarks the Pixel 9 Pro should be 2 to 3 times faster, about 50 to 75 ms, so the target is likely met there but has to be measured ([model-research.md](model-research.md#phone-latency-2026-11-23)). |
 
 ## Backlog
 

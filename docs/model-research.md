@@ -132,6 +132,83 @@ Take-aways so far:
 - **Dynamic int8 is slower than fp32 on this x86 CPU** (the quantised convolutions fall back to slower kernels), even though the file shrinks from 10.6 MB to 2.9 MB. Int8 is therefore a size optimisation on desktop; whether it helps on the phone's ARM cores must be measured there before shipping the int8 file.
 - 640 px fp32 is still only 16 ms on the desktop; the phone decides whether 416 or 640 is affordable.
 
+### Phone latency (2026-11-23)
+
+The first real-phone numbers: a OnePlus Nord N10 5G (Snapdragon 690: 2 x Cortex-A77 at 2.0 GHz, 6 x A55; 6 GB; Android 11), the slowest phone we have. Detector app with default settings on `urban_720p.mp4` (every 5th frame), ONNX Runtime 1.20 with XNNPACK, from the `WazeomaticPerf` log, median / p90 in ms after warm-up. The live camera (1280x960) gives the same times.
+
+| Build | Hazard 640 | Zoom pass | COCO 416 | Whole frame | Frames/s |
+|---|---|---|---|---|---|
+| Before: square inputs, zoom pass after the full pass, 4 threads per model | 207 / 217 | 175 / 180 | 126 / 146 | **446 / 456** | 1.9 |
+| Before, zoom pass off | 206 / 217 | | 124 / 144 | 240 / 251 | 3.1 |
+| Zoom pass on its own thread, square inputs, 2 threads | 280 / 296 | 285 / 312 | 289 / 298 | 320 / 338 | 2.4 |
+| Zoom pass on its own thread, rect inputs, 4 threads | 239 / 261 | 219 / 251 | 186 / 223 | 250 / 272 | 3.0 |
+| ... 1 thread | 178 / 180 | 135 / 138 | 171 / 176 | 196 / 201 | 3.5 |
+| **... 2 threads (shipped default)** | 158 / 165 | 129 / 176 | 154 / 159 | **178 / 186** | 3.9 |
+| ... 3 threads | 185 / 201 | 159 / 197 | 150 / 170 | 198 / 212 | 3.6 |
+| Shipped default, zoom pass off (4 threads) | 135 / 145 | | 94 / 120 | 142 / 154 | 4.4 |
+
+What changed (`OnnxDetector.kt`, `Pipeline.kt`):
+
+- **Each pass has its own session**, so the zoom pass runs alongside the full frame and COCO instead of after the full frame. Alone this took the frame from 446 to 320 ms.
+- **Rect inputs.** The detectors are exported with an open input height and width (`tools/export_onnx.py --dynamic`; identical output to the square export at 640x640) and the app fixes the shape per session to what it is fed: 640x384 for a 16:9 frame, 640x288 for the zoom crop, 416x256 for COCO, instead of 640x640 and 416x416. A 16:9 frame in a 640 square is 44 % grey padding, the zoom crop 55 %. The image is at the same scale either way. This is the shape Ultralytics `val` uses too (rectangular batches).
+- **Two XNNPACK threads per session** when three passes run at once (`ort_threads` = 0: the cores divided by the passes, at most 4). With four each, twelve threads fight over the two fast cores.
+- Preprocessing writes the input through a float array in one copy instead of three `FloatBuffer.put` calls per pixel.
+
+Accuracy of the rect inputs, desktop, every 3rd frame of the six real clips with the zoom pass (`--rect` against the same open-shape model at the square; box matched at IoU 0.5, same label):
+
+| | Square boxes | Rect boxes | Matched |
+|---|---|---|---|
+| Hazard boxes at 0.45 | 2,336 | 2,252 | 2,164 (93 % of square, 96 % of rect) |
+| COCO car / truck / bus / person at 0.45 | 4,280 | 4,079 | 3,787 (88 % / 93 %) |
+
+- On the labelled work-zone clip the two agree within 1 % (cones 617 against 625, delineators 1,343 against 1,346).
+- Most of the hazard difference is on the hazard-free UK 002 clip: 229 pothole boxes at 0.45 with the square, 132 with rect. Those are all false, so rect is the cleaner of the two there.
+- Rect finds about 5 % fewer vehicle and person boxes at 0.45. The lost ones are mostly near the floor.
+- Desktop time for hazard + zoom + COCO run one after the other: 48 ms square, 27 ms rect.
+
+- Reports on the hazard-free clips (`tools/eval_events.py --rect`, 14.6 min, with and without camera simulation): 6 with the square input as before, 5 with rect. All of them are Construction.
+
+**Busier clips and the second stage.** `urban_720p.mp4` is mostly a parking garage, so the next round used two held-out clips with more going on: UK 006 (1080p, 16:9, hazard-free) and an Argoverse work-zone clip (1548x1278, about 25 boxes a frame). Frames a second are counted from the log timestamps over 60 s. The `fps` field in the log is a moving average and reads high.
+
+| Build | UK 006 | Work zone |
+|---|---|---|
+| Rect inputs, 2 threads (the table above) | 3.05 | 2.17 |
+| + second stage on its own thread | 3.76 | 2.57 |
+| + video decoded one frame ahead (all float) | 4.22 | 2.84 |
+| **+ int8 hazard model (shipped default)** | **6.25** | **4.03** |
+| + int8 COCO model too (not shipped, see below) | 7.40 | 4.40 |
+
+In the shipped build the detectors take 148 / 205 ms a frame (UK / work zone, median) and the second stage 102 / 166 ms alongside them, so a frame's report is out about 250 / 370 ms after it arrives. On ordinary roads the N10 now keeps up with the 6 fps camera cap (`max_fps`).
+
+- **Second stage on its own thread** (`Pipeline.kt`). Everything after the detectors runs on one "post" thread while the next frame's detectors run: the vehicle and weather classifiers, the scene rules, the police gate, the hood mask, the report manager and the UI. On the work zone that stage is about 160 ms a frame (vehicle 35, weather 31, scene rules 20, police 34). At most one frame waits for it, so reports still come out in frame order and nothing queues up. The log line has `post=` (that stage), `wait=` (time the detectors spent waiting for it) and `src=` (time waiting for the next frame).
+- **Video decoded one frame ahead** (`VideoSource.kt`): the decoder fills a one-frame queue on its own thread. Test runs only. The live camera already delivers frames on its own thread.
+- **Live camera at 16:9** (`CameraSource.kt`). CameraX gave 1280x960 (4:3) by default, which makes 640x480 inputs. It now asks for 16:9 first (1280x720, 640x384 inputs), the same shape as a dashcam clip.
+
+**Police gate bug (fixed).** Since the stopped-police check (2026-11-22) the phone dropped almost every detection on any frame without a police car in view. `PoliceMotion.gate` returned the list it was given, and `Pipeline` cleared that list before adding the result back. The gate and `SceneAnalyzer` now always return a new list, and `PoliceMotionTest.gateKeepsEveryBoxWhenNoPoliceIsInView` covers it. The desktop twin was not affected. Phone numbers taken before the fix (the table above) are only valid for timing.
+
+**int8 hazard model.** `tools/quantize_onnx.py --static` writes a QDQ model (3.3 MB against 10.8 MB): per-channel int8 weights, int8 activations, percentile calibration on 300 images, which XNNPACK runs with the A77's int8 dot-product instructions. The hazard detector alone goes from 197 to 115 ms on UK 006 on the phone. Two things had to stay in float or the reports changed:
+
+| int8 variant | Pothole boxes >= 0.55, UK 002 / UK 006 (all false) | Work-zone boxes matched to float at 0.45 | UK 006 on the phone |
+|---|---|---|---|
+| Float (reference) | 37 / 39 | | no pothole report |
+| Calibrated on ROADWork only, class branch int8 | 82 / 41 | 96 % | false pothole report every run |
+| Work zones + road damage + ordinary driving, class branch int8 | 62 / 27 | 94 % | false pothole report |
+| **Same calibration, class branch (cv3) in float (shipped)** | **33 / 31** | 94 % (cones at 0.55: 89 against 92) | no pothole report |
+
+- Calibrating on work zones alone left the pothole branch wrongly scaled: twice the false pothole boxes on the hazard-free clips. The calibration set is now 100 ROADWork, 100 RDD2022 (US road damage) and 100 BDD100K images (the command is in `models/README.md`). Repeat runs of the same build on the phone vary by about 0.1 frames a second.
+- The class scores are where int8 rounding hurt. With the head's class branch in float the pothole boxes drop below float's count, and the int8 build stops reporting the worn lane line on UK 006 (the borderline spot from 2026-11-22, which float itself scores up to 0.63). Box decoding and the attention block were already float.
+- Construction on the 163 held-out Argoverse clips (half 1, `eval_construction_argoverse.py`, int8 hazard with float COCO): precision 0.966, recall 0.977 (84 of 86 clips), the same as float, with the same three false clips. int8 misses one clip float finds and finds one float misses; two blocked-lane reports move. Police reports: 10, as float. (An earlier int8 build from a hand-picked calibration set of the same mix scored 83 of 86.)
+- COCO stays float. An int8 COCO model adds 17 % more frames a second, but its slightly different car box on the work-zone clip scored a parked white Ford Explorer (no light bar, no markings) at 1.0 police, where float gives 0.26: one false Police report in 38 minutes. False police reports are the expensive kind, so it is not worth it.
+- The app bundles `hazard_yolo11n_dyn.qdq.onnx` when it exists (`build.gradle.kts`), else the float model. A debug build also loads `<external files>/models/hazard.onnx` or `coco.onnx` in place of the bundled asset, for trying a model without a rebuild.
+
+**Pixel 9 Pro estimate (not measured).** The Pixel 9 Pro's Tensor G4 has 1 x Cortex-X4 at 3.1 GHz, 3 x A720 and 4 x A520, against the N10's 2 x A77. In Geekbench 6 it scores about 2.5 times the N10: about 1,950 / 4,550 single / multi-core against about 785 / 1,870 ([Pixel 9 Pro baseline](https://browser.geekbench.com/v6/cpu/baseline/18451925), [N10 5G](https://browser.geekbench.com/v6/cpu/10428574)). The X4 and A720 also have more vector units per core than the A77, which favours convolution kernels. The X4, A720 and A520 all have the int8 dot-product (and matrix-multiply) instructions, so the int8 model should gain at least as much there. So expect 2 to 3 times faster than the shipped N10 numbers:
+
+- detectors about **50 to 75 ms a frame** on an ordinary road (70 to 100 ms in a busy work zone), second stage 35 to 50 ms alongside;
+- so **13 to 20 frames a second** possible (10 to 14 in the work zone), well over the 6 fps camera cap. At the cap the Pixel is busy about a third to half of the time;
+- a frame's report out **85 to 125 ms** after it arrives (125 to 185 ms in the work zone), against 250 / 370 ms on the N10.
+
+Tensor G4 is known to throttle early under sustained load, and Waze will be running too, so the upper end is the safer planning number. The 100 ms detector target is met with room to spare, but it has to be measured on the Pixel.
+
 ### Model size
 
 | File | Size |
