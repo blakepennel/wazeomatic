@@ -96,6 +96,8 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `shoulder_camera_speed` | true | without a GPS speed, the camera's own speed estimate may open the 50 km/h condition (it reads about 0.87 of the true speed) |
 | `class_map` | "" | extra mappings for testing, e.g. `car=HAZARD_ON_ROAD_OBJECT` |
 | `zoom_crop` | true | two-pass zoom (on by default since the 2026-11-06 evaluation: +6 points of event recall, no false events on the clips with the adaptive hood zone): `--ez zoom_crop true` = default crop `0.25,0.35,0.75,0.75`, `--es zoom_crop x1,y1,x2,y2` = that region (frame fractions); empty or malformed = off |
+| `rect_input` | true | a model exported with an open input shape (`export_onnx.py --dynamic`, bundled by default when present) runs at the frame's own aspect: 640x384 for a 16:9 frame and 640x288 for the zoom crop instead of 640x640, the same pixels without the grey bands (`--rect` on the desktop). No effect on a square export |
+| `ort_threads` | 0 | XNNPACK threads per model session; 0 = the cores divided by the passes that run at once, at most 4 (two on an 8-core phone with the zoom pass on) |
 | `zoom_coco` | false | also run the zoom pass on the COCO model (`--zoom-coco` on the desktop); off by default, the second pass is for the hazard model(s) |
 | `orientation` | auto | camera: how the phone is mounted. `auto` follows the accelerometer (independent of the system auto-rotate setting), `landscape` (top edge to the left), `landscape_reverse` (top edge to the right) and `portrait` pin it |
 | `ensemble` | true | also run `hazard2.onnx` when the build bundled one (`syncModels` copies `-PhazardModel2`; the default is none since the v3 model, `-PhazardModel2=hazard_yolo11s_v3.onnx` adds the v3 small) and fuse it with `hazard.onnx`; no second asset = single model |
@@ -162,11 +164,33 @@ Each event is
 - logged as one JSON line under logcat tag `WazeomaticEvent` (same shape as `HazardEvent.to_json()`),
 - appended to `/sdcard/Android/data/com.wazeomatic.detector/files/events.jsonl`.
 
-Per-frame latency goes to logcat tag `WazeomaticPerf` and is shown on screen.
+Per-frame latency goes to logcat tag `WazeomaticPerf` and is shown on screen. Each line has the model passes
+(`hazard`, `hazard_zoom`, `coco`), `wall` (all passes, run in parallel), `infer` (models and fusion), the second
+stage (`vehicle`, `weather`, `scene_rules`, `police`, `scene`), `post` (the whole second stage, hood and Report
+Manager), `wait` (the frame source blocked on the previous frame's second stage) and `src` (time between frames
+spent decoding and converting the next one; near zero once the video source decodes ahead).
+
+A frame goes through two stages on two threads: the caller (camera analyzer or video thread) runs the models,
+then hands the frame to a second-stage thread and goes on to the next frame. At most one frame waits, so the
+order is kept. The video source also decodes one frame ahead. With the int8 hazard model this took a 16:9 clip on
+the OnePlus N10 from 3.1 to 6.3 frames per second ([model-research.md](../../docs/model-research.md#phone-latency-2026-11-23)).
+
+The build bundles `models/hazard_yolo11n_dyn.qdq.onnx` (int8, from `tools/quantize_onnx.py --static`, see
+[models/README.md](../../models/README.md)) when it exists, else the float `hazard_yolo11n_dyn.onnx`. The COCO
+model stays float.
+
+Debug builds load a model from `<external files>/models/<asset name>` instead of the bundled one when that file
+exists, so a model can be tried without a rebuild:
+
+```powershell
+adb shell mkdir -p /sdcard/Android/data/com.wazeomatic.detector/files/models
+adb push models\hazard_yolo11n_dyn.qdq.onnx /sdcard/Android/data/com.wazeomatic.detector/files/models/hazard.onnx
+adb shell rm -r /sdcard/Android/data/com.wazeomatic.detector/files/models    # back to the bundled models
+```
 
 ### Two-pass zoom
 
-All models (each with its zoom pass, if it has one) run on their own threads; the `WazeomaticPerf` log line reports each model's time plus `wall`, the latency of the whole frame. The hazard members are fused (`BoxFusion.kt`, a port of `wazeomatic/fusion.py`) before the Report Manager sees them.
+All models, and each zoom pass, run on their own threads with their own ONNX Runtime session; the `WazeomaticPerf` log line reports each pass's time plus `wall`, the latency of the whole frame (measured on a phone in [model-research.md](../../docs/model-research.md#phone-latency-2026-11-23)). The hazard members are fused (`BoxFusion.kt`, a port of `wazeomatic/fusion.py`) before the Report Manager sees them.
 
 `zoom_crop` runs the hazard model(s) a second time on a crop of the road ahead (same as
 `--zoom-crop` in `wazeomatic/run_video.py`); the COCO model is only zoomed with `zoom_coco`
@@ -174,7 +198,7 @@ All models (each with its zoom pass, if it has one) run on their own threads; th
 640x288 px, so a distant 20 px cone is 40 px to the network. Crop detections are mapped back
 to frame coordinates and merged with the full-frame ones by per-class NMS (IoU 0.5, the higher
 confidence wins). The crop is skipped when it would be under 32 px in either dimension.
-The hazard inference cost roughly doubles; the second pass shows up as `hazard_zoom` (and
+The second pass runs at the same time as the first and shows up as `hazard_zoom` (and
 `coco_zoom` with `zoom_coco`) in the `WazeomaticPerf` line and on screen.
 
 ```powershell
