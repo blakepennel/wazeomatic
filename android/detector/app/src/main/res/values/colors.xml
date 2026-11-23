@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- dark Material 3 palette (teal primary); amber means "dry run", red means "live" -->
+    <color name="md_primary">#4FD8C4</color>
+    <color name="md_on_primary">#00382F</color>
+    <color name="md_primary_container">#005045</color>
+    <color name="md_on_primary_container">#71F7E0</color>
+    <color name="md_secondary">#B1CCC5</color>
+    <color name="md_on_secondary">#1C352F</color>
+    <color name="md_secondary_container">#334B45</color>
+    <color name="md_on_secondary_container">#CCE8E1</color>
+    <color name="md_tertiary">#AECBE8</color>
+    <color name="md_on_tertiary">#163349</color>
+    <color name="md_background">#0E1213</color>
+    <color name="md_on_background">#DEE4E2</color>
+    <color name="md_surface">#0E1213</color>
+    <color name="md_on_surface">#DEE4E2</color>
+    <color name="md_surface_variant">#3F4947</color>
+    <color name="md_on_surface_variant">#BEC9C5</color>
+    <color name="md_surface_container_lowest">#090D0E</color>
+    <color name="md_surface_container_low">#161B1C</color>
+    <color name="md_surface_container">#1A1F20</color>
+    <color name="md_surface_container_high">#242A2B</color>
+    <color name="md_surface_container_highest">#2F3536</color>
+    <color name="md_outline">#889390</color>
+    <color name="md_outline_variant">#3F4947</color>
+    <color name="md_error">#FFB4AB</color>
+    <color name="md_on_error">#690005</color>
+
+    <color name="state_running">#5BD88A</color>
+    <color name="state_running_container">#0F3D22</color>
+    <color name="state_warn">#FFB74D</color>
+    <color name="state_warn_container">#4A3300</color>
+    <color name="state_error">#FF8A80</color>
+    <color name="state_error_container">#5C1612</color>
+    <color name="state_idle">#9AA5A2</color>
+
+    <color name="start_button">#2E8B57</color>
+    <color name="stop_button">#C0392B</color>
+    <color name="on_action_button">#FFFFFF</color>
+
+    <color name="pill_background">#B3000000</color>
+    <color name="preview_background">#000000</color>
+</resources>
