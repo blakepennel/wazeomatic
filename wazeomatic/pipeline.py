@@ -153,7 +153,9 @@ class Pipeline:
             self.manager.set_hood_frac(self.hood.update(frame.image))
         if self.scene_classifier is not None and hasattr(self.scene_classifier, "set_hood_frac"):
             self.scene_classifier.set_hood_frac(self.manager.hood_frac)
-        events = self.manager.update(dets, frame_index=frame.index)
+        # the persistence window counts the frames that ran the detectors, as the app does: frame.index counts decoded
+        # frames, so with --step 5 a window of 10 held only two inference frames and min_hits 3 could never be met
+        events = self.manager.update(dets)
         self.stats.latency_ms.append((time.perf_counter() - t0) * 1000.0)
         for ev in events:
             for s in self.sinks:

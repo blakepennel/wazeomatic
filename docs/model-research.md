@@ -260,6 +260,8 @@ How far behind the road a report is, from the time a frame was captured (camera)
 
 Age is more than the detector and second-stage time (about 140 ms on the camera) because a frame waits for the one before it to finish, and on the camera also waits in the camera pipeline. Simpler versions were worse: converting only once the pipeline was idle left it waiting 80 ms a frame (4.36 frames a second), and always replacing the waiting frame with a newer one kept the frame rate (5.25) but put the age at 450 ms.
 
+**Desktop window fix (2026-11-24).** The desktop pipeline gave the report manager the decoded frame number, so with `--step` above 1 its 10-frame window held fewer inference frames than the app's (which counts the frames it ran): at step 5 a window held two, and a 3-hit report could never fire. The 10 held-out US clips at 20 fps gave every report at step 4 and none of the 8 Construction or 4 blocked-lane reports at step 5; with the fix step 5 gives all of them. The hazard-free clip check (step 3) gives the same events before and after. Argoverse evaluations run at step 1 and are unaffected; the app never had the bug.
+
 With these numbers the Pixel 9 Pro estimate becomes detectors about 45 to 70 ms on the live camera, and a report about 50 to 75 ms after its frame (still to be measured).
 
 ### Model size

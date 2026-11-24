@@ -141,3 +141,36 @@ def test_adb_sink_never_passes_an_empty_argument():
         assert "" not in cmd, key
         assert cmd[cmd.index("hazard_type") + 1] == key
         assert cmd[-3:] == ["--es", "dry_run", "true"]
+
+
+class _Strided:
+    """Every 5th decoded frame of a clip, as VideoSource(step=5) hands them over."""
+    effective_fps = 4.0
+
+    def __iter__(self):
+        for i in range(0, 40, 5):
+            yield Frame(np.zeros((36, 64, 3), np.uint8), i, i / 20)
+
+
+class _ConeEveryFrame:
+    last_ms = 0.0
+
+    def __call__(self, _image):
+        return [Detection("cone", 0.9, (0.5, 0.5, 0.05, 0.08))]
+
+
+def test_persistence_window_counts_inference_frames_not_decoded_ones():
+    # with step 5 the decoded index jumps by 5; a window of 10 decoded frames held two inference frames and
+    # a cone seen in every one of them never reached min_hits 3 (the app counts inference frames)
+    events = []
+
+    class Sink:
+        def send(self, ev):
+            events.append(ev)
+
+        def close(self):
+            pass
+
+    pipe = Pipeline([_ConeEveryFrame()], ReportManager(ReportConfig(global_cooldown_s=0.0)), [Sink()], parallel=False)
+    pipe.run(_Strided())
+    assert [e.hazard_type for e in events] == ["HAZARD_ON_ROAD_CONSTRUCTION"]

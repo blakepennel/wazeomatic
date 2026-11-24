@@ -421,7 +421,7 @@ def video_false_positives(video: Path, detectors: Sequence, cfg: ReportConfig, s
         det_labels.update(d.label for d in dets if d.label in cfg.class_to_hazard)
         if hood is not None:
             rm.set_hood_frac(hood.update(fr.image))
-        for ev in rm.update(dets, frame_index=fr.index):
+        for ev in rm.update(dets):  # window in inference frames, not decoded ones (see Pipeline.process)
             events[ev.hazard_type] += 1
             if len(details) < 50:  # where and when, so a false event can be looked at in the clip
                 details.append({"hazard_type": ev.hazard_type, "label": ev.label, "confidence": round(ev.confidence, 3),
