@@ -68,12 +68,14 @@ val repoModels = rootProject.file("../../models")
 // The open-shape exports (export_onnx.py --dynamic --ship / --coco --dynamic) are preferred: the app runs them at
 // the frame's own aspect (640x384 for 16:9 instead of 640x640). Without them the square exports are bundled.
 // The hazard model goes int8 when tools/quantize_onnx.py --static has made hazard_yolo11n_dyn.qdq.onnx: about 1.45x
-// the frames a second on a mid-range phone with nearly the same reports (docs/model-research.md). COCO stays float: its
-// int8 boxes tipped the police classifier on a plain white SUV.
+// the frames a second on a mid-range phone with nearly the same reports (docs/model-research.md). COCO goes int8 when
+// tools/qat_onnx.py has made coco_yolo11n_dyn.qat.qdq.onnx (quantization-aware tuned, same reports on the held-out
+// clips, about 12 to 17 % more frames a second); plain post-training int8 COCO is not used.
 fun preferOpen(open: String, square: String) = if (File(repoModels, open).exists()) open else square
 val hazardModel = (findProperty("hazardModel") as String?)
     ?: preferOpen("hazard_yolo11n_dyn.qdq.onnx", preferOpen("hazard_yolo11n_dyn.onnx", "hazard_yolo11n.onnx"))
-val cocoModel = (findProperty("cocoModel") as String?) ?: preferOpen("coco_yolo11n_dyn.onnx", "coco_yolo11n.onnx")
+val cocoModel = (findProperty("cocoModel") as String?)
+    ?: preferOpen("coco_yolo11n_dyn.qat.qdq.onnx", preferOpen("coco_yolo11n_dyn.onnx", "coco_yolo11n.onnx"))
 // second hazard model fused on the device (ensemble setting); "" (the default since the v3 model)
 // ships the single v3 nano. The older 4-class models no longer help it (docs/model-research.md);
 // -PhazardModel2=hazard_yolo11s_v3.onnx fuses the v3 small where the phone can afford it.

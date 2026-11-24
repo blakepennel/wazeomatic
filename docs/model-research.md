@@ -176,7 +176,7 @@ Accuracy of the rect inputs, desktop, every 3rd frame of the six real clips with
 | + second stage on its own thread | 3.76 | 2.57 |
 | + video decoded one frame ahead (all float) | 4.22 | 2.84 |
 | **+ int8 hazard model (shipped default)** | **6.25** | **4.03** |
-| + int8 COCO model too (not shipped, see below) | 7.40 | 4.40 |
+| + int8 COCO model too (not shipped then; the QAT int8 COCO model ships since, see below) | 7.40 | 4.40 |
 
 In the shipped build the detectors take 148 / 205 ms a frame (UK / work zone, median) and the second stage 102 / 166 ms alongside them, so a frame's report is out about 250 / 370 ms after it arrives. On ordinary roads the N10 now keeps up with the 6 fps camera cap (`max_fps`).
 
@@ -198,7 +198,7 @@ In the shipped build the detectors take 148 / 205 ms a frame (UK / work zone, me
 - Calibrating on work zones alone left the pothole branch wrongly scaled: twice the false pothole boxes on the hazard-free clips. The calibration set is now 100 ROADWork, 100 RDD2022 (US road damage) and 100 BDD100K images (the command is in `models/README.md`). Repeat runs of the same build on the phone vary by about 0.1 frames a second.
 - The class scores are where int8 rounding hurt. With the head's class branch in float the pothole boxes drop below float's count, and the int8 build stops reporting the worn lane line on UK 006 (the borderline spot from 2026-11-22, which float itself scores up to 0.63). Box decoding and the attention block were already float.
 - Construction on the 163 held-out Argoverse clips (half 1, `eval_construction_argoverse.py`, int8 hazard with float COCO): precision 0.966, recall 0.977 (84 of 86 clips), the same as float, with the same three false clips. int8 misses one clip float finds and finds one float misses; two blocked-lane reports move. Police reports: 10, as float. (An earlier int8 build from a hand-picked calibration set of the same mix scored 83 of 86.)
-- COCO stays float. An int8 COCO model adds 17 % more frames a second, but its slightly different car box on the work-zone clip scored a parked white Ford Explorer (no light bar, no markings) at 1.0 police, where float gives 0.26: one false Police report in 38 minutes. False police reports are the expensive kind, so it is not worth it.
+- COCO stayed float at first. An int8 COCO model adds 17 % more frames a second, but its slightly different car box on the work-zone clip scored a white car at 1.0 police, where float gives 0.26, and that report was taken for a false one. A closer look later showed that car is the marked police sedan with a light bar in `police_truth_argoverse.txt` (see "Quantization-aware int8 and a lighter box branch" below), and the QAT int8 COCO model now ships.
 - The app bundles `hazard_yolo11n_dyn.qdq.onnx` when it exists (`build.gradle.kts`), else the float model. A debug build also loads `<external files>/models/hazard.onnx` or `coco.onnx` in place of the bundled asset, for trying a model without a rebuild.
 
 **Pixel 9 Pro estimate (not measured).** The Pixel 9 Pro's Tensor G4 has 1 x Cortex-X4 at 3.1 GHz, 3 x A720 and 4 x A520, against the N10's 2 x A77. In Geekbench 6 it scores about 2.5 times the N10: about 1,950 / 4,550 single / multi-core against about 785 / 1,870 ([Pixel 9 Pro baseline](https://browser.geekbench.com/v6/cpu/baseline/18451925), [N10 5G](https://browser.geekbench.com/v6/cpu/10428574)). The X4 and A720 also have more vector units per core than the A77, which favours convolution kernels. The X4, A720 and A520 all have the int8 dot-product (and matrix-multiply) instructions, so the int8 model should gain at least as much there. So expect 2 to 3 times faster than the shipped N10 numbers:
@@ -244,11 +244,69 @@ Tried and not kept:
 - **NNAPI** (`ort_backend`, e.g. `nnapi`, `nnapi_fp16_cpu`). The N10 offers its Hexagon DSP, Adreno GPU and HTA through NNAPI (`qti-dsp`, `qti-gpu`, `qti-hta`). With NNAPI's own CPU device off, the drivers reject both models, the int8 hazard and the float COCO, also with fp16 and NCHW. With it allowed, the hazard model compiles but runs at 174 ms against 117 ms on XNNPACK. The setting stays for trying other phones.
 - **fp16 COCO on XNNPACK** (`onnxruntime.transformers.float16`, float input and output kept). On the desktop its class scores match float to 1e-4. On the phone it gave hundreds of boxes a frame and a false Animals report, and it was slower anyway (134 against 118 ms).
 - **Threads.** Two XNNPACK threads per pass is still best in release: 6.98 frames a second, against 6.73 with three and 6.66 with one.
-- **int8 COCO** stays out. Its problem was the vehicle classifier flipping to police on a slightly different box, not the COCO boxes themselves. A classifier that holds steady under small box changes would let it in (17 % more frames a second).
+- **int8 COCO** stayed out here for the police report on 2ff4f798; it is in now (next section).
 
 The three model runs (about 105 to 150 ms each, side by side) are now nearly all of a frame. What would cut them further is a smaller model: quantization-aware training, so the class branch and COCO can go int8 without the problems above, or a lighter backbone (fewer channels, more depthwise convolutions). Both need a training run and a new accuracy check. YOLO11n's head already uses depthwise convolutions, and on int8 phone kernels they gain less than their FLOP count suggests.
 
 With these numbers the Pixel 9 Pro estimate becomes detectors about 45 to 70 ms on the live camera, and a report about 50 to 75 ms after its frame (still to be measured).
+
+### Quantization-aware int8 and a lighter box branch (2026-11-23)
+
+Two tries at the three model runs: quantization-aware training (QAT) so more of the hazard model and the COCO model can run int8, and a hazard model whose box branch is depthwise-separable. **Result: the QAT int8 COCO model ships (about 12 to 17 % more frames a second, same reports). The int8 hazard class branch and the lighter box branch do not.**
+
+**Method** (`tools/qat_onnx.py`). The int8 file is still made by `tools/quantize_onnx.py --static`, from ranges calibrated once and kept (`--calib-cache`). QAT tunes the float weights so they suit those fixed ranges:
+
+- The PyTorch model gets fake quantization at the same places and scales as the ORT QDQ file: per-channel symmetric int8 weights, and the asymmetric int8 activation ranges from the cache on every convolution output, both halves of each SiLU (Sigmoid and Mul) and the Concat / Add tensors feeding a convolution. Nodes `quantize_onnx.py` keeps in float stay float.
+- It is trained by distillation from the float model (KL on the class scores and on the box distributions, weighted by the teacher's score), on 10,000 frames from work zones, ordinary driving, road damage and debris, cropped to the app's input shapes.
+- The tuned weights are written back into the original float ONNX graph (the initializers are named after the PyTorch modules), which is then quantized with the same cache.
+
+The PyTorch fake quantization tracks ORT closely: its mean class-score gap to the real int8 file is 0.023, against 0.082 between int8 and float.
+
+`quantize_onnx.py --static` also no longer runs out of memory. ORT's histogram calibrators keep every intermediate tensor of every image they see, about 150 MB an image for the nano at 640x384, so 300 images took 48 GB and filled C: through the pagefile. `--stride` (default 10) calibrates 10 images at a time, in about 2 minutes with little memory.
+
+**Hazard model, class branch (cv3) int8.** The checks are UK pothole boxes at 0.55 (all false; float gives 37 / 39) and Construction on the held-out Argoverse half (half 1, zoom pass every other frame, int8 hazard and float COCO):
+
+| Hazard model | Mean score gap to float | UK pothole boxes | Argoverse precision / recall | Police reports |
+|---|---|---|---|---|
+| Shipped int8, class branch float | 0.025 | 33 / 31 | 0.966 / 0.988 | 10 |
+| Post-training int8, class branch int8 | 0.077 | 74 / 36 | | |
+| QAT, class branch int8 (6 epochs) | 0.036 | 16 / 30 | 0.944 / 0.988 | 10 |
+| QAT, class branch int8, score-weighted (8 epochs) | 0.037 | 19 / 36 | 0.944 / 0.977 | |
+
+QAT halves the class-score error and removes the extra false potholes, but both QAT models add two false Construction clips (0d8aab9f, 3f9796e9), and the second also misses a clip. The class branch int8 is worth only 3 % on the phone anyway (6.90 to 7.10 frames a second on UK 006), so it stays float.
+
+**COCO model int8.** Kept in float as in the hazard model: the class branch, box decoding and attention. Every row uses the shipped int8 hazard model:
+
+| COCO model | Construction, half 1 | Police clips, half 1 (13 in the truth list) | Police clips, half 0 | False police reports |
+|---|---|---|---|---|
+| Float | 0.966 / 0.988 | 10 | 10 | none |
+| Post-training int8 | same clips | 10 | 11 | none |
+| **QAT int8 (shipped)** | same clips | **11** | **11** | **none** |
+
+- "None" covers the 150 half-1 clips with no police car and the hazard-free clips. Every extra police clip is a real police car checked by eye.
+- **2ff4f798** (half 1): the int8 models score a white sedan at 1.0 police at frames 79 to 80, where float gives 0.26. This is the "false police" report above. It is the sedan with a magenta light bar beside an officer, the police car this clip is in `police_truth_argoverse.txt` for, so the report is right. The other car in view (a sedan with a blue bar) is scored by both.
+- **f4d1a3c3** (half 0, which the truth list does not cover): a white sedan lettered POLICE in the DC livery. Float misses it.
+- On ten more US clips (five with a police car, five work zones, `us_police_*`, `us_workzone_*`) float and QAT give the same reports clip for clip: police on all five police clips, none in the work zones.
+
+The plain post-training int8 COCO model passes the same checks. The QAT one is shipped because it scores one more truth clip and its class scores are closer to float (mean gap 0.037 against 0.043 on held-out frames, in the PyTorch simulation).
+
+**Phone** (N10, release builds, frames a second from the log timestamps over 70 s, as above):
+
+| Build | UK 006 | Work zone | COCO pass (median ms, UK 006) |
+|---|---|---|---|
+| Shipped before (int8 hazard, float COCO) | 6.77 | 5.02 | 111 |
+| **+ QAT int8 COCO (shipped)** | **7.59** | **5.85** | **71** |
+| Separable box branch, float COCO | 6.98 | 5.08 | 109 |
+| Separable box branch + QAT int8 COCO | 7.69 | 5.94 | 69 |
+
+The QAT COCO build makes the same reports as the shipped one on both clips. Its one report on UK 006, a cone at frame 459, is one the shipped build also makes (same box and score) whenever a 70 s run gets that far.
+
+**Lighter hazard model: depthwise-separable box branch** (`tools/train.py --dw-box-head`):
+
+- The box branch's two 3x3 convolutions of 64 channels per scale are 24 % of the nano's work at 640x384. Each became a 3x3 depthwise plus a 1x1 convolution (1.92 to 1.52 GMAC, 21 % less), with every other weight kept from v4.
+- Trained in two stages: the new box branch alone (6 epochs, mAP50 0.51 against v4's 0.52), then the whole model.
+- On the phone, int8, the hazard pass went from 116 to 112 ms: 1 to 3 % more frames a second, inside run-to-run noise. XNNPACK's int8 depthwise kernels gain far less than their arithmetic suggests, as noted above.
+- So training was stopped after 2 of 15 whole-model epochs, and the model is not shipped. Something smaller would need a narrower backbone trained from the start, and the nano is already the smallest standard size.
 
 ### Model size
 
