@@ -21,6 +21,11 @@ Calibrate on a mix of scenes: --n images are split evenly over the --calib folde
 left the pothole branch badly calibrated; work zones + road damage (RDD2022) + ordinary driving (BDD100K) is
 what the shipped model uses. Calibration images are letterboxed like the detector does (open-shape
 models at the 16:9 shape the phone feeds them). Always re-check accuracy before shipping the file (docs/model-research.md).
+
+--calib-cache keeps the calibrated ranges in a JSON file and reuses them on later runs without calibrating;
+tools/qat_onnx.py tunes a model against those fixed ranges (the int8 COCO model is made that way). --stride
+calibrates that many images at a time: ONNX Runtime's histogram calibrators keep every intermediate tensor of the
+images they hold, about 150 MB an image for the nano at 640 x 384.
 """
 from __future__ import annotations
 
@@ -46,8 +51,16 @@ def calibration_reader(model_path: Path, images: list[Path], size: int, open_sha
     name = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"]).get_inputs()[0].name
 
     class Reader(CalibrationDataReader):
+        # set_range lets quantize_static calibrate in strides (CalibStridedMinMax): it keeps every intermediate
+        # tensor of the images it has read, about 150 MB an image for a YOLO11n at 640 x 384
         def __init__(self):
             self.it = iter(images)
+
+        def __len__(self):
+            return len(images)
+
+        def set_range(self, start_index: int, end_index: int):
+            self.it = iter(images[start_index:end_index])
 
         def get_next(self):
             for p in self.it:
@@ -63,6 +76,27 @@ def calibration_reader(model_path: Path, images: list[Path], size: int, open_sha
     return Reader()
 
 
+def calibration_files(folders: list[str], n: int, seed: int) -> list[Path]:
+    """``n`` images drawn at random, split evenly over ``folders`` (the same draw for the same arguments)."""
+    rng, files = random.Random(seed), []
+    for i, d in enumerate(folders):
+        found = sorted(p for p in Path(d).rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+        if not found:
+            raise ValueError(f"no images under {d}")
+        rng.shuffle(found)
+        share = n // len(folders) + (1 if i < n % len(folders) else 0)
+        files += found[:share]
+    return files
+
+
+def float_nodes(graph, int8_classes: bool = False) -> list[str]:
+    """Nodes left in float: the Detect head's box decoding (not its cv2 box branch), its cv3 class branch unless
+    ``int8_classes``, and the attention block's MatMul / Softmax."""
+    return [n.name for n in graph.node
+            if ("/model.23/" in n.name and "/cv2." not in n.name and ("/cv3." not in n.name or not int8_classes))
+            or n.op_type in ("MatMul", "Softmax")]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
@@ -76,6 +110,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--int8-classes", action="store_true",
                     help="static: quantize the Detect head's class branch (cv3) too (more false pothole boxes)")
+    ap.add_argument("--stride", type=int, default=10, help="static: images held in memory at once while calibrating")
+    ap.add_argument("--calib-cache", help="static: JSON of calibrated tensor ranges; written if missing, else reused "
+                                          "without calibrating (tools/qat_onnx.py trains against these ranges)")
     args = ap.parse_args()
 
     from onnxruntime.quantization.preprocess import quant_pre_process
@@ -95,35 +132,31 @@ def main() -> None:
         import onnxruntime as ort
         from onnxruntime.quantization import CalibrationMethod, QuantFormat, QuantType, quantize_static
 
-        if not args.calib:
-            ap.error("--static needs --calib <folder of images>")
-        rng, files = random.Random(args.seed), []
-        for i, d in enumerate(args.calib):
-            found = sorted(p for p in Path(d).rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
-            if not found:
-                ap.error(f"no images under {d}")
-            rng.shuffle(found)
-            share = args.n // len(args.calib) + (1 if i < args.n % len(args.calib) else 0)
-            files += found[:share]
+        cache = Path(args.calib_cache) if args.calib_cache else None
+        if not args.calib and not (cache and cache.is_file()):
+            ap.error("--static needs --calib <folder of images> (or an existing --calib-cache)")
+        try:
+            files = calibration_files(args.calib, args.n, args.seed)
+        except ValueError as e:
+            ap.error(str(e))
         sess = ort.InferenceSession(str(src), providers=["CPUExecutionProvider"])
         shape = sess.get_inputs()[0].shape
         open_shape = not isinstance(shape[2], int)
         meta = sess.get_modelmeta().custom_metadata_map.get("imgsz", "")
         nums = re.findall(r"\d+", meta)
         size = args.size or (int(shape[2]) if not open_shape else int(nums[0]) if nums else 640)
-        graph = onnx.load(str(pre)).graph
-        # box decoding of the Detect head (not its cv2 box branch), its cv3 class branch and the attention stay float
-        keep_float = [n.name for n in graph.node
-                      if ("/model.23/" in n.name and "/cv2." not in n.name
-                          and ("/cv3." not in n.name or not args.int8_classes))
-                      or n.op_type in ("MatMul", "Softmax")]
+        keep_float = float_nodes(onnx.load(str(pre)).graph, args.int8_classes)
+        # calibrate --stride images at a time (the stride must divide the image count)
+        stride = next((d for d in range(min(args.stride, len(files)), 0, -1) if len(files) % d == 0), 0) if files else 0
         method = {"minmax": CalibrationMethod.MinMax, "entropy": CalibrationMethod.Entropy,
                   "percentile": CalibrationMethod.Percentile}[args.method]
         quantize_static(
             str(pre), str(out), calibration_reader(src, files, size, open_shape),
             quant_format=QuantFormat.QDQ, activation_type=QuantType.QInt8, weight_type=QuantType.QInt8,
             per_channel=True, calibrate_method=method, nodes_to_exclude=keep_float,
-            extra_options={"ActivationSymmetric": False, "WeightSymmetric": True},
+            extra_options={"ActivationSymmetric": False, "WeightSymmetric": True,
+                           **({"CalibStridedMinMax": stride} if stride else {})},
+            **({"calibration_cache_path": str(cache)} if cache else {}),
         )
         print(f"calibrated on {len(files)} images at {size} px ({'own aspect' if open_shape else 'square'}), "
               f"{len(keep_float)} nodes kept in float, method {args.method}")
