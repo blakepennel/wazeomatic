@@ -131,7 +131,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
     val hasModel: Boolean get() = detectors.isNotEmpty()
 
     /** [ts] is the frame time in seconds (video: position in the clip, camera: elapsedRealtime); the scene rules run on it. */
-    fun process(frame: Bitmap, ts: Double = SystemClock.elapsedRealtimeNanos() / 1e9) {
+    /**
+     * [capturedNs]: when the frame was captured (camera) or due (real-time video), on the elapsedRealtimeNanos
+     * clock; 0 = unknown. The log's age= is then the time from there until the frame's reports are out.
+     */
+    fun process(frame: Bitmap, ts: Double = SystemClock.elapsedRealtimeNanos() / 1e9, capturedNs: Long = 0L) {
         frameIndex++
         val tIn = System.nanoTime()
         val lat = LinkedHashMap<String, Double>()
@@ -194,13 +198,13 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         try { pending?.get() } catch (e: Exception) { Log.e(TAG, "second stage of the previous frame failed", e) }
         val waited = (System.nanoTime() - tWait) / 1e6
         val src = if (lastReturnNs != 0L) (tIn - lastReturnNs) / 1e6 else null
-        pending = post.submit { finish(frame, ts, dets, lat, idx, src, waited) }
+        pending = post.submit { finish(frame, ts, dets, lat, idx, src, waited, capturedNs) }
         lastReturnNs = System.nanoTime()
     }
 
     /** Second stage, hood, Report Manager and the screen for one frame; runs on [post], one frame at a time. */
     private fun finish(frame: Bitmap, ts: Double, dets: ArrayList<Detection>, lat: LinkedHashMap<String, Double>,
-                       idx: Int, src: Double?, waited: Double) {
+                       idx: Int, src: Double?, waited: Double, capturedNs: Long = 0L) {
         val tB = System.nanoTime()
         secondStage(frame, ts, dets, lat)
         val now = System.nanoTime()
@@ -219,8 +223,11 @@ class Pipeline(ctx: Context, private val settings: Settings, private val reporte
         if (lat.isNotEmpty()) {
             // infer: models and fusion (caller thread); post: this function; src: between two process() calls
             // (decoding and converting the next frame); wait: the caller blocked on the previous frame's post
+            // age: capture (or due time) to reports out; a clock that is not elapsedRealtime gives nonsense, left out
+            val age = if (capturedNs > 0) (SystemClock.elapsedRealtimeNanos() - capturedNs) / 1e6 else -1.0
             val extra = String.format(Locale.US, "post=%.1fms wait=%.1fms", (System.nanoTime() - tB) / 1e6, waited) +
-                (src?.let { String.format(Locale.US, " src=%.1fms", it) } ?: "")
+                (src?.let { String.format(Locale.US, " src=%.1fms", it) } ?: "") +
+                (if (age in 0.0..10_000.0) String.format(Locale.US, " age=%.1fms", age) else "")
             Log.d(PERF_TAG, String.format(Locale.US, "frame=%d %s %s fps=%.1f dets=%d", idx,
                 lat.entries.joinToString(" ") { String.format(Locale.US, "%s=%.1fms", it.key, it.value) }, extra, fps, dets.size))
         }

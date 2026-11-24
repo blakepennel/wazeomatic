@@ -314,11 +314,11 @@ class DetectorService : LifecycleService() {
                     val dir = getExternalFilesDir(null) ?: filesDir
                     val f = if (s.video.startsWith("/")) File(s.video) else File(dir, s.video)
                     watchFrames(true)
-                    video = VideoSource(f, s.frameStep, s.loop, { bmp, ts -> p.process(bmp, ts) }) { st ->
+                    video = VideoSource(f, s.frameStep, s.loop, { bmp, ts, due -> p.process(bmp, ts, due) }, { st ->
                         // only a playing video is expected to deliver frames ("video <name>")
                         if (st != "video ${f.name}") watchFrames(false)
                         setStatus("$base | $st")
-                    }.also { it.start() }
+                    }, realtime = s.realtime, maxFps = s.maxFps).also { it.start() }
                 }
                 else -> {
                     if (!camOk) {
@@ -333,7 +333,7 @@ class DetectorService : LifecycleService() {
                             synchronized(statusLock) { frameWarning = w }
                             publishStatus()
                         }
-                        camera = CameraSource(this, this, s.maxFps, s.orientation, onWarning) { bmp -> p.process(bmp) }.also {
+                        camera = CameraSource(this, this, s.maxFps, s.orientation, onWarning) { bmp, captured -> p.process(bmp, capturedNs = captured) }.also {
                             it.start { err ->
                                 watchFrames(false)
                                 setStatus("$base | $err")

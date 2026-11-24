@@ -32,7 +32,8 @@ class CameraSource(
     private val orientation: String,
     /** Called when the delivered frame shape changes: a warning for portrait frames, else null. */
     private val onFrameWarning: (String?) -> Unit,
-    private val onFrame: (Bitmap) -> Unit,
+    /** The frame and its capture time (imageInfo.timestamp, nanoseconds; elapsedRealtimeNanos on most phones). */
+    private val onFrame: (Bitmap, Long) -> Unit,
 ) {
     private val throttle = FrameThrottle((1e9 / maxFps.coerceIn(0.5f, 30f)).toLong())
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "camera-analysis") }
@@ -69,6 +70,7 @@ class CameraSource(
                         return@setAnalyzer
                     }
                     val rot = proxy.imageInfo.rotationDegrees
+                    val captured = proxy.imageInfo.timestamp
                     val bmp = try {
                         val raw = proxy.toBitmap()
                         if (rot == 0) raw else {
@@ -80,7 +82,7 @@ class CameraSource(
                     }
                     noteFrameShape(bmp.width, bmp.height, rot)
                     try {
-                        onFrame(bmp)
+                        onFrame(bmp, captured)
                     } catch (e: Exception) {
                         Log.e(TAG, "frame processing failed", e)
                     }

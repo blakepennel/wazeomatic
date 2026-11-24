@@ -88,6 +88,7 @@ into the settings; `--ez reset_settings true` restores defaults first.
 | `source` | camera | `camera`, `video` or `tcp` |
 | `video` | test.mp4 | file in the app external files dir (or absolute path) |
 | `frame_step` / `loop` | 5 / true | video: infer every Nth frame, restart at end |
+| `realtime` | false | video: play at the clip's own speed and skip frames the way the camera does (only the newest frame, only when the pipeline is free, at most `max_fps`), so a slow phone never falls behind; `frame_step` is not used. Off by default so test runs see the same frames every time |
 | `max_fps` | 6 | camera: inference rate cap (extra frames are dropped) |
 | `conf` | 0.40 | report min confidence (detector box threshold is min(0.35, conf), the desktop default) |
 | `cooldown` / `global_cooldown` | 60 / 60 | seconds per hazard type / between any two events; the second matches the macro, which files at most one report a minute, so a held-back hazard is counted here (`heldBack`) instead of vanishing there |

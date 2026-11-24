@@ -16,27 +16,49 @@ import java.io.File
  * what we want for repeatable tests; the scene rules run on the clip time, as they do on the desktop.
  * The decoder works one frame ahead of [onFrame] (a queue of one), so decoding and the YUV conversion overlap
  * with inference instead of adding to it, as a camera's frames would.
+ *
+ * With [realtime] the clip plays at its own speed instead, like a camera: the decoder keeps to the wall clock and
+ * only converts the frame the pipeline will take next (when it is waiting, or due to be free by the time the
+ * conversion is done; at most [maxFps] a second), so a slow phone skips frames and always works on a fresh one
+ * instead of falling behind ([frameStep] is not used). The third argument of
+ * [onFrame] is then the frame's due time on the elapsedRealtimeNanos clock (0 otherwise), for the lag log.
  */
 class VideoSource(
     private val file: File,
     private val frameStep: Int,
     private val loop: Boolean,
-    private val onFrame: (Bitmap, Double) -> Unit,
+    private val onFrame: (Bitmap, Double, Long) -> Unit,
     private val onStatus: (String) -> Unit,
+    private val realtime: Boolean = false,
+    maxFps: Float = 6f,
 ) {
     @Volatile private var running = false
+    private val throttle = FrameThrottle((1e9 / maxFps.coerceIn(0.5f, 30f)).toLong())
+    // realtime: the consumer is waiting; when it last took a frame; smoothed busy time a frame and conversion time
+    @Volatile private var idle = false
+    @Volatile private var lastTakeNs = 0L
+    @Volatile private var busyNs = 0.0
+    private var convertNs = 0.0
     private var thread: Thread? = null
     private var consumer: Thread? = null
-    private val queue = java.util.concurrent.ArrayBlockingQueue<Pair<Bitmap, Double>>(1)
+    private val queue = java.util.concurrent.ArrayBlockingQueue<Triple<Bitmap, Double, Long>>(1)
 
     fun start() {
         running = true
         queue.clear()
         consumer = Thread({
             while (running) {
-                val (bmp, ts) = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                if (!idle && lastTakeNs != 0L) {
+                    // busy time of the frame just done: from taking it to asking for the next
+                    val b = (android.os.SystemClock.elapsedRealtimeNanos() - lastTakeNs).toDouble()
+                    busyNs = if (busyNs == 0.0) b else busyNs * 0.8 + b * 0.2
+                }
+                idle = true
+                val (bmp, ts, due) = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                idle = false
+                lastTakeNs = android.os.SystemClock.elapsedRealtimeNanos()
                 try {
-                    onFrame(bmp, ts)
+                    onFrame(bmp, ts, due)
                 } catch (e: Exception) {
                     Log.e(TAG, "frame handler failed", e)
                 }
@@ -59,8 +81,8 @@ class VideoSource(
     }
 
     /** Waits while the previous frame is still queued; false when stopped meanwhile. */
-    private fun deliver(bmp: Bitmap, ts: Double): Boolean {
-        while (running) if (queue.offer(bmp to ts, 100, java.util.concurrent.TimeUnit.MILLISECONDS)) return true
+    private fun deliver(bmp: Bitmap, ts: Double, due: Long = 0L): Boolean {
+        while (running) if (queue.offer(Triple(bmp, ts, due), 100, java.util.concurrent.TimeUnit.MILLISECONDS)) return true
         return false
     }
 
@@ -92,7 +114,8 @@ class VideoSource(
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
         codec.start()
-        Log.i(TAG, "video ${file.name}: $mime ${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)} step=$frameStep loop=$loop")
+        Log.i(TAG, "video ${file.name}: $mime ${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)} " +
+            (if (realtime) "real time" else "step=$frameStep") + " loop=$loop")
         onStatus("video ${file.name}")
 
         val info = MediaCodec.BufferInfo()
@@ -101,6 +124,9 @@ class VideoSource(
         var pixels = IntArray(0)
         var loopOffsetUs = 0L       // clip time of the loops already played
         var lastPtsUs = 0L
+        var startWallNs = 0L        // realtime: wall clock and clip time of the first frame
+        var startClipUs = 0L
+        var taken = 0L
         try {
             while (running) {
                 if (!inputDone) {
@@ -120,14 +146,35 @@ class VideoSource(
                 val outIdx = codec.dequeueOutputBuffer(info, 10_000)
                 if (outIdx < 0) continue
                 var bmp: Bitmap? = null
-                if (info.size > 0 && decoded % frameStep == 0L) {
+                var dueNs = 0L
+                val take = if (!realtime) decoded % frameStep == 0L else if (info.size <= 0) false else {
+                    val clipUs = loopOffsetUs + info.presentationTimeUs
+                    if (startWallNs == 0L) {
+                        startWallNs = android.os.SystemClock.elapsedRealtimeNanos()
+                        startClipUs = clipUs
+                    }
+                    dueNs = startWallNs + (clipUs - startClipUs) * 1000
+                    // ahead of the clock: hold the frame until its time, as a camera would deliver it
+                    val early = dueNs - android.os.SystemClock.elapsedRealtimeNanos()
+                    if (early > 0) Thread.sleep(early / 1_000_000, (early % 1_000_000).toInt())
+                    // convert the frame the pipeline will take next: at once when it is waiting, or when it is
+                    // expected to be free by the time the conversion is done (its smoothed busy time). Earlier frames
+                    // are skipped unconverted, so it always works on a fresh frame without waiting for one.
+                    val now = android.os.SystemClock.elapsedRealtimeNanos()
+                    val soon = queue.isEmpty() && busyNs > 0 && now - lastTakeNs >= busyNs - convertNs - FRAME_SLACK_NS
+                    (idle || soon) && throttle.accept(dueNs)
+                }
+                if (info.size > 0 && take) {
                     val img = codec.getOutputImage(outIdx)
                     if (img != null) {
+                        val c0 = System.nanoTime()
                         val r = img.cropRect
                         if (pixels.size != r.width() * r.height()) pixels = IntArray(r.width() * r.height())
                         yuvToArgb(img, pixels)
                         bmp = Bitmap.createBitmap(pixels, r.width(), r.height(), Bitmap.Config.ARGB_8888)
                         img.close()
+                        val c = (System.nanoTime() - c0).toDouble()
+                        convertNs = if (convertNs == 0.0) c else convertNs * 0.8 + c * 0.2
                     }
                 }
                 if (info.size > 0) {
@@ -136,13 +183,14 @@ class VideoSource(
                 }
                 val ts = (loopOffsetUs + info.presentationTimeUs) / 1e6
                 codec.releaseOutputBuffer(outIdx, false)
-                bmp?.let { deliver(it, ts) }
+                bmp?.let { taken++; deliver(it, ts, dueNs) }
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                    val note = if (realtime) "$decoded frames, $taken in real time" else "$decoded frames"
                     if (!loop) {
-                        onStatus("video finished (${decoded} frames)")
+                        onStatus("video finished ($note)")
                         break
                     }
-                    Log.i(TAG, "video looped after $decoded frames")
+                    Log.i(TAG, "video looped after $note")
                     loopOffsetUs += lastPtsUs + 33_333      // about one frame after the last one
                     ex.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     codec.flush()
@@ -158,6 +206,8 @@ class VideoSource(
 
     companion object {
         private const val TAG = "Wazeomatic"
+        // realtime: start the conversion this much early, about half a frame of a 30 fps clip
+        private const val FRAME_SLACK_NS = 15_000_000.0
 
         /** YUV_420_888 (any plane layout) -> ARGB, BT.601 limited range. */
         fun yuvToArgb(img: Image, out: IntArray) {

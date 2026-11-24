@@ -13,6 +13,7 @@ data class Settings(
     val video: String = "test.mp4",         // file name in the app external files dir
     val frameStep: Int = 5,                 // video: run inference on every Nth decoded frame
     val loop: Boolean = true,               // video: restart at the end
+    val realtime: Boolean = false,          // video: play at clip speed and skip frames like a camera (frame_step unused)
     val maxFps: Float = 6f,                 // camera: inference rate cap
     val confThreshold: Float = 0.40f,       // ReportManager min_confidence
     val detConf: Float = 0.35f,             // detector box threshold, same as --conf on the desktop
@@ -104,6 +105,7 @@ data class Settings(
             .putString("source", source)
             .putString("video", video)
             .putInt("frame_step", frameStep)
+            .putBoolean("realtime", realtime)
             .putBoolean("loop", loop)
             .putFloat("max_fps", maxFps)
             .putFloat("conf", confThreshold)
@@ -165,6 +167,7 @@ data class Settings(
             source = str("source")?.lowercase() ?: source,
             video = str("video") ?: video,
             frameStep = i("frame_step", frameStep).coerceAtLeast(1),
+            realtime = z("realtime", realtime),
             loop = z("loop", loop),
             maxFps = f("max_fps", maxFps),
             confThreshold = f("conf", confThreshold),
@@ -224,7 +227,7 @@ data class Settings(
 
     companion object {
         val KNOWN_KEYS = setOf(
-            "source", "video", "frame_step", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
+            "source", "video", "frame_step", "realtime", "loop", "max_fps", "conf", "det_conf", "iou", "cooldown",
             "global_cooldown", "min_hits", "window", "dry_run", "target_package",
             "tcp", "tcp_port", "class_map", "zoom_crop", "ensemble", "fusion", "ensemble_weights",
             "class_conf", "report_class_conf", "track_iou", "track_grow", "hood_frac", "auto_hood",
@@ -259,6 +262,7 @@ data class Settings(
                 source = p.getString("source", d.source) ?: d.source,
                 video = p.getString("video", d.video) ?: d.video,
                 frameStep = p.getInt("frame_step", d.frameStep),
+                realtime = p.getBoolean("realtime", d.realtime),
                 loop = p.getBoolean("loop", d.loop),
                 maxFps = p.getFloat("max_fps", d.maxFps),
                 confThreshold = p.getFloat("conf", d.confThreshold),
