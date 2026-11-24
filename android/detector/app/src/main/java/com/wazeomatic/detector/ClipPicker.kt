@@ -213,7 +213,7 @@ class ClipPicker(private val act: AppCompatActivity, private val onChosen: (Stri
         }
 
         private fun bindInfo(h: Holder, f: File, info: Clips.Info?) {
-            h.info.text = Clips.describe(f, info)
+            h.info.text = Clips.describe(f, info, twoLines = true)
             if (info?.thumb != null) h.thumb.setImageBitmap(info.thumb) else h.thumb.setImageResource(R.drawable.ic_movie)
             h.thumb.scaleType = if (info?.thumb != null) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.CENTER_INSIDE
         }

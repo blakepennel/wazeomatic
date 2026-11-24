@@ -98,11 +98,12 @@ object Clips {
         return info
     }
 
-    fun describe(f: File, info: Info?): String = listOfNotNull(
-        formatSize(f.length()),
-        info?.durationMs?.let { formatDuration(it) },
-        if (info?.width != null && info.height != null) "${info.width}×${info.height}" else null,
-    ).joinToString("  ·  ")
+    /** "24.9 MB  ·  0:15  ·  1548×1278"; [twoLines] puts the picture size on a line of its own. */
+    fun describe(f: File, info: Info?, twoLines: Boolean = false): String {
+        val first = listOfNotNull(formatSize(f.length()), info?.durationMs?.let { formatDuration(it) }).joinToString("  ·  ")
+        val size = if (info?.width != null && info.height != null) "${info.width}×${info.height}" else return first
+        return if (twoLines) "$first\n$size" else "$first  ·  $size"
+    }
 
     /** A copy into the clips folder; the UI polls it, so it survives the activity being recreated. */
     class Import(val name: String, val total: Long) {

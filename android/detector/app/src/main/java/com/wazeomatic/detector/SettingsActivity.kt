@@ -251,6 +251,7 @@ class SettingsActivity : AppCompatActivity() {
         val layout = row.findViewById<TextInputLayout>(R.id.settingInputLayout)
         val edit = row.findViewById<TextInputEditText>(R.id.settingEdit)
         layout.placeholderText = spec.hint
+        layout.isExpandedHintEnabled = false     // show the example while the field is empty, not only when focused
         edit.setText(value(spec.key))
         edit.contentDescription = spec.title
         if (spec.numeric) edit.inputType = InputType.TYPE_CLASS_NUMBER

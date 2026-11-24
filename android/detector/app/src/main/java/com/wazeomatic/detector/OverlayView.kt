@@ -35,6 +35,8 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val dst = RectF()
     private val tag = RectF()
+    private val placed = ArrayList<RectF>()
+    private val sceneBg = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true; color = Color.argb(200, 30, 90, 140) }
 
     fun show(bmp: Bitmap, detections: List<Detection>) {
         frame = bmp
@@ -72,21 +74,36 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
         c.drawBitmap(b, null, dst, bmpPaint)
         val pad = 5f * dp
         val th = text.textSize + 2 * pad
-        for (d in dets) {
-            val col = colorFor(d)
-            box.color = col
-            textBg.color = col
-            val l = ox + (d.bbox.cx - d.bbox.w / 2) * w
-            val t = oy + (d.bbox.cy - d.bbox.h / 2) * h
-            val r = ox + (d.bbox.cx + d.bbox.w / 2) * w
-            val btm = oy + (d.bbox.cy + d.bbox.h / 2) * h
-            c.drawRoundRect(l, t, r, btm, 4f * dp, 4f * dp, box)
+        // scene labels (fog, traffic ...) cover the whole frame: tags in the bottom-right corner, not a box
+        val (scene, boxes) = dets.partition { it.model == "scene" }
+        for (d in boxes) {
+            box.color = colorFor(d)
+            c.drawRoundRect(ox + (d.bbox.cx - d.bbox.w / 2) * w, oy + (d.bbox.cy - d.bbox.h / 2) * h,
+                ox + (d.bbox.cx + d.bbox.w / 2) * w, oy + (d.bbox.cy + d.bbox.h / 2) * h, 4f * dp, 4f * dp, box)
+        }
+        // labels best first, and none on top of one already drawn (a row of cones would otherwise be unreadable)
+        placed.clear()
+        for (d in boxes.sortedByDescending { it.confidence }) {
             val label = String.format(Locale.US, "%s %.0f%%", d.label.replace('_', ' '), d.confidence * 100)
             val tw = text.measureText(label)
-            val ty = maxOf(t, oy + th)
+            val l = (ox + (d.bbox.cx - d.bbox.w / 2) * w).coerceAtMost(ox + w - tw - 2 * pad).coerceAtLeast(ox)
+            val ty = maxOf(oy + (d.bbox.cy - d.bbox.h / 2) * h, oy + th)
             tag.set(l, ty - th, l + tw + 2 * pad, ty)
+            if (placed.any { RectF.intersects(it, tag) }) continue
+            placed.add(RectF(tag))
+            textBg.color = colorFor(d)
             c.drawRoundRect(tag, 4f * dp, 4f * dp, textBg)
             c.drawText(label, l + pad, ty - pad - text.descent() / 2, text)
+        }
+        var by = oy + h - 10f * dp
+        for (d in scene) {
+            val label = String.format(Locale.US, "%s %.0f%%", d.label.removePrefix("scene_").replace('_', ' '), d.confidence * 100)
+            val tw = text.measureText(label)
+            val r = ox + w - 10f * dp
+            tag.set(r - tw - 2 * pad, by - th, r, by)
+            c.drawRoundRect(tag, th / 2, th / 2, sceneBg)
+            c.drawText(label, tag.left + pad, by - pad - text.descent() / 2, text)
+            by -= th + 4f * dp
         }
     }
 }
