@@ -13,6 +13,7 @@ published](#why-the-weights-are-not-published). Build them locally with the step
 | `coco_yolo11n.onnx` | Stock COCO YOLO11n, 416 px, used for vehicles, people and animals. |
 | `hazard_yolo11n_dyn.onnx`, `coco_yolo11n_dyn.onnx` | The same two detectors exported with an open input height and width (`export_onnx.py --dynamic`). The Android build bundles these when they exist: the app fixes the shape per session to the frame's aspect (640x384 for 16:9), which needs 40 % less work than the square for the same pixels. The desktop loads the square files unless given these with `--rect`. Identical output to the square export at 640x640. |
 | `hazard_yolo11n_dyn.qdq.onnx` | int8 copy of `hazard_yolo11n_dyn.onnx` (`tools/quantize_onnx.py --static`), the hazard model the Android build bundles when it exists: about 1.5x the frames a second on a mid-range phone, with the same Construction and Police scores on the held-out Argoverse clips and no new false pothole (`docs/model-research.md`). |
+| `coco_yolo11n_dyn.qat.qdq.onnx` | int8 copy of `coco_yolo11n_dyn.onnx` after quantization-aware tuning (`tools/qat_onnx.py`, command below), the COCO model the Android build bundles when it exists: the COCO pass goes from about 111 to 71 ms on the N10, with the same Construction and Police reports on the held-out clips (`docs/model-research.md`). |
 | `vehicle_cls.onnx` | Second stage on COCO car / truck / bus boxes: YOLO11n-cls, 160 px (the pipeline reads the size from the export's `imgsz` metadata, since the input is dynamic), four classes (ambulance, civilian, fire, police). A copy of `vehicle_v8.onnx`. An optional `vehicle_cls2.onnx` is averaged with it per class (desktop and app); none ships since v8. Turns a COCO vehicle into `police_vehicle`, `ambulance` or `fire_truck`. |
 | `vehicle_yolo11n.onnx`, `vehicle_v2.onnx` ... `vehicle_v8.onnx`, `vehicle_s192.onnx` | The rounds of the vehicle classifier (see below); only v8 is loaded. |
 | `weather_cls.onnx` | Whole-frame weather: YOLO11n-cls, 224 px, four classes (clear, fog, rain, snow). A copy of `weather_yolo11n.onnx`. Feeds the Fog and Slippery road rules. |
@@ -77,6 +78,16 @@ python tools/quantize_onnx.py models/hazard_yolo11n_dyn.onnx --static --calib <d
 That writes `hazard_yolo11n_dyn.qdq.onnx` (3.3 MB) and its labels. The head's box decoding and class branch stay
 float; why, and the accuracy checks behind it, are in `docs/model-research.md` (int8 hazard model). Re-check
 those before shipping a new int8 file.
+
+The int8 COCO model is tuned for its int8 ranges first (quantization-aware, about 10 minutes on a GPU). Calibrate
+once and keep the ranges, then tune against them; the last step writes `coco_yolo11n_dyn.qat.qdq.onnx` with the
+same ranges. `--pool` is a folder of shrunk copies of the training frames that is made on the first run (keep it on
+a fast disk). The checks are in `docs/model-research.md` (quantization-aware int8).
+
+```powershell
+python tools/quantize_onnx.py models/coco_yolo11n_dyn.onnx --static --calib <datasets>/roadwork/images --calib <datasets>/rdd2022_us/United_States/train/images --calib <datasets>/bdd100k_weather/data/images/train --calib-cache runs/qat/coco_ranges.json --out runs/qat/coco_ptq.qdq.onnx
+python tools/qat_onnx.py --weights yolo11n.pt --onnx models/coco_yolo11n_dyn.onnx --ranges runs/qat/coco_ranges.json --images <datasets>/wazeomatic_hazards_v3/images/train --images <datasets>/bdd100k_weather/data/images/train --images <datasets>/rdd2022_us/United_States/train/images --images <datasets>/laf_yolo/images/train --per-source 2500 --pool <datasets>/qat_pool --shapes 256x416,352x416 --epochs 6 --lr 2e-5 --out models/coco_yolo11n_dyn.qat.qdq.onnx
+```
 
 How v4 compares with v3 is in `docs/model-research.md` (hazard v4).
 
