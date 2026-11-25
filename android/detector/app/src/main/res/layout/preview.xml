@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the analysed frames with the detection boxes, plus pills for the state, the speed and dry run -->
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/previewCard"
+    style="@style/Widget.Material3.CardView.Filled"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:cardBackgroundColor="@color/preview_background"
+    app:cardCornerRadius="20dp">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <com.wazeomatic.detector.OverlayView
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/statePill"
+            style="@style/Widget.Wazeomatic.Pill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="10dp"
+            android:drawableStart="@drawable/dot"
+            android:text="STOPPED" />
+
+        <TextView
+            android:id="@+id/fpsPill"
+            style="@style/Widget.Wazeomatic.Pill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="10dp"
+            android:text="-- fps"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/modePill"
+            style="@style/Widget.Wazeomatic.Pill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="10dp"
+            android:text="DRY RUN" />
+    </FrameLayout>
+</com.google.android.material.card.MaterialCardView>

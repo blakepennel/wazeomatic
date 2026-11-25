@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- a road with a warning triangle above it -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#1A1F20" android:pathData="M46,40h16l16,42H30z" />
+    <path android:fillColor="#DEE4E2" android:pathData="M52.8,46h2.4l0.5,7h-3.4zM52.2,58h3.6l0.7,9h-5zM51.4,71h5.2l0.8,10h-6.8z" />
+    <path android:fillColor="#FFB74D" android:pathData="M54,20l18,31H36z" />
+    <path android:fillColor="#0E1213" android:pathData="M52.3,30h3.4l-0.6,11h-2.2zM52.1,43.5h3.8v3.6h-3.8z" />
+</vector>
