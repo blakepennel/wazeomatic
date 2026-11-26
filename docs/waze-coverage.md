@@ -243,6 +243,29 @@ on the held-out Argoverse clips it finds 6 of 9 police cars, alone or averaged, 
 and the Commons police clips from 10 to 8. The pair stayed then; v8 replaced it (see above). The cached scores behind these counts are per-frame classifier scores on the pipeline's own vehicle
 boxes, run through the two-hit rule.
 
+**Partly hidden police.** A police car parked behind a hedge, a barrier or another car shows only part of its
+livery, and v8 was trained on whole cars. On 400 held-out police crops with part of the car covered
+synthetically, v8's police recall at 0.85 falls from 71 % to 38 % with the left 40 % covered (as behind a car
+in the next lane), to 7 % with a third covered by foliage and to 12 % when the box holds only the top 60 % of
+the car. A v9 trained with a partly hidden copy of half the crops (`tools/train_classifier.py --occlude 0.5`:
+a band covered by another car, road-side texture rising from the bottom or one side, or a box cut to the top
+or one side of the car) holds up much better on those crops, and is the same on whole ones:
+
+| police recall at 0.85, held-out crops | v8 (ships) | v9 |
+|---|---|---|
+| whole car | 71 % | 70 % |
+| left 40 % covered | 38 % | 61 % |
+| bottom 30 % / 50 % covered | 63 % / 2 % | 66 % / 20 % |
+| foliage over 35 % | 7 % | 20 % |
+| box holds only the top 60 % | 12 % | 55 % |
+| civilian crops called police (BDD, 5,784) | 2 | 4 |
+
+It does not ship. On the 20 Hz clips it reports 11 / 9 / 6 of the 13 police logs at 1x / 2x / 3x against
+11 / 10 / 8 for v8 (no logs without police reported by either): at speed the cars are small and in view for a
+few frames, and v9 is a little less sure of them. The covered crops are synthetic, and there is no dashcam
+truth for hidden police cars, so the gain cannot be checked on real drives. For the same reason the app does
+not choose Waze's Hidden option for Police; every police report is a plain Police report.
+
 The police clips that stay silent show unmarked cars (a diplomatic convoy, black saloons), a car far away, or
 only a light bar at night. The CRASH events on the Commons clips are responders driving towards a camera that
 pans with them: to the rule that looks like approaching a scene. A dashcam meets that only with an oncoming
