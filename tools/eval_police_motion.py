@@ -9,10 +9,13 @@ or bus box (the COCO detector's, conf >= 0.35, at least 28 px) is handed to ``Po
 with the camera-only ego state of ``EgoMotion`` as in the pipeline. ``tools/label_vehicle_motion_argoverse.py``
 gives the matched boxes their track and true ground speed. A truth track is *stopped* when its speed stays
 under 0.5 m/s, *moving* when it stays over 2 m/s; tracks in between are left out. The verdict for a track is the
-module's state on the track's last scored frame: what a Police report would see.
+module's state on the track's last scored frame.
 
 The report, by distance band (median cuboid depth): the share of stopped tracks that pass (state stopped), the
 share of moving tracks that pass (these would become false Police reports), and the share still pending.
+``pass`` is the verdict on a track's last frame; ``hit2`` is the share of tracks read standing on at least two
+frames, as the pipeline needs two hits to report (a car read standing that starts a new track as it leaves the
+frame counts as pending under ``pass`` but did report).
 Run with ``--set name=value`` to try MotionConfig values.
 """
 from __future__ import annotations
@@ -40,22 +43,27 @@ def _truth(v) -> str | None:
     return None if not sp else "stopped" if max(sp) < 0.5 else "moving" if min(sp) > 2.0 else None
 
 
-def run_clip(path: Path, rows: list[dict], truth: dict, cfg: MotionConfig) -> dict:
-    """Track key -> list of (verdict, speed, depth) per scored frame."""
+def run_clip(path: Path, rows: list[dict], truth: dict, cfg: MotionConfig, speedup: int = 1) -> dict:
+    """Track key -> list of (verdict, speed, depth) per scored frame. ``speedup`` k keeps every k-th frame and
+    stamps it as if the frames still came at the clip's rate: static objects then move as they would from a car
+    driving k times as fast (the truth is looked up at the frame's real time)."""
     cap = cv2.VideoCapture(str(path))
     ego, pm = EgoMotion(), PoliceMotion(cfg)
     out = defaultdict(list)
-    for r in sorted(rows, key=lambda r: r["t"]):
+    for n, r in enumerate(sorted(rows, key=lambda r: r["t"])):
         ok, img = cap.read()
         if not ok:
             break
+        if n % speedup:
+            continue
+        t = r["t"] / speedup
         h, w = img.shape[:2]
         dets = [Detection(d[0], d[1], tuple(d[2:6]), model="coco") for d in r["dets"]]
-        ego.update(r["t"], img, dets)
+        ego.update(t, img, dets)
         police = [Detection(POLICE, 0.9, d.bbox, model="vehicle") for d in dets
                   if d.label in ("car", "truck", "bus") and d.confidence >= 0.35
                   and min(d.bbox[2] * w, d.bbox[3] * h) >= 28]
-        res = pm.update(r["t"], img, dets + police, ego.state(r["t"]))
+        res = pm.update(t, img, dets + police, ego.state(t))
         for d, tr in zip(res[len(dets):], pm.last_tracks):
             lab = truth.get((round(r["t"], 1), tuple(round(v, 4) for v in d.bbox)))
             if lab is None:
@@ -74,6 +82,8 @@ def main() -> None:
     ap.add_argument("--root", default=None, help="argoverse2 folder (default <datasets>/argoverse2)")
     ap.add_argument("--set", action="append", default=[], help="MotionConfig field=value")
     ap.add_argument("--max-clips", type=int, default=0)
+    ap.add_argument("--speedup", type=int, default=1, help="keep every k-th frame, stamped at the clip's rate "
+                    "(static objects move as seen from a car k times as fast)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     cfg = MotionConfig()
@@ -97,12 +107,12 @@ def main() -> None:
         clips = clips[: args.max_clips]
     tracks = {}
     for i, clip in enumerate(clips):
-        tracks.update(run_clip(root / "clips" / clip, frames[clip], truth[clip], cfg))
+        tracks.update(run_clip(root / "clips" / clip, frames[clip], truth[clip], cfg, args.speedup))
         print(f"[{i + 1}/{len(clips)}] {clip}: {len(tracks)} tracks", flush=True)
 
-    result = {"config": vars(cfg), "bands": {}}
+    result = {"config": vars(cfg), "speedup": args.speedup, "bands": {}}
     for lo, hi in BANDS:
-        c = {k: {"n": 0, "stopped": 0, "moving": 0, "pending": 0} for k in ("stopped", "moving")}
+        c = {k: {"n": 0, "stopped": 0, "moving": 0, "pending": 0, "hit2": 0} for k in ("stopped", "moving")}
         for v in tracks.values():
             sp = [x[1] for x in v if not np.isnan(x[1])]
             if not sp:
@@ -112,11 +122,13 @@ def main() -> None:
                 continue
             c[truth_state]["n"] += 1
             c[truth_state][v[-1][0]] += 1
+            c[truth_state]["hit2"] += sum(x[0] == "stopped" for x in v) >= 2
         result["bands"][f"{lo}-{hi} m"] = c
         line = []
         for k in ("stopped", "moving"):
             n = max(1, c[k]["n"])
-            line.append(f"{k} {c[k]['n']}: pass {c[k]['stopped'] / n:.2f} pending {c[k]['pending'] / n:.2f}")
+            line.append(f"{k} {c[k]['n']}: pass {c[k]['stopped'] / n:.2f} pending {c[k]['pending'] / n:.2f} "
+                        f"hit2 {c[k]['hit2'] / n:.2f}")
         print(f"{lo}-{hi} m  " + " | ".join(line))
         if lo == 0:      # where the decided verdicts come from, near band
             for k in ("stopped", "moving"):

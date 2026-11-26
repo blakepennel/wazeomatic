@@ -63,17 +63,22 @@ class SourceError(RuntimeError):
 
 
 class VideoSource:
-    """Iterate frames of a video file at a fixed step (every ``step``-th frame)."""
+    """Iterate frames of a video file at a fixed step (every ``step``-th frame).
+
+    ``time_scale`` divides the timestamps: with ``step`` 10 on a 20 fps clip and ``time_scale`` 3, frames come
+    every 0.5 s of the clip but are stamped 1/6 s apart, so a static scene looks as it would from a car driving
+    three times as fast, seen at 6 frames a second (tools/eval_vehicle.py --speedup)."""
 
     def __init__(self, path: str | Path, step: int = 1, loop: bool = False,
                  start_s: float = 0.0, max_frames: Optional[int] = None,
-                 sim: Optional[CameraSim] = None):
+                 sim: Optional[CameraSim] = None, time_scale: float = 1.0):
         self.path = str(path)
         self.step = max(1, step)
         self.loop = loop
         self.start_s = start_s
         self.max_frames = max_frames
         self.sim = sim
+        self.time_scale = time_scale
         self.cap = cv2.VideoCapture(self.path)
         if not self.cap.isOpened():
             raise FileNotFoundError(f"cannot open video: {self.path}")
@@ -104,7 +109,7 @@ class VideoSource:
                         break
                     if self.sim is not None:
                         img = self.sim(img)
-                    yield Frame(img, idx, idx / self.fps)
+                    yield Frame(img, idx, idx / self.fps / self.time_scale)
                     emitted += 1
                     if self.max_frames and emitted >= self.max_frames:
                         return

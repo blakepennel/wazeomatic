@@ -322,7 +322,8 @@ class SceneAnalyzer:
         self.motion = None
         if self.cfg.police_stopped_only:
             from .motion import MotionConfig, PoliceMotion
-            self.motion = PoliceMotion(MotionConfig(horizon_y=self.cfg.horizon_y, drive_side=self.cfg.drive_side))
+            self.motion = PoliceMotion(MotionConfig(horizon_y=self.cfg.horizon_y, drive_side=self.cfg.drive_side),
+                                       hfov_deg=self.cfg.hfov_deg, cam_height_m=self.cfg.cam_height_m)
         self.shoulder = None
         if self.cfg.shoulder_cars:
             from .shoulder import ShoulderCars, ShoulderConfig
@@ -386,7 +387,8 @@ class SceneAnalyzer:
         seen them as they were."""
         if self.motion is None:
             return list(dets)
-        return self.motion.update(t, img, dets, str(self.state.get("ego", "moving")), hood_frac)
+        return self.motion.update(t, img, dets, str(self.state.get("ego", "moving")), hood_frac,
+                                  gps_mps=self.ego.gps_speed(t))
 
     def shoulder_cars(self, t: float, img: np.ndarray, dets: Sequence[Detection], hood_frac: float = 0.0
                       ) -> list[Detection]:

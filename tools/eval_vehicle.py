@@ -115,16 +115,27 @@ def eval_clips(args) -> tuple[dict, int]:
         dets = build_detectors(spec)
         vehicle, weather, scene = build_second_stage(dargs)
         mgr = ReportManager(ReportConfig(class_to_hazard=load_class_to_hazard(), global_cooldown_s=0.0))
-        stats = {"police_max": 0.0, "light_frames": 0, "police_frames": 0}
+        stats = {"police_max": 0.0, "light_frames": 0, "police_frames": 0, "police_85": {}}
 
         def on_frame(_vis, ds, _evs):
             pol = max((d.confidence for d in ds if d.label == "police_vehicle"), default=0.0)
             stats["police_max"] = max(stats["police_max"], pol)
             stats["police_frames"] += pol >= 0.5
+            # frames with a box over the police floor, by what the standing check made of it
+            for lab in {d.label for d in ds if d.label.startswith("police_vehicle") and d.confidence >= 0.85}:
+                k = lab.replace("police_vehicle", "") or "_standing"
+                stats["police_85"][k[1:]] = stats["police_85"].get(k[1:], 0) + 1
             stats["light_frames"] += any(d.label == "emergency_lights" for d in ds)
 
         try:
-            src = VideoSource(str(clip), step=args.step)
+            step, scale = args.step, 1.0
+            if args.speedup:
+                # frames as far apart on the road as a car args.speedup times as fast would see them at
+                # args.speedup_fps: static objects (a parked police car) look exactly as at that speed
+                fps = cv2.VideoCapture(str(clip)).get(cv2.CAP_PROP_FPS) or 30.0
+                step = max(1, round(fps * args.speedup / args.speedup_fps))
+                scale = step * args.speedup_fps / fps
+            src = VideoSource(str(clip), step=step, time_scale=scale)
         except Exception as e:  # noqa: BLE001
             results[clip.name] = {"error": str(e)}
             continue
@@ -148,9 +159,10 @@ def eval_clips(args) -> tuple[dict, int]:
             bad += 1
         if args.expect == "any" and not flagged:
             bad += 1
-        results[clip.name] = {"seconds": round(st.frames * args.step / max(1.0, src.fps), 1), "events": types,
+        results[clip.name] = {"seconds": round(st.frames * step / max(1.0, src.fps), 1), "events": types,
                               "police_max": round(stats["police_max"], 3), "police_frames": stats["police_frames"],
-                              "light_frames": stats["light_frames"], "ended": st.ended}
+                              "police_85": stats["police_85"], "light_frames": stats["light_frames"],
+                              "ended": st.ended}
         print(clip.name, json.dumps(results[clip.name]), flush=True)
     n = len([r for r in results.values() if "error" not in r])
     hit = sum(1 for r in results.values() if any(t.startswith(("POLICE", "CRASH")) for t in r.get("events", [])))
@@ -183,6 +195,10 @@ def main() -> None:
     ap.add_argument("--clip-half", type=int, choices=[0, 1],
                     help="clips: only this half of the folder (split as tools/mine_vehicle_crops.py does)")
     ap.add_argument("--step", type=int, default=3)
+    ap.add_argument("--speedup", type=float, help="clips: drop frames so a static scene passes as if driven this "
+                    "many times faster, stamped at --speedup-fps (needs a high frame rate clip; 20 fps Argoverse "
+                    "gives steps of 3.3 per x1)")
+    ap.add_argument("--speedup-fps", type=float, default=6.0, help="clips: frame rate the pipeline sees with --speedup")
     ap.add_argument("--hazard", action="store_true", help="clips: run the hazard model too (all scene rules)")
     ap.add_argument("--expect", choices=["none", "any"], help="clips: fail on any / on no police-crash event")
     ap.add_argument("--police-truth", help="clips: text file of clip stems that show a marked police vehicle "

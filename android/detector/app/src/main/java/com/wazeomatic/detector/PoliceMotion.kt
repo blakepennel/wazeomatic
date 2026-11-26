@@ -21,6 +21,15 @@ data class MotionConfig(
     val horizonY: Double = 0.50,
     val driveSide: String = "right",
     val trackMinConf: Double = 0.3,
+    // also follow this many of the largest car / truck / bus boxes from the start, so a car has its measurements
+    // when the classifier is sure of it (at highway speed it is in view for only a few frames), while our speed is
+    // at least trackVehiclesMps (GPS) or trackVehiclesCameraMps (road fit, reads about 0.87 of the true speed) in
+    // the last speedHoldS: in town it gains nothing and costs a car LK pass per box and a road fit every frame
+    val trackVehicles: Int = 4,
+    val trackVehiclesMps: Double = 11.0,
+    val trackVehiclesCameraMps: Double = 9.5,
+    val speedEveryS: Double = 1.0,           // without GPS, a road fit for the speed this often
+    val speedHoldS: Double = 3.0,
     val linkIou: Double = 0.3,
     val trackGapS: Double = 1.5,
     val minMeasures: Int = 3,
@@ -29,6 +38,7 @@ data class MotionConfig(
     val carCorners: Int = 40,
     val minRoadPairs: Int = 20,
     val horizonTol: Double = 0.12,           // 0 turns the horizon check off
+    val fixedHorizonFallback: Boolean = true, // where that check rejects the free fit, hold its zero on horizonY
     val minCarPoints: Int = 8,
     val roadLk: IntArray = intArrayOf(21, 4),
     val carLk: IntArray = intArrayOf(15, 3),
@@ -159,14 +169,18 @@ object Flow {
         return out
     }
 
-    /** One point through pyramidal Lucas-Kanade from [a] to [b] (pyramids); null when it is lost. */
-    fun lk(a: List<GreyImage>, b: List<GreyImage>, x: Double, y: Double, win: Int, fast: Boolean = true): DoubleArray? {
+    /**
+     * One point through pyramidal Lucas-Kanade from [a] to [b] (pyramids); null when it is lost. The search starts
+     * at the displacement ([dx0], [dy0]) px, as OpenCV's OPTFLOW_USE_INITIAL_FLOW does.
+     */
+    fun lk(a: List<GreyImage>, b: List<GreyImage>, x: Double, y: Double, win: Int, fast: Boolean = true,
+           dx0: Double = 0.0, dy0: Double = 0.0): DoubleArray? {
         val half = win / 2
         val n = (2 * half + 1) * (2 * half + 1)
         val iw = DoubleArray(n); val ix = DoubleArray(n); val iy = DoubleArray(n)
-        var gx = 0.0
-        var gy = 0.0
         val top = min(a.size, b.size) - 1
+        var gx = dx0 / (1 shl top)
+        var gy = dy0 / (1 shl top)
         for (lv in top downTo 0) {
             val ia = a[lv]
             val jb = b[lv]
@@ -259,17 +273,47 @@ object Flow {
         return a + (b - a) * fy
     }
 
-    /** Points tracked from [a] to [b] with a forward-backward check (< [fbPx]); returns matched (from, to). */
+    /**
+     * Points tracked from [a] to [b] with a forward-backward check (< [fbPx]); returns matched (from, to). [guess]
+     * (each point's displacement, px), where given, is a start for when the plain search loses most of the points:
+     * a pyramid of a few levels reaches some 50 px, and at highway speed a car beside the road moves twice that
+     * between frames. Then the lost points are searched again from it; while the plain search follows half or more
+     * it is not used, as the points lost on a box are mostly background, which the guess finds all too well.
+     */
     fun track(a: List<GreyImage>, b: List<GreyImage>, pts: List<DoubleArray>, win: Int,
-              fbPx: Double = 1.0): Pair<List<DoubleArray>, List<DoubleArray>> {
-        val from = ArrayList<DoubleArray>()
-        val to = ArrayList<DoubleArray>()
-        for (p in pts) {
+              fbPx: Double = 1.0, guess: List<DoubleArray>? = null): Pair<List<DoubleArray>, List<DoubleArray>> {
+        val found = arrayOfNulls<DoubleArray>(pts.size)
+        for ((i, p) in pts.withIndex()) {
             val q = lk(a, b, p[0], p[1], win) ?: continue
             val r = lk(b, a, q[0], q[1], win) ?: continue
-            if (hypot(r[0] - p[0], r[1] - p[1]) < fbPx) { from.add(p); to.add(q) }
+            if (hypot(r[0] - p[0], r[1] - p[1]) < fbPx) found[i] = q
         }
+        if (guess != null && 2 * found.count { it != null } < pts.size) {
+            for ((i, p) in pts.withIndex()) {
+                if (found[i] != null) continue
+                val g = guess[i]
+                val q = lk(a, b, p[0], p[1], win, dx0 = g[0], dy0 = g[1]) ?: continue
+                val r = lk(b, a, q[0], q[1], win, dx0 = p[0] - q[0], dy0 = p[1] - q[1]) ?: continue
+                if (hypot(r[0] - p[0], r[1] - p[1]) < fbPx) found[i] = q
+            }
+        }
+        val from = ArrayList<DoubleArray>()
+        val to = ArrayList<DoubleArray>()
+        for ((i, p) in pts.withIndex()) found[i]?.let { from.add(p); to.add(it) }
         return from to to
+    }
+
+    /**
+     * Displacement of points on static objects over [dt]: away from the focus of expansion at [rate] (1/s, per
+     * point) plus the camera's turn ([road]'s shift, measured over road[4] seconds).
+     */
+    fun staticFlow(pts: List<DoubleArray>, rate: (DoubleArray) -> Double, road: DoubleArray, dt: Double, w: Int, h: Int,
+                   horizonY: Double): List<DoubleArray> {
+        val k = if (road[4] > 0) dt / road[4] else 1.0
+        return pts.map { p ->
+            val e = rate(p)
+            doubleArrayOf((p[0] - w / 2.0) * e * dt + road[2] * k, (p[1] - horizonY * h) * e * dt + road[3] * k)
+        }
     }
 
     fun median(xs: DoubleArray): Double {
@@ -301,7 +345,8 @@ object Flow {
     }
 
     /** motion.road_pair_rate: horizontal log-spread rate of road point pairs on nearly one row, as A * y + B. */
-    fun roadPairRate(a: List<DoubleArray>, b: List<DoubleArray>, h: Int, dt: Double, minPairs: Int = 20): DoubleArray? {
+    fun roadPairRate(a: List<DoubleArray>, b: List<DoubleArray>, h: Int, dt: Double, minPairs: Int = 20,
+                     horizon: Double? = null, withRes: Boolean = false): DoubleArray? {
         val ys = ArrayList<Double>()
         val rs = ArrayList<Double>()
         for (i in a.indices) for (j in i + 1 until a.size) {
@@ -316,13 +361,28 @@ object Flow {
         if (ys.size < minPairs) return null
         val y = ys.toDoubleArray()
         val r = rs.toDoubleArray()
-        var sol = fitLine(y, r, null)
+        // with [horizon], the rate is held at zero on that row: one parameter, B = -A * horizon (motion.py)
+        val fit = { keep: BooleanArray? ->
+            if (horizon == null) fitLine(y, r, keep) else {
+                var sxx = 0.0
+                var sxr = 0.0
+                for (i in y.indices) if (keep == null || keep[i]) {
+                    val x = y[i] - horizon
+                    sxx += x * x; sxr += x * r[i]
+                }
+                val a = if (sxx > 0) sxr / sxx else 0.0
+                doubleArrayOf(a, -a * horizon)
+            }
+        }
+        var sol = fit(null)
         repeat(2) {
             val res = DoubleArray(y.size) { abs(sol[0] * y[it] + sol[1] - r[it]) }
             val cut = percentile(res, 60.0)
-            sol = fitLine(y, r, BooleanArray(y.size) { res[it] <= cut })
+            sol = fit(BooleanArray(y.size) { res[it] <= cut })
         }
-        return sol
+        if (!withRes) return sol
+        // with [withRes], the median absolute residual over all pairs as a third value
+        return doubleArrayOf(sol[0], sol[1], median(DoubleArray(y.size) { abs(sol[0] * y[it] + sol[1] - r[it]) }))
     }
 
     /** motion._spread: median log change of the horizontal distance between point pairs. */
@@ -383,6 +443,9 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
     /** The last trustworthy road fit: A, B (spread rate = A * y + B), rotation shift x, y (px). */
     var lastRoad: DoubleArray? = null
         internal set   // tests set it
+    /** A, B, shift x, shift y and dt of the last frame pair's road fit, and the time that pair ended. */
+    private var roadPrior: DoubleArray? = null
+    private var roadPriorT = -1.0
 
     /**
      * One frame: the track of each of [targets] (boxes out of [dets]) with its state. Call it on every frame, with
@@ -416,26 +479,39 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
             return lastTracks
         }
         val follow = HashMap<Track, Pair<List<DoubleArray>, List<DoubleArray>>>()
-        val pred = HashMap<Track, BBox>()
+        val pred = HashMap<Track, List<BBox>>()
+        // where each track should be now: its own corners followed with LK, or where that fails, also where the
+        // box would be if the car stood (at highway speed the corners are often lost, and a parked car would start
+        // a new, undecided track every frame or two); as motion.py
+        if (!roadTried && prevPyr != null && !stationary && dt > 0 && tracks.isNotEmpty()) {
+            road = road(prevPyr, pyr, dets, dt, hoodFrac)
+            roadTried = true
+        }
         for (tr in tracks) {
-            var box = tr.lastBox
+            val box = tr.lastBox
+            var boxes = listOf(box)
             if (prevPyr != null && !stationary && dt > 0 && abs(tr.lastT - pt) < 1e-6) {
-                val f = follow(prevPyr, pyr, box)
+                val f = follow(prevPyr, pyr, box, road, dt)
                 if (f != null) {
                     follow[tr] = f
                     val dx = Flow.median(DoubleArray(f.first.size) { f.second[it][0] - f.first[it][0] })
                     val dy = Flow.median(DoubleArray(f.first.size) { f.second[it][1] - f.first[it][1] })
                     val sc = exp(Flow.spread(f.first, f.second) ?: 0.0)
-                    box = BBox((box.cx + dx / g.w).toFloat(), (box.cy + dy / g.h).toFloat(),
-                        (box.w * sc).toFloat(), (box.h * sc).toFloat())
+                    boxes = listOf(BBox((box.cx + dx / g.w).toFloat(), (box.cy + dy / g.h).toFloat(),
+                        (box.w * sc).toFloat(), (box.h * sc).toFloat()))
                 }
             }
-            pred[tr] = box
+            val rd = road
+            if (tr !in follow && rd != null && !stationary) {
+                val st = staticBox(box, rd, t - tr.lastT, dt, g.h)
+                if (st != null) boxes = boxes + st
+            }
+            pred[tr] = boxes
         }
         data class Cand(val iou: Double, val k: Int, val n: Int)
         val cands = ArrayList<Cand>()
         for ((k, d) in police.withIndex()) for ((n, tr) in tracks.withIndex()) {
-            if (tr.lastT < t) cands.add(Cand(boxIou(pred[tr]!!, d.bbox), k, n))
+            if (tr.lastT < t) cands.add(Cand(pred[tr]!!.maxOf { boxIou(it, d.bbox) }, k, n))
         }
         // as Python's sorted(reverse=True) on (iou, k, n) tuples
         cands.sortWith(compareByDescending<Cand> { it.iou }.thenByDescending { it.k }.thenByDescending { it.n })
@@ -525,11 +601,22 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
             for (y in by1 until by2) for (x in bx1 until bx2) mask[y * w + x] = false
         }
         val pts = Flow.corners(img, cfg.roadCorners, 0.005, 6.0, mask)
-        val (pa, pb) = Flow.track(a.take(cfg.roadLk[1] + 1), b.take(cfg.roadLk[1] + 1), pts, cfg.roadLk[0])
+        val prior = roadPrior
+        val guess = if (prior != null && abs(roadPriorT - (prevT - dt)) < 1e-6)
+            Flow.staticFlow(pts, { p -> prior[0] * p[1] / h + prior[1] }, prior, dt, w, h, cfg.horizonY) else null
+        val (pa, pb) = Flow.track(a.take(cfg.roadLk[1] + 1), b.take(cfg.roadLk[1] + 1), pts, cfg.roadLk[0], guess = guess)
         if (pa.size < 15) return null
-        val fit = Flow.roadPairRate(pa, pb, h, dt, cfg.minRoadPairs) ?: return null
-        // a flat road's spread rate is zero at the horizon; a fit that puts that row far off is not the road
-        if (cfg.horizonTol > 0 && (!(fit[0] > 0) || abs(-fit[1] / fit[0] - cfg.horizonY) > cfg.horizonTol)) return null
+        // a flat road's spread rate is zero at the horizon; a fit that puts that row far off is not the road, and
+        // then (or with too few pairs) the rate is fitted with its zero held on the horizon instead
+        // ... if that fits the pairs about as well (a uniform zoom, which the free fit matches exactly, stays out)
+        var fit = Flow.roadPairRate(pa, pb, h, dt, cfg.minRoadPairs, withRes = true) ?: return null
+        if (cfg.horizonTol > 0 && (!(fit[0] > 0) || abs(-fit[1] / fit[0] - cfg.horizonY) > cfg.horizonTol)) {
+            if (!cfg.fixedHorizonFallback) return null
+            val fh = Flow.roadPairRate(pa, pb, h, dt, cfg.minRoadPairs, horizon = cfg.horizonY, withRes = true)
+                ?: return null
+            if (!(fh[0] > 0) || fh[2] > 2.0 * fit[2] + 0.02) return null     // roads 1-1.4x as a rule, a zoom ~40x
+            fit = fh
+        }
         val fx = w / 2.0
         val fy = cfg.horizonY * h
         val rx = DoubleArray(pa.size)
@@ -539,11 +626,19 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
             rx[i] = pb[i][0] - pa[i][0] - (pa[i][0] - fx) * e * dt
             ry[i] = pb[i][1] - pa[i][1] - (pa[i][1] - fy) * e * dt
         }
-        return doubleArrayOf(fit[0], fit[1], Flow.median(rx), Flow.median(ry)).also { lastRoad = it }
+        return doubleArrayOf(fit[0], fit[1], Flow.median(rx), Flow.median(ry)).also {
+            lastRoad = it
+            roadPrior = doubleArrayOf(it[0], it[1], it[2], it[3], dt)
+            roadPriorT = prevT
+        }
     }
 
-    /** The car's corners (inner 80 % of its box) followed from [a] into [b]. */
-    private fun follow(a: List<GreyImage>, b: List<GreyImage>, box: BBox): Pair<List<DoubleArray>, List<DoubleArray>>? {
+    /**
+     * The car's corners (inner 80 % of its box) followed from [a] into [b]. With the [road] fit of this frame pair,
+     * corners the plain search loses are looked for where they would be if the car stood.
+     */
+    private fun follow(a: List<GreyImage>, b: List<GreyImage>, box: BBox, road: DoubleArray? = null,
+                       dt: Double = 0.0): Pair<List<DoubleArray>, List<DoubleArray>>? {
         val img = a[0]
         val w = img.w
         val h = img.h
@@ -556,8 +651,28 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
         for (y in y1 until y2) for (x in x1 until x2) mask[y * w + x] = true
         val pts = Flow.corners(img, cfg.carCorners, 0.01, 3.0, mask)
         if (pts.size < cfg.minCarPoints) return null
-        val r = Flow.track(a.take(cfg.carLk[1] + 1), b.take(cfg.carLk[1] + 1), pts, cfg.carLk[0])
+        var guess: List<DoubleArray>? = null
+        if (road != null) {
+            val e = road[0] * (box.cy + box.h / 2.0) + road[1]
+            if (e > cfg.minExpansion)
+                guess = Flow.staticFlow(pts, { e }, doubleArrayOf(road[0], road[1], road[2], road[3], dt), dt, w, h, cfg.horizonY)
+        }
+        val r = Flow.track(a.take(cfg.carLk[1] + 1), b.take(cfg.carLk[1] + 1), pts, cfg.carLk[0], guess = guess)
         return if (r.first.size >= cfg.minCarPoints) r else null
+    }
+
+    /**
+     * Where [box] would be [gap] s later if it stood on the road (expansion from the focus at the rate of its
+     * bottom row, plus the camera's turn), or null when the road gives no rate there.
+     */
+    private fun staticBox(box: BBox, road: DoubleArray, gap: Double, dt: Double, h: Int): BBox? {
+        val e = road[0] * (box.cy + box.h / 2.0) + road[1]
+        if (!(e > cfg.minExpansion) || gap <= 0) return null
+        val k = exp(min(e * gap, 1.5))
+        val n = if (dt > 0) gap / dt else 1.0
+        return BBox((0.5 + (box.cx - 0.5) * k + road[2] * n / cfg.width).toFloat(),
+            (cfg.horizonY + (box.cy - cfg.horizonY) * k + road[3] * n / h).toFloat(),
+            (box.w * k).toFloat(), (box.h * k).toFloat())
     }
 
     /** (flow residual, spread ratio) of a car whose corners moved from [pa] to [pb]. */
@@ -583,11 +698,51 @@ open class StandingTracker(val cfg: MotionConfig = MotionConfig()) {
 }
 
 /** Relabels the police boxes of cars not read as standing (police_vehicle_pending / _moving). */
-class PoliceMotion(cfg: MotionConfig = MotionConfig()) : StandingTracker(cfg) {
-    /** [dets] with the police boxes of pending and moving tracks relabelled (_pending / _moving). */
-    fun update(t: Double, img: RgbImage, dets: List<Detection>, egoState: String, hoodFrac: Double = 0.0): List<Detection> {
+/**
+ * With the camera's horizontal field of view ([hfovDeg]) and mount height it also keeps our speed (the GPS speed
+ * when given, else from the road fit as in ShoulderCars), which decides whether trackVehicles applies; without a
+ * field of view it always does (as motion.py).
+ */
+class PoliceMotion(cfg: MotionConfig = MotionConfig(), val hfovDeg: Double? = null, val camHeightM: Double = 1.3) :
+    StandingTracker(cfg) {
+    /** m/s, the latest sample. */
+    var speed: Double? = null
+        private set
+    private var speedT = -1e9
+    private var speedGps = false
+    private var camT = -1e9
+
+    /** Whether to follow vehicles before they are called police (see trackVehiclesMps). */
+    fun fast(t: Double): Boolean {
+        if (hfovDeg == null && !speedGps) return true
+        val v = speed ?: return false
+        if (t - speedT > cfg.speedHoldS) return false
+        return v >= if (speedGps) cfg.trackVehiclesMps else cfg.trackVehiclesCameraMps
+    }
+
+    /** [dets] with the police boxes of pending and moving tracks relabelled (_pending / _moving); [gpsMps] a fresh GPS speed. */
+    fun update(t: Double, img: RgbImage, dets: List<Detection>, egoState: String, hoodFrac: Double = 0.0,
+               gpsMps: Double? = null): List<Detection> {
+        if (gpsMps != null) { speed = gpsMps; speedT = t; speedGps = true }
+        else if (t - speedT > cfg.speedHoldS) speedGps = false
+        val needSpeed = cfg.trackVehicles > 0 && gpsMps == null && hfovDeg != null && t - camT >= cfg.speedEveryS
+        if (needSpeed) camT = t
         val police = dets.filter { it.label == POLICE && it.confidence >= cfg.trackMinConf }
-        val tracks = states(t, img, dets, police, egoState, hoodFrac)
+        var targets = police
+        if (cfg.trackVehicles > 0 && fast(t)) {
+            val taken = police.map { it.bbox }.toHashSet()
+            targets = police + dets.filter {
+                it.label in VEHICLES && it.confidence >= 0.35 && it.bbox !in taken &&
+                    min(it.bbox.w * img.width, it.bbox.h * img.height) >= 28
+            }.sortedByDescending { it.bbox.w * it.bbox.h }.take(cfg.trackVehicles)
+        }
+        val before = lastRoad
+        val tracks = states(t, img, dets, targets, egoState, hoodFrac, forceRoad = needSpeed).take(police.size)
+        val road = lastRoad
+        if (gpsMps == null && hfovDeg != null && road != null && road !== before) {
+            val fy = 0.5 / kotlin.math.tan(Math.toRadians(hfovDeg) / 2) * img.width / img.height   // frame heights
+            speed = road[0] * fy * camHeightM; speedT = t; speedGps = false
+        }
         // always a new list: the pipeline clears its own list and refills it from this one
         if (police.isEmpty()) return dets.toList()
         val assigned = HashMap<Int, Track>()
@@ -609,5 +764,6 @@ class PoliceMotion(cfg: MotionConfig = MotionConfig()) : StandingTracker(cfg) {
     companion object {
         const val POLICE = "police_vehicle"
         const val OTHER_SIDE = "scene_police_other_side"
+        private val VEHICLES = setOf("car", "truck", "bus")
     }
 }

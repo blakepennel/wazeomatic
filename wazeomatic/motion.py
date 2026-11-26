@@ -8,7 +8,9 @@ stationary object at that place would do while we drive:
   check) give the expansion of the static world row by row: two road points on the same row spread apart at a
   rate that grows linearly with the row (flat road), fitted as ``rate = A * y + B``. A spread rate needs no
   horizon and no rotation, which is why the road is measured with pairs; a fit whose zero row ``-B / A`` is
-  far from the horizon is not trusted (it happens at walking pace, in turns and with few road corners). A static point at the bottom of the
+  far from the horizon is not trusted (it happens at walking pace, in turns and with few road corners) unless a
+  fit with its zero held on the horizon matches the pairs about as well (``fixed_horizon_fallback``: at
+  highway speed few road corners are left, and they pin the free fit poorly). A static point at the bottom of the
   car's box should flow away from the focus of expansion at ``(p - foe) * (A * y_bottom + B) * dt``. Whatever
   road flow that model leaves over, its median, is the camera's rotation (yaw and pitch shift the whole image),
   and is taken off the car's flow too, so no gyro is needed. The residual is
@@ -20,6 +22,12 @@ stationary object at that place would do while we drive:
   about 1.5, a car driving ahead at our pace about 0).
 * **We stand.** A car that stands too keeps its box: centre shift under ``still_shift`` box widths and size
   change under ``still_growth`` over ``still_span_s``; most such checks failing means it drives.
+
+At highway speed a roadside car moves further between frames than the pyramid reaches: corners the plain
+search mostly loses are searched again from where a static object would be (``track_points``'s guess), and
+a track whose corners are lost is linked to the box a standing car would have. While we drive fast, the
+largest vehicle boxes are followed before the classifier calls them police (``track_vehicles``), as such a car
+is in view for only a few frames.
 
 Each police track is *pending* until it has ``min_measures`` measurements in one of the two regimes, then
 *stopped* or *moving*. Police boxes of pending and moving tracks are relabelled (``police_vehicle_pending``,
@@ -33,6 +41,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
+
+import math
 
 import cv2
 import numpy as np
@@ -53,6 +63,15 @@ class MotionConfig:
     horizon_y: float = 0.50            # row of the horizon (SceneConfig.horizon_y)
     drive_side: str = "right"
     track_min_conf: float = 0.3        # police score that starts or extends a track
+    track_vehicles: int = 4            # also follow this many of the largest car / truck / bus boxes from the
+                                       # start, so a car has its measurements when the classifier is sure of it
+                                       # (at highway speed it is in view for only a few frames) ...
+    track_vehicles_mps: float = 11.0   # ... while our speed is at least this (40 km/h; GPS), or
+    track_vehicles_camera_mps: float = 9.5   # this from the road fit (it reads about 0.87 of the true speed),
+                                       # in the last speed_hold_s: in town it gains nothing and costs a car LK
+                                       # pass per box and a road fit every frame
+    speed_every_s: float = 1.0         # without GPS, a road fit for the speed this often
+    speed_hold_s: float = 3.0
     link_iou: float = 0.3              # against the box predicted from the car's own flow
     track_gap_s: float = 1.5
     min_measures: int = 3              # measurements before a track is decided
@@ -64,6 +83,10 @@ class MotionConfig:
     horizon_tol: float = 0.12          # a flat road's spread rate is zero at the horizon: a fit that puts
                                        # that row further off is not the road (low speed, a wall, a turn);
                                        # 0 turns the check off
+    fixed_horizon_fallback: int = 1    # 1: where that check rejects the free fit, fit the rate with its zero
+                                       # held on horizon_y instead, if that fits the pairs about as well (at
+                                       # speed the few road points left pin the free fit poorly; a uniform
+                                       # zoom, which the free fit matches exactly, stays rejected)
     min_car_points: int = 8
     road_lk: tuple = (21, 4)           # LK window (px) and pyramid levels for road corners
     car_lk: tuple = (15, 3)            # smaller for the car: a 21 px window on a small box mostly sees the road
@@ -82,9 +105,14 @@ LK_CRITERIA = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
 
 
 def track_points(a: np.ndarray, b: np.ndarray, pts: np.ndarray, lk: tuple = (21, 4),
-                 fb_px: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+                 fb_px: float = 1.0, guess: Optional[np.ndarray] = None) -> tuple[np.ndarray, np.ndarray]:
     """Pyramidal LK (window, levels) from grey frame a to b with a forward-backward check; returns matched (N, 2)
-    point arrays."""
+    point arrays. ``guess`` (N, 2), where given, is a displacement to start from when the plain search loses
+    most of the points: a pyramid of a few levels reaches some 50 px, and at highway speed a car beside the road
+    moves twice that between frames. Then the points the plain search lost are searched again from the guess;
+    those it followed keep its answer. While the plain search follows half or more, the guess is not used: the
+    points it loses on a box are mostly the background at the box's edge, which the guess (where a standing
+    object would be) finds all too well, and they would pull a moving car's flow towards standing."""
     LK = dict(winSize=(lk[0], lk[0]), maxLevel=lk[1], criteria=LK_CRITERIA)
     if pts is None or len(pts) == 0:
         return np.zeros((0, 2), np.float32), np.zeros((0, 2), np.float32)
@@ -92,13 +120,33 @@ def track_points(a: np.ndarray, b: np.ndarray, pts: np.ndarray, lk: tuple = (21,
     p1, st, _ = cv2.calcOpticalFlowPyrLK(a, b, p0, None, **LK)
     p0r, st2, _ = cv2.calcOpticalFlowPyrLK(b, a, p1, None, **LK)
     ok = (st[:, 0] == 1) & (st2[:, 0] == 1) & (np.linalg.norm(p0r - p0, axis=2)[:, 0] < fb_px)
+    if guess is not None and 2 * int(ok.sum()) < len(ok):
+        lost = np.where(~ok)[0]
+        q0 = p0[lost]
+        q1 = (q0 + guess.reshape(-1, 1, 2)[lost]).astype(np.float32)
+        q1, st, _ = cv2.calcOpticalFlowPyrLK(a, b, q0, q1, flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **LK)
+        q0r, st2, _ = cv2.calcOpticalFlowPyrLK(b, a, q1, q0.copy(), flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **LK)
+        ok2 = (st[:, 0] == 1) & (st2[:, 0] == 1) & (np.linalg.norm(q0r - q0, axis=2)[:, 0] < fb_px)
+        p1 = p1.copy()
+        p1[lost[ok2]] = q1[ok2]
+        ok[lost[ok2]] = True
     return p0[ok][:, 0], p1[ok][:, 0]
 
 
-def road_pair_rate(a: np.ndarray, b: np.ndarray, h: int, dt: float, min_pairs: int = 20) -> Optional[tuple[float, float]]:
+def static_flow(pts: np.ndarray, rate: np.ndarray, road, dt: float, w: int, h: int, horizon_y: float) -> np.ndarray:
+    """Displacement (N, 2) of points on static objects over ``dt``: away from the focus of expansion at ``rate``
+    (1/s, per point) plus the camera's turn (``road``'s shift, measured over ``road[4]`` seconds)."""
+    A, B, sx, sy, rdt = road
+    k = dt / rdt if rdt > 0 else 1.0
+    return (pts - np.array([w / 2, horizon_y * h])) * rate[:, None] * dt + np.array([sx, sy]) * k
+
+
+def road_pair_rate(a: np.ndarray, b: np.ndarray, h: int, dt: float, min_pairs: int = 20,
+                   horizon: Optional[float] = None, with_res: bool = False) -> Optional[tuple]:
     """Fit the horizontal log-spread rate of road point pairs on nearly the same row as ``A * y + B`` (y as a
     fraction of the frame height, rate per second), robustly: three least-squares passes, each keeping the
-    60 % of pairs closest to the previous fit."""
+    60 % of pairs closest to the previous fit. With ``horizon``, the rate is held at zero on that row (one
+    parameter, ``B = -A * horizon``). ``with_res`` adds the median absolute residual over all pairs."""
     if len(a) < 2:
         return None
     ya = a[:, 1] / h
@@ -113,13 +161,16 @@ def road_pair_rate(a: np.ndarray, b: np.ndarray, h: int, dt: float, min_pairs: i
         return None
     rate = np.log(db[ok] / da[ok]) / dt
     y = ((ya[i] + ya[j]) / 2)[ok]
-    X = np.stack([y, np.ones(len(y))], 1)
+    X = np.stack([y, np.ones(len(y))], 1) if horizon is None else (y - horizon)[:, None]
     sol = np.linalg.lstsq(X, rate, rcond=None)[0]
     for _ in range(2):
         res = np.abs(X @ sol - rate)
         keep = res <= np.percentile(res, 60)
         sol = np.linalg.lstsq(X[keep], rate[keep], rcond=None)[0]
-    return float(sol[0]), float(sol[1])
+    A, B = (float(sol[0]), float(-sol[0] * horizon)) if horizon is not None else (float(sol[0]), float(sol[1]))
+    if with_res:
+        return A, B, float(np.median(np.abs(A * y + B - rate)))
+    return A, B
 
 
 class _Track:
@@ -149,6 +200,8 @@ class StandingTracker:
         self._prev_t = 0.0
         self._tracks: list[_Track] = []
         self.last_road: Optional[tuple[float, float, float, float]] = None   # A, B, shift x, shift y
+        self._road_prior: Optional[tuple] = None    # (A, B, sx, sy, dt) of the last frame pair, and its end time
+        self._road_prior_t = -1.0
         self.last_tracks: list[_Track] = []
 
     def states(self, t: float, img: np.ndarray, dets: Sequence[Detection], targets: Sequence[Detection],
@@ -175,21 +228,30 @@ class StandingTracker:
             self.last_tracks = []
             return []
         # where each track seen in the last frame should be now: its own corners followed with LK (a near car
-        # moves a box width between frames at 5 fps, so the last box alone links poorly)
+        # moves a box width between frames at 5 fps, so the last box alone links poorly); where that fails, also
+        # where the box would be if the car stood (at highway speed the corners are often lost, and a parked car
+        # would start a new, undecided track every frame or two)
         follow, pred = {}, {}
+        if road is None and prev is not None and not stationary and dt > 0 and self._tracks:
+            road = self._road(prev, g, dets, dt, hood_frac) or False
         for tr in self._tracks:
             box = tr.last_box
+            boxes = [box]
             if prev is not None and not stationary and dt > 0 and abs(tr.last_t - prev_t) < 1e-6:
-                f = self._follow(prev, g, box)
+                f = self._follow(prev, g, box, road or None, dt)
                 if f is not None:
                     follow[id(tr)] = f
                     pa, pb = f
                     d = np.median(pb - pa, 0)
                     sc = float(np.exp(_spread(pa, pb) or 0.0))
-                    box = (box[0] + d[0] / w, box[1] + d[1] / h, box[2] * sc, box[3] * sc)
-            pred[id(tr)] = box
-        cand = sorted(((_iou(pred[id(tr)], d.bbox), k, n) for k, d in enumerate(police)
-                       for n, tr in enumerate(self._tracks) if tr.last_t < t), reverse=True)
+                    boxes = [(box[0] + d[0] / w, box[1] + d[1] / h, box[2] * sc, box[3] * sc)]
+            if id(tr) not in follow and road and not stationary:
+                st = self._static_box(box, road, t - tr.last_t, dt, h)
+                if st is not None:
+                    boxes.append(st)
+            pred[id(tr)] = boxes
+        cand = sorted((max(_iou(b, d.bbox) for b in pred[id(tr)]), k, n) for k, d in enumerate(police)
+                      for n, tr in enumerate(self._tracks) if tr.last_t < t)[::-1]
         assigned: dict[int, _Track] = {}
         taken: set[int] = set()
         for ov, k, n in cand:
@@ -272,23 +334,35 @@ class StandingTracker:
         pts = cv2.goodFeaturesToTrack(a, cfg.road_corners, 0.005, 6, mask=mask)
         if pts is None:
             return None
-        pa, pb = track_points(a, b, pts, cfg.road_lk)
+        guess = None
+        if self._road_prior is not None and abs(self._road_prior_t - (self._prev_t - dt)) < 1e-6:
+            q = pts.reshape(-1, 2)
+            guess = static_flow(q, self._road_prior[0] * q[:, 1] / h + self._road_prior[1], self._road_prior, dt,
+                                w, h, cfg.horizon_y)
+        pa, pb = track_points(a, b, pts, cfg.road_lk, guess=guess)
         if len(pa) < 15:
             return None
-        fit = road_pair_rate(pa, pb, h, dt, cfg.min_road_pairs)
-        if fit is None:
+        free = road_pair_rate(pa, pb, h, dt, cfg.min_road_pairs, with_res=True)
+        if free is None:
             return None
-        A, B = fit
+        A, B, res = free
         if cfg.horizon_tol > 0 and (not A > 0 or abs(-B / A - cfg.horizon_y) > cfg.horizon_tol):
-            return None
+            if not cfg.fixed_horizon_fallback:
+                return None
+            A, B, res_h = road_pair_rate(pa, pb, h, dt, cfg.min_road_pairs, horizon=cfg.horizon_y, with_res=True)
+            if not A > 0 or res_h > 2.0 * res + 0.02:     # on roads 1-1.4x as a rule, on a uniform zoom ~40x
+                return None
         e = A * pa[:, 1] / h + B
         pred = (pa - np.array([w / 2, cfg.horizon_y * h])) * e[:, None] * dt
         sx, sy = np.median(pb - pa - pred, 0)
         self.last_road = (A, B, float(sx), float(sy))
+        self._road_prior, self._road_prior_t = (A, B, float(sx), float(sy), dt), self._prev_t
         return self.last_road
 
-    def _follow(self, a: np.ndarray, b: np.ndarray, box) -> Optional[tuple[np.ndarray, np.ndarray]]:
-        """The car's corners (inner 80 % of its box in frame a) followed into frame b."""
+    def _follow(self, a: np.ndarray, b: np.ndarray, box, road=None, dt: float = 0.0
+                ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """The car's corners (inner 80 % of its box in frame a) followed into frame b. With the road fit of this
+        frame pair, corners the plain search loses are looked for where they would be if the car stood."""
         cfg = self.cfg
         h, w = a.shape
         cx, cy, bw, bh = box
@@ -299,8 +373,28 @@ class StandingTracker:
         pts = cv2.goodFeaturesToTrack(a, cfg.car_corners, 0.01, 3, mask=m)
         if pts is None or len(pts) < cfg.min_car_points:
             return None
-        pa, pb = track_points(a, b, pts, cfg.car_lk)
+        guess = None
+        if road:
+            e = road[0] * (cy + bh / 2) + road[1]
+            if e > cfg.min_expansion:
+                q = pts.reshape(-1, 2)
+                guess = static_flow(q, np.full(len(q), e), (*road[:4], dt), dt, w, h, cfg.horizon_y)
+        pa, pb = track_points(a, b, pts, cfg.car_lk, guess=guess)
         return (pa, pb) if len(pa) >= cfg.min_car_points else None
+
+    def _static_box(self, box, road, gap: float, dt: float, h: int):
+        """Where ``box`` would be ``gap`` seconds later if it stood on the road (expansion from the focus at the
+        rate of its bottom row, plus the camera's turn), or None when the road gives no rate there."""
+        cfg = self.cfg
+        cx, cy, bw, bh = box
+        A, B, sx, sy = road
+        e = A * (cy + bh / 2) + B
+        if not e > cfg.min_expansion or gap <= 0:
+            return None
+        k = float(np.exp(min(e * gap, 1.5)))
+        n = gap / dt if dt > 0 else 1.0
+        return (0.5 + (cx - 0.5) * k + sx * n / cfg.width, cfg.horizon_y + (cy - cfg.horizon_y) * k + sy * n / h,
+                bw * k, bh * k)
 
     def _measure(self, pa: np.ndarray, pb: np.ndarray, box, road, dt: float, h: int, w: int
                  ) -> Optional[tuple[float, float]]:
@@ -323,13 +417,55 @@ class StandingTracker:
 
 
 class PoliceMotion(StandingTracker):
-    """Relabels the police boxes of cars not read as standing (``police_vehicle_pending`` / ``_moving``)."""
+    """Relabels the police boxes of cars not read as standing (``police_vehicle_pending`` / ``_moving``).
+
+    With the camera's horizontal field of view (``hfov_deg``) and mount height it also keeps our speed (the GPS
+    speed when given, else from the road fit as in ``shoulder.py``), which decides whether ``track_vehicles``
+    applies; without a field of view it always does."""
+
+    def __init__(self, cfg: MotionConfig | None = None, hfov_deg: Optional[float] = None,
+                 cam_height_m: float = 1.3):
+        super().__init__(cfg)
+        self.hfov_deg, self.cam_height_m = hfov_deg, cam_height_m
+        self.speed: Optional[float] = None      # m/s, the latest sample
+        self._speed_t, self._speed_gps, self._cam_t = -1e9, False, -1e9
+
+    def fast(self, t: float) -> bool:
+        """Whether to follow vehicles before they are called police (see ``track_vehicles_mps``)."""
+        cfg = self.cfg
+        if self.hfov_deg is None and not self._speed_gps:
+            return True
+        if self.speed is None or t - self._speed_t > cfg.speed_hold_s:
+            return False
+        return self.speed >= (cfg.track_vehicles_mps if self._speed_gps else cfg.track_vehicles_camera_mps)
 
     def update(self, t: float, img: np.ndarray, dets: Sequence[Detection], ego_state: str,
-               hood_frac: float = 0.0) -> list[Detection]:
-        """Returns ``dets`` with the police boxes of pending and moving tracks relabelled."""
-        police = [d for d in dets if d.label == POLICE and d.confidence >= self.cfg.track_min_conf]
-        tracks = self.states(t, img, dets, police, ego_state, hood_frac)
+               hood_frac: float = 0.0, gps_mps: Optional[float] = None) -> list[Detection]:
+        """Returns ``dets`` with the police boxes of pending and moving tracks relabelled. ``gps_mps``: a fresh
+        GPS speed, or None."""
+        cfg = self.cfg
+        h, w = img.shape[:2]
+        if gps_mps is not None:
+            self.speed, self._speed_t, self._speed_gps = float(gps_mps), t, True
+        elif t - self._speed_t > cfg.speed_hold_s:
+            self._speed_gps = False
+        need_speed = (cfg.track_vehicles > 0 and gps_mps is None and self.hfov_deg is not None
+                      and t - self._cam_t >= cfg.speed_every_s)
+        if need_speed:
+            self._cam_t = t
+        police = [d for d in dets if d.label == POLICE and d.confidence >= cfg.track_min_conf]
+        targets = list(police)
+        if cfg.track_vehicles > 0 and self.fast(t):
+            taken = {tuple(d.bbox) for d in police}
+            veh = [d for d in dets if d.label in ("car", "truck", "bus") and d.confidence >= 0.35
+                   and min(d.bbox[2] * w, d.bbox[3] * h) >= 28 and tuple(d.bbox) not in taken]
+            targets += sorted(veh, key=lambda d: -(d.bbox[2] * d.bbox[3]))[: cfg.track_vehicles]
+        before = self.last_road
+        tracks = self.states(t, img, dets, targets, ego_state, hood_frac, force_road=need_speed)[: len(police)]
+        road = self.last_road
+        if gps_mps is None and self.hfov_deg is not None and road is not None and road is not before:
+            fy = 0.5 / math.tan(math.radians(self.hfov_deg) / 2) * (w / h)      # focal length in frame heights
+            self.speed, self._speed_t, self._speed_gps = float(road[0]) * fy * self.cam_height_m, t, False
         assigned = dict(enumerate(tracks))
         out = []
         index = {id(d): k for k, d in enumerate(police)}

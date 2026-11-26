@@ -127,6 +127,55 @@ reported on all 11 clips with a standing police car that v8 finds (`ad870270` st
 while we stand (the box test reads only about half the parked cars as standing) and on slow oncoming traffic.
 It costs nothing until a police box is in view; then about 40 ms a frame on a desktop JVM.
 
+**Police at highway speed.** Argoverse is city driving (median 0-45 km/h on the police clips), and a police
+car on a highway shoulder passes through the view in a fraction of the frames. The 13 police logs and 30 of
+the police-free ones were fetched at the camera's full 20 Hz (`<datasets>/argoverse2/fullrate_clips`), and
+`tools/eval_vehicle.py clips --speedup k` keeps every k-th frame, stamped so that the pipeline still sees 6
+frames a second: static objects then move as they would from a car driving k times as fast (moving traffic
+moves faster than it would, which only makes the check harder). `tools/eval_police_motion.py --speedup k`
+does the same over the cached 5 fps frames. Three changes came out of it:
+
+- The car and road corners are searched again from where a static object would be when the plain search loses
+  most of them (a few pyramid levels reach some 50 px; at 3x a roadside car moves twice that between frames).
+- When the road fit puts its zero-spread row off the horizon, which at speed is mostly a poorly pinned fit from
+  the few road corners left, the rate is fitted again with its zero held on the horizon, if that fits the
+  pairs about as well (a residual within twice the free fit's; on roads it is 1-1.4 times as a rule, on a
+  uniform zoom, which is not a road, some 40 times).
+- The four largest car, truck and bus boxes are followed from the start (`track_vehicles`), so a car has its
+  measurements when the classifier becomes sure it is police. Before, a track started with the first police
+  score of 0.3, and at 3x the classifier is above 0.85 on only one to three frames of most missed cars. This
+  runs only while we drive at 40 km/h or more (GPS speed, or the camera's own from a road fit once a second,
+  which reads about 0.87 of the true speed): in town it costs a road fit and a corner search per box every
+  frame (22 ms a frame in Python on a desktop on the Argoverse logs, against 0.3 ms with no police in view)
+  and gains nothing at 1x.
+
+| 13 police logs, 30 without, at 20 Hz | police logs reported, 1x / 2x / 3x | logs without police reported |
+|---|---|---|
+| before | 11 / 8 / 4 | (not run) |
+| boxes followed at any speed | 11 / 10 / 8 | 0 / 0 / 0 |
+| now: boxes followed at 40 km/h and up | 11 / 10 / 6 | 0 / 0 / 0 |
+
+The two police logs the speed condition gives up at 3x (`11ba4e81`, `f61bcee1`) are slow town drives, some
+12 km/h and pulling away, so even sped up three times they pass at about 35 km/h and the camera's speed reads
+lower still while we accelerate. Lowering the condition to 25 km/h of camera speed does not bring them back
+and loses one log at 2x. With the condition, following costs about one road fit a second in town (some 2 ms a
+frame averaged on the desktop).
+
+Over the 163 held-out logs at 5 fps the pipeline still reports 11 of 13 and none of the 150 without police
+(`runs/eval/argo_h1_vehicle_gate.json`). By vehicle track (`tools/eval_police_motion.py`, share of tracks
+read standing on at least two frames, which is what a report needs):
+
+| tracks within 30 m / 30-60 m | standing, 1x | driving, 1x | standing, 3x | driving, 3x |
+|---|---|---|---|---|
+| before | 59 % / 46 % | 16 % / 23 % | 12 % / 13 % | 2 % / 2 % |
+| now | 68 % / 52 % | 17 % / 30 % | 21 % / 25 % | 3 % / 5 % |
+
+More tracks are decided, and somewhat more driving ones from 30 to 60 m pass; every vehicle stands in for a
+police car here, so a false report also needs the classifier to call a civilian car police on two frames,
+which on the 150 police-free logs and the 30 at 20 Hz it did not. At 3x (some 100 km/h on these clips) most
+standing police cars are still missed: they are in view for a handful of frames. The cost on the phone was
+not yet timed.
+
 **Vehicle classifier, crop level.** Held-out crops of `<datasets>/vehicle_crops/val` (split by source file;
 `tools/eval_vehicle.py crops --data ...`), scored at the shipped police floor of 0.85, at the 160 px input the
 models were trained at:

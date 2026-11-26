@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from wazeomatic.motion import MOVING, PENDING, POLICE, MotionConfig, PoliceMotion, road_pair_rate
+from wazeomatic.motion import MOVING, PENDING, POLICE, MotionConfig, PoliceMotion, road_pair_rate, track_points
 from wazeomatic.schema import Detection
 
 W, H = 640, 360
@@ -30,9 +30,11 @@ def box_after(box, m: np.ndarray):
     return (x / W, y / H, bw * m[0, 0], bh * m[1, 1])
 
 
-def drive(car_static: bool, frames: int = 6, s: float = 1.03, turn=(0.0, 0.0), ego="moving", cfg=None):
+def drive(car_static: bool, frames: int = 6, s: float = 1.03, turn=(0.0, 0.0), ego="moving", cfg=None,
+          police_from: int = 0, gps=None, hfov=None):
     """A textured world we drive into; a police car at the right of the road that is part of the world (static)
-    or keeps its place and size in the image (driving ahead at our speed)."""
+    or keeps its place and size in the image (driving ahead at our speed). Before frame ``police_from`` the
+    classifier is not sure of it yet: only the detector's car box is there (state None)."""
     world = texture(1)
     car = texture(2, 60, 40)
     box0 = (0.75, 0.68, 60 / W, 40 / H)
@@ -41,7 +43,7 @@ def drive(car_static: bool, frames: int = 6, s: float = 1.03, turn=(0.0, 0.0), e
         world[y0:y0 + 40, x0:x0 + 60] = car
     # the synthetic world zooms uniformly, a wall rather than a road: its spread rate has no zero row, so the
     # horizon check is off here (test_uniform_zoom_is_not_a_road checks it)
-    pm, states = PoliceMotion(cfg or MotionConfig(horizon_tol=0.0)), []
+    pm, states = PoliceMotion(cfg or MotionConfig(horizon_tol=0.0), hfov_deg=hfov), []
     m = np.eye(3)
     for k in range(frames):
         if k:
@@ -53,8 +55,11 @@ def drive(car_static: bool, frames: int = 6, s: float = 1.03, turn=(0.0, 0.0), e
             img = img.copy()
             img[y0:y0 + 40, x0:x0 + 60] = car
             box = box0
-        out = pm.update(0.2 * k, img, [Detection(POLICE, 0.9, box, model="vehicle")], ego)
-        states.append(out[0].label)
+        dets = [Detection("car", 0.8, box, model="coco")]
+        if k >= police_from:
+            dets.append(Detection(POLICE, 0.9, box, model="vehicle"))
+        out = pm.update(0.2 * k, img, dets, ego, gps_mps=gps)
+        states.append(out[1].label if k >= police_from else None)
     return states
 
 
@@ -87,6 +92,36 @@ def test_rotation_is_taken_off():
     # turning shifts the whole image by 6 px a frame; the static car must still pass
     assert drive(True, turn=(6.0, 0.0))[-1] == POLICE
     assert drive(False, turn=(6.0, 0.0))[-1] == MOVING
+
+
+def test_a_static_car_is_followed_beyond_the_pyramid_reach():
+    # 70 px a frame, as a car beside a highway moves at 6 frames a second: the car's pyramid (15 px, 3 levels)
+    # loses it, and it is found where a standing object would be; a car keeping its place is never read standing
+    assert drive(True, turn=(-70.0, 0.0))[-1] == POLICE
+    assert drive(False, turn=(-70.0, 0.0))[-1] in (MOVING, PENDING)
+
+
+def test_track_points_uses_the_guess_only_when_most_points_are_lost():
+    a = texture(3)
+    b = np.roll(a, 100, axis=1)
+    pts = np.array([[x, y] for x in range(200, 440, 30) for y in range(100, 260, 30)], np.float32)
+    pa, pb = track_points(a, b, pts, (15, 3))
+    assert len(pa) < len(pts) // 2
+    pa, pb = track_points(a, b, pts, (15, 3), guess=np.tile([[96.0, 3.0]], (len(pts), 1)))
+    right = np.all(np.abs(pb - pa - [100.0, 0.0]) < 0.5, axis=1)
+    assert right.sum() > 0.9 * len(pts)
+
+
+def test_followed_vehicles_are_decided_when_the_classifier_becomes_sure():
+    # at highway speed a car is in view for a few frames: followed as a car from the start, it is read standing
+    # on the first frame the classifier calls it police
+    cfg = dict(horizon_tol=0.0)
+    assert drive(True, police_from=5, cfg=MotionConfig(track_vehicles=4, **cfg))[-1] == POLICE
+    assert drive(True, police_from=5, cfg=MotionConfig(track_vehicles=0, **cfg))[-1] == PENDING
+    assert drive(False, police_from=5, cfg=MotionConfig(track_vehicles=4, **cfg))[-1] == MOVING
+    # only at speed: in town it gains nothing and costs a car LK pass per box
+    assert drive(True, police_from=5, cfg=MotionConfig(**cfg), gps=20.0, hfov=70.0)[-1] == POLICE
+    assert drive(True, police_from=5, cfg=MotionConfig(**cfg), gps=5.0, hfov=70.0)[-1] == PENDING
 
 
 def test_while_we_stand_a_still_box_passes_and_a_crossing_one_does_not():

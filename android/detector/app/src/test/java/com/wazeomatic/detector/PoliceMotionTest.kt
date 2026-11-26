@@ -5,6 +5,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Random
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.ln
 
@@ -46,7 +47,9 @@ class PoliceMotionTest {
     })
 
     private fun drive(carStatic: Boolean, frames: Int = 6, scale: Double = 1.03, turnX: Double = 0.0,
-                      ego: String = "moving", cfg: MotionConfig = MotionConfig(horizonTol = 0.0)): List<String> {
+                      ego: String = "moving", cfg: MotionConfig = MotionConfig(horizonTol = 0.0),
+                      policeFrom: Int = 0, gps: Double? = null, hfov: Double? = null): List<String?> {
+        // before frame policeFrom the classifier is not sure of the car yet: only the detector's box (state null)
         val world = texture(1, w, h)
         val car = texture(2, 60, 40)
         val box0 = BBox(0.75f, 0.68f, 60f / w, 40f / h)
@@ -54,8 +57,8 @@ class PoliceMotionTest {
         val y0 = (box0.cy * h - 20).toInt()
         if (carStatic) for (y in 0 until 40) for (x in 0 until 60) world[(y0 + y) * w + x0 + x] = car[y * 60 + x]
         // the synthetic world zooms uniformly, a wall rather than a road: no zero row, so the horizon check is off
-        val pm = PoliceMotion(cfg)
-        val out = ArrayList<String>()
+        val pm = PoliceMotion(cfg, hfovDeg = hfov)
+        val out = ArrayList<String?>()
         var s = 1.0; var tx = 0.0; var ty = 0.0
         for (k in 0 until frames) {
             if (k > 0) {      // the last frame scaled about the focus of expansion, then shifted (turning)
@@ -71,8 +74,10 @@ class PoliceMotionTest {
                 for (y in 0 until 40) for (x in 0 until 60) g[(y0 + y) * w + x0 + x] = car[y * 60 + x]
                 box0
             }
-            val res = pm.update(0.2 * k, toRgb(g), listOf(Detection(PoliceMotion.POLICE, 0.9f, box, "vehicle")), ego)
-            out.add(res[0].label)
+            val dets = arrayListOf(Detection("car", 0.8f, box, "coco"))
+            if (k >= policeFrom) dets.add(Detection(PoliceMotion.POLICE, 0.9f, box, "vehicle"))
+            val res = pm.update(0.2 * k, toRgb(g), dets, ego, gpsMps = gps)
+            out.add(if (k >= policeFrom) res[1].label else null)
         }
         return out
     }
@@ -117,6 +122,40 @@ class PoliceMotionTest {
             assertEquals(7.5, pb[i][0] - pa[i][0], 0.2)
             assertEquals(-3.0, pb[i][1] - pa[i][1], 0.2)
         }
+    }
+
+    @Test
+    fun aStaticCarIsFollowedBeyondThePyramidReach() {
+        // 70 px a frame, as a car beside a highway moves at 6 frames a second (as test_motion.py); a car keeping
+        // its place is never read standing
+        assertEquals(PoliceMotion.POLICE, drive(true, turnX = -70.0).last())
+        assertTrue(drive(false, turnX = -70.0).last() in setOf(moving, pending))
+    }
+
+    @Test
+    fun trackUsesTheGuessOnlyWhenMostPointsAreLost() {
+        val world = texture(5, w, h)
+        val a = GreyImage(w, h, world)
+        val b = GreyImage(w, h, render(world, 1.0, 100.0, 0.0))
+        val pts = Flow.corners(a, 50, 0.01, 6.0, null).filter { it[0] in 60.0..440.0 && it[1] in 40.0..320.0 }
+        val pa = Flow.pyramid(a, 3)
+        val pb = Flow.pyramid(b, 3)
+        assertTrue(Flow.track(pa, pb, pts, 15).first.size < pts.size / 2)
+        val (from, to) = Flow.track(pa, pb, pts, 15, guess = pts.map { doubleArrayOf(96.0, 3.0) })
+        val right = from.indices.count { abs(to[it][0] - from[it][0] - 100.0) < 0.5 && abs(to[it][1] - from[it][1]) < 0.5 }
+        assertTrue(right > pts.size * 0.9)
+    }
+
+    @Test
+    fun followedVehiclesAreDecidedWhenTheClassifierBecomesSure() {
+        // at highway speed a car is in view for a few frames: followed as a car from the start, it is read standing
+        // on the first frame the classifier calls it police (as test_motion.py)
+        assertEquals(PoliceMotion.POLICE, drive(true, policeFrom = 5, cfg = MotionConfig(horizonTol = 0.0, trackVehicles = 4)).last())
+        assertEquals(pending, drive(true, policeFrom = 5, cfg = MotionConfig(horizonTol = 0.0, trackVehicles = 0)).last())
+        assertEquals(moving, drive(false, policeFrom = 5, cfg = MotionConfig(horizonTol = 0.0, trackVehicles = 4)).last())
+        // only at speed: in town it gains nothing and costs a car LK pass per box
+        assertEquals(PoliceMotion.POLICE, drive(true, policeFrom = 5, cfg = MotionConfig(horizonTol = 0.0), gps = 20.0, hfov = 70.0).last())
+        assertEquals(pending, drive(true, policeFrom = 5, cfg = MotionConfig(horizonTol = 0.0), gps = 5.0, hfov = 70.0).last())
     }
 
     @Test

@@ -313,7 +313,8 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
     val ego = EgoMotion()
     var lights: EmergencyLights = EmergencyLights()
     val motion: PoliceMotion? = if (cfg.policeStoppedOnly)
-        PoliceMotion(MotionConfig(horizonY = cfg.horizonY, driveSide = cfg.driveSide)) else null
+        PoliceMotion(MotionConfig(horizonY = cfg.horizonY, driveSide = cfg.driveSide), hfovDeg = cfg.hfovDeg,
+            camHeightM = cfg.camHeightM) else null
     val shoulder: ShoulderCars? = if (cfg.shoulderCars)
         ShoulderCars(ShoulderConfig(cameraSpeed = cfg.shoulderCameraSpeed), horizonY = cfg.horizonY,
             hfovDeg = cfg.hfovDeg, camHeightM = cfg.camHeightM, driveSide = cfg.driveSide) else null
@@ -353,7 +354,7 @@ class SceneAnalyzer(val cfg: SceneConfig = SceneConfig()) {
      */
     fun gatePolice(t: Double, img: RgbImage, dets: List<Detection>, hoodFrac: Double = 0.0): List<Detection> {
         val m = motion ?: return dets.toList()
-        return m.update(t, img, dets, (state["ego"] as? String) ?: "moving", hoodFrac)
+        return m.update(t, img, dets, (state["ego"] as? String) ?: "moving", hoodFrac, gpsMps = ego.gpsSpeed(t))
     }
 
     /** After [update]: scene_car_on_shoulder boxes ([ShoulderCars]), none when it is off. */
